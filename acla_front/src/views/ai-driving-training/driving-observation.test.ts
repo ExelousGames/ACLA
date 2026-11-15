@@ -436,19 +436,25 @@ describe('normalized position progress reward', () => {
         }
     });
 
-    it.each([
-        { normalizedPosition: 0.25 },
-        { normalizedPosition: 0.25, speed: 0 },
-        { normalizedPosition: 0.252, speed: 0 },
-    ])('penalizes standing still by elapsed telemetry time: %j', (fields) => {
+    it('penalizes standing still by elapsed telemetry time when both speed and position show no movement', () => {
         const before = trainingFixture().observation;
-        const after = { ...before, capturedAt: 1200, measuredAt: 1200, ...fields };
+        const after = { ...before, capturedAt: 1200, measuredAt: 1200, speed: 0 };
         const reward = drivingReward(before, after);
         expect(reward.progress).toBeCloseTo(-0.05);
         expect(reward.total).toBe(reward.progress);
         expect(drivingReward(before, { ...after, capturedAt: 1400 }).progress).toBe(reward.progress);
         expect(drivingReward(before, { ...after, capturedAt: 1400, measuredAt: 1400 }).progress)
             .toBeCloseTo(reward.progress * 2);
+    });
+
+    it.each([
+        { normalizedPosition: 0.25, speed: 108 },
+        { normalizedPosition: 0.252, speed: 0 },
+    ])('does not penalize standing still when one signal shows movement: %j', (fields) => {
+        const before = trainingFixture().observation;
+        const reward = drivingReward(before, { ...before, capturedAt: 1200, measuredAt: 1200, ...fields });
+        expect(reward.progress).toBe(0);
+        expect(reward.total).toBe(0);
     });
 
     it('withholds a forward-progress bonus in reverse gear', () => {
@@ -462,6 +468,8 @@ describe('normalized position progress reward', () => {
         const reward = drivingReward(before, { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.248, gear });
         expect(reward.progress).toBeLessThan(0);
         expect(reward.total).toBe(reward.progress);
+        expect(drivingReward(before, { ...before, capturedAt: 1200, measuredAt: 1200,
+            normalizedPosition: 0.248, gear, speed: 0 }).progress).toBeCloseTo(reward.progress);
     });
 });
 

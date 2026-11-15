@@ -44,6 +44,17 @@ it('uploads initialized weights once and releases the CPU seed after GPU initial
     expect(await policy.checkpointAsync()).toEqual(seed);
 });
 
+it('initializes camera inspection on demand without changing model weights or training steps', async () => {
+    const { policy, observation } = setup(), seed = policy.checkpoint();
+    const inspection = await policy.inspectCameraAsync(observation.camera);
+    const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
+    expect(gpu.inspectCamera).toHaveBeenCalledWith(observation.camera);
+    expect(inspection.layers).toHaveLength(policy.configuration.network.cameraLayers.length);
+    expect(await policy.checkpointAsync()).toEqual(seed);
+    policy.dispose();
+    await expect(policy.inspectCameraAsync(observation.camera)).rejects.toThrow(/released/);
+});
+
 it('creates and restores 31 action slots spanning three seconds at 100 ms intervals', async () => {
     const { policy, input } = setup();
     const checkpoint = policy.checkpoint();

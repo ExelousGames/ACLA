@@ -1,5 +1,6 @@
 import { DrivingGpuModel, GpuPolicyPass } from './driving-gpu-model';
 import type { PolicyModelState } from './driving-policy';
+import { drivingCameraLayers } from './driving-model-config';
 
 /** GPU boundary stub for UI/coordination tests in jsdom. Returns preset output
  * biases and a persistence sentinel; it implements no CNN, LSTM or learning math.
@@ -18,6 +19,8 @@ export function mockDrivingGpu() {
             else weights.lstmWeights[0][0] += 0.00001;
         };
         return {
+            inspectCamera: jest.fn(async () => ({ layers: drivingCameraLayers(config).map(({ width, height, channels }, index) =>
+                ({ index, width, height, channels, values: new Float32Array(width * height * channels) })) })),
             forward: jest.fn(async () => ({ pass: { released: false } as GpuPolicyPass,
                 outputs: weights.outputWeights.map((row) => row[config.network.hiddenUnits]) })),
             learnTransition: jest.fn(() => { if (config.learning.actorRate || config.learning.criticRate) changed(); }),

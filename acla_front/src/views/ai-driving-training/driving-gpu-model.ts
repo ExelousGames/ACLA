@@ -6,6 +6,7 @@ import { drivingCameraShaders } from './driving-camera-shaders';
 import { drivingLearningShaders } from './driving-learning-shaders';
 import type { PlannedActionTarget, PolicyModelState, ShiftAvailability } from './driving-policy';
 import { assembleDrivingInput } from './driving-policy-input';
+import type { DrivingCameraInspection } from './driving-camera-inspection';
 
 export interface GpuPolicyPass {
     features: GPUBuffer;
@@ -149,6 +150,38 @@ export class DrivingGpuModel {
         this.dispatch(commands, 'cameraProject', [pooled, this.cameraProjectionWeights, projected], this.cameraInputs);
         activations.push(pooled, projected);
         return activations;
+    }
+
+    /** Read the same CNN activations used by the policy without updating any model weights. */
+    async inspectCamera(image: PolicyCameraImage): Promise<DrivingCameraInspection> {
+        this.assertReady();
+        const { cameraWidth, cameraHeight } = this.config.observation;
+        if (!image || image.width !== cameraWidth || image.height !== cameraHeight
+            || !(image.rgb instanceof Uint8Array) || image.rgb.length !== cameraWidth * cameraHeight * 3) {
+            throw new Error(`Camera inspection requires ${cameraWidth} × ${cameraHeight} RGB pixels.`);
+        }
+        const workspace = this.idlePasses.pop() ?? new Map<string, GPUBuffer>();
+        let reusable = false;
+        try {
+            const commands = this.device.createCommandEncoder();
+            const activations = this.encode(image, commands, workspace, 0);
+            this.device.queue.submit([commands.finish()]);
+            const values = await this.download(activations.slice(1, this.layers.length + 1));
+            if (!values.every(Number.isFinite)) throw new Error('The training GPU produced invalid camera activations.');
+            let offset = 0;
+            const layers = this.layers.map(({ width, height, channels }, index) => {
+                const count = width * height * channels;
+                const layer = { index, width, height, channels, values: values.subarray(offset, offset + count) };
+                offset += count;
+                return layer;
+            });
+            reusable = true;
+            return { layers };
+        } finally {
+            // Concurrent inspections and retained policy decisions own separate workspaces.
+            if (reusable) this.recycle(workspace);
+            else workspace.forEach((buffer) => this.destroy(buffer));
+        }
     }
 
     async forward(input: DrivingPolicyInput): Promise<{ pass: GpuPolicyPass; outputs: number[] }> {

@@ -156,9 +156,10 @@ it('shows the steering-change penalty alongside other rewards and sends the pena
     mockInput = { observation: { ...observation, capturedAt: Date.now(), measuredAt: Date.now() } };
     act(() => { jest.advanceTimersByTime(20); }); await flush();
     expect(getDefinition('Steering-change penalty')).toHaveTextContent('-0.0640');
+    expect(getDefinition('Normalized position progress')).toHaveTextContent('0.000');
     expect(learn).toHaveBeenCalledTimes(1);
     const total = learn.mock.calls[0][1];
-    expect(total).toBeCloseTo(-0.075 - 0.064);
+    expect(total).toBeCloseTo(-0.064);
     expect(screen.getByText('Episode reward').parentElement).toHaveTextContent(total.toFixed(2));
     expect(screen.getByText(/Holding a steering angle has no penalty/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();

@@ -7,6 +7,7 @@ import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 import { SessionScreenCaptureProvider } from './SessionScreenCapture';
 
 const mockApiPost = jest.fn();
+const mockApiDelete = jest.fn();
 
 jest.mock('hooks/AuthProvider', () => ({
     useAuth: () => ({
@@ -17,7 +18,7 @@ jest.mock('hooks/AuthProvider', () => ({
 
 jest.mock('services/api.service', () => ({
     __esModule: true,
-    default: { post: (...args: any[]) => mockApiPost(...args), delete: jest.fn().mockResolvedValue({}) },
+    default: { post: (...args: any[]) => mockApiPost(...args), delete: (...args: any[]) => mockApiDelete(...args) },
 }));
 
 jest.mock('@radix-ui/themes', () => {
@@ -97,10 +98,11 @@ const renderRecorder = (runtime: ReturnType<typeof createRuntime>, committedCoun
 };
 
 describe('recording session controls', () => {
-    afterEach(() => { delete window.sessionVideo; delete window.screenCapture; });
+    afterEach(() => { delete window.sessionVideo; delete window.screenCapture; jest.useRealTimers(); });
     beforeEach(() => {
         liveTelemetryStore.resetSession();
         jest.clearAllMocks();
+        mockApiDelete.mockResolvedValue({});
         Object.defineProperty(window, 'electronAPI', {
             configurable: true,
             value: {
@@ -237,12 +239,16 @@ describe('recording session controls', () => {
         view.host.remove();
     });
 
-    it.each([true, false])('restores local video and uploads it when Include recorded video is %s', async (includeVideo) => {
+    it.each([true, false])('removes both local files immediately after upload when Include recorded video is %s', async (includeVideo) => {
+        jest.useFakeTimers();
         const clip = { filePath: 'C:\\recordings\\video.mp4', name: 'video.mp4', size: 4, mimeType: 'video/mp4', startedAt: 1 };
         window.sessionVideo = { create: jest.fn(), append: jest.fn(), finish: jest.fn(),
             list: jest.fn().mockResolvedValue([clip]), read: jest.fn().mockResolvedValue({ data: 'AQIDBA==', bytesRead: 4 }),
             delete: jest.fn(), reveal: jest.fn().mockResolvedValue(undefined) };
-        mockApiPost.mockResolvedValue({ data: { uploadId: 'upload-1' } });
+        let completeUpload!: () => void;
+        mockApiPost.mockImplementation((url: string) => url.includes('/complete?')
+            ? new Promise(resolve => { completeUpload = () => resolve({ data: {} }); })
+            : Promise.resolve({ data: { uploadId: 'upload-1' } }));
         const runtime = createRuntime({
             recordingState: RecordingState.UPLOAD_READY, recordingFileKey: 'C:\\recordings\\acc.jsonl',
             recordingMetadata: { sessionName: 'Race', mapName: 'Track', carName: 'Car', gameRecordedFrom: 'acc' },
@@ -257,15 +263,53 @@ describe('recording session controls', () => {
         expect(window.sessionVideo.reveal).toHaveBeenCalledWith(clip.filePath);
         fireEvent.click(await screen.findByRole('button', { name: 'Upload Session' }));
         expect(screen.getByLabelText('Include recorded video')).toBeChecked();
-        expect(screen.getByText('Local video, 0.0 MB. The local video is kept after upload.')).toBeInTheDocument();
+        expect(screen.getByText(/Local telemetry and video are deleted after upload or discard, even if video is excluded/)).toBeInTheDocument();
         if (!includeVideo) fireEvent.click(screen.getByLabelText('Include recorded video'));
         const buttons = screen.getAllByRole('button', { name: 'Upload Session' });
         fireEvent.click(buttons[buttons.length - 1]);
-        await waitFor(() => expect(runtime.clearPersistedDraft).toHaveBeenCalledTimes(1));
-        expect(mockApiPost.mock.calls.filter(([url]) => url.includes('/video-chunk'))).toHaveLength(includeVideo ? 1 : 0);
+        await waitFor(() => expect(completeUpload).toBeDefined());
         expect(window.sessionVideo.delete).not.toHaveBeenCalled();
+        expect(window.electronAPI.deleteTempFile).not.toHaveBeenCalled();
+        await act(async () => completeUpload());
+        expect(runtime.clearPersistedDraft).toHaveBeenCalledTimes(1);
+        expect(mockApiPost.mock.calls.filter(([url]) => url.includes('/video-chunk'))).toHaveLength(includeVideo ? 1 : 0);
+        expect(window.sessionVideo.delete).toHaveBeenCalledTimes(1);
+        expect(window.sessionVideo.delete).toHaveBeenCalledWith(clip.filePath);
+        expect(window.electronAPI.deleteTempFile).toHaveBeenCalledWith(runtime.recordingFileKey);
+        expect(runtime.endLiveSession).not.toHaveBeenCalled();
         view.unmount(); view.host.remove();
     });
+
+    it.each([RecordingState.RECORDING, RecordingState.UPLOAD_READY])(
+        'discards telemetry and all associated videos after stopping from %s', async (recordingState) => {
+            const clip = { filePath: 'first.mp4', name: 'first.mp4', size: 4, mimeType: 'video/mp4', startedAt: 1 };
+            window.sessionVideo = { create: jest.fn(), append: jest.fn(), finish: jest.fn(),
+                list: jest.fn().mockResolvedValue([clip, { ...clip, filePath: 'second.mp4' }]),
+                read: jest.fn(), delete: jest.fn().mockResolvedValue(undefined), reveal: jest.fn() };
+            let completeStop!: () => void;
+            const runtime = createRuntime({
+                recordingState, recordingFileKey: 'session.jsonl',
+                stopRecordingSession: jest.fn(() => new Promise(resolve => { completeStop = () => resolve(null); })),
+            });
+            const view = renderRecorder(runtime, 1);
+            act(() => runtime.registerRecorderControl.mock.calls[0][0].openUploadFlow());
+            fireEvent.click(screen.getByRole('button', { name: 'Discard Session' }));
+            if (recordingState === RecordingState.RECORDING) {
+                await waitFor(() => expect(runtime.stopRecordingSession).toHaveBeenCalledWith('manual'));
+                expect(window.sessionVideo.delete).not.toHaveBeenCalled();
+                expect(window.electronAPI.deleteTempFile).not.toHaveBeenCalled();
+                await act(async () => completeStop());
+            }
+            await waitFor(() => expect(runtime.endLiveSession).toHaveBeenCalledTimes(1));
+            expect(window.sessionVideo.delete).toHaveBeenCalledTimes(2);
+            expect(window.sessionVideo.delete).toHaveBeenCalledWith('first.mp4');
+            expect(window.sessionVideo.delete).toHaveBeenCalledWith('second.mp4');
+            expect(window.electronAPI.deleteTempFile).toHaveBeenCalledWith(runtime.recordingFileKey);
+            expect(runtime.clearPersistedDraft).toHaveBeenCalledTimes(1);
+            expect(mockApiPost).not.toHaveBeenCalled();
+            view.unmount(); view.host.remove();
+        },
+    );
 
     it('blocks upload of a restored session with multiple videos and keeps its files', async () => {
         const clip = { filePath: 'first.mp4', name: 'first.mp4', size: 4, mimeType: 'video/mp4', startedAt: 1 };
@@ -286,6 +330,44 @@ describe('recording session controls', () => {
         expect(runtime.clearPersistedDraft).not.toHaveBeenCalled();
         expect(window.sessionVideo.delete).not.toHaveBeenCalled();
         expect(window.electronAPI.deleteTempFile).not.toHaveBeenCalled();
+        view.unmount(); view.host.remove();
+    });
+
+    it.each([
+        ['upload', 'video'], ['upload', 'telemetry'], ['discard', 'video'], ['discard', 'telemetry'],
+    ])('retries failed %s cleanup of %s without losing the draft or uploading again', async (action, failedFile) => {
+        jest.useFakeTimers();
+        let clips = [{ filePath: 'video.mp4', name: 'video.mp4', size: 4, mimeType: 'video/mp4', startedAt: 1 }];
+        const deleteVideo = jest.fn(async () => { clips = []; });
+        if (failedFile === 'video') deleteVideo.mockRejectedValueOnce(new Error('File busy'));
+        else (window.electronAPI.deleteTempFile as jest.Mock).mockResolvedValueOnce({ success: false, error: 'File busy' });
+        window.sessionVideo = { create: jest.fn(), append: jest.fn(), finish: jest.fn(),
+            list: jest.fn(async () => clips), read: jest.fn().mockResolvedValue({ data: 'AQIDBA==', bytesRead: 4 }),
+            delete: deleteVideo, reveal: jest.fn() };
+        mockApiPost.mockResolvedValue({ data: { uploadId: 'upload-1' } });
+        const runtime = createRuntime({
+            recordingState: RecordingState.UPLOAD_READY, recordingFileKey: 'session.jsonl',
+            recordingMetadata: { sessionName: 'Race', mapName: 'Track', carName: 'Car', gameRecordedFrom: 'acc' },
+            streamRecordedTelemetry: jest.fn(async (onChunk) => {
+                await onChunk([{ Physics_speed_kmh: 100 }]);
+                return { rowCount: 1, totalBytes: 50 };
+            }),
+        });
+        const view = renderRecorder(runtime, 1);
+        fireEvent.click(screen.getByRole('button', { name: 'Upload Session' }));
+        const buttons = screen.getAllByRole('button', { name: action === 'upload' ? 'Upload Session' : 'Discard Session' });
+        fireEvent.click(buttons[buttons.length - 1]);
+        await screen.findByText(action === 'upload' ? 'Upload succeeded, but local cleanup failed: File busy' : 'File busy');
+        expect(runtime.clearPersistedDraft).not.toHaveBeenCalled();
+        expect(runtime.endLiveSession).not.toHaveBeenCalled();
+        if (failedFile === 'video') expect(window.electronAPI.deleteTempFile).not.toHaveBeenCalled();
+        const uploadCalls = mockApiPost.mock.calls.length;
+        fireEvent.click(screen.getByRole('button', { name: action === 'upload' ? 'Retry Cleanup' : 'Discard Session' }));
+        await waitFor(() => expect(runtime.clearPersistedDraft).toHaveBeenCalledTimes(1));
+        expect(clips).toEqual([]);
+        expect(window.electronAPI.deleteTempFile).toHaveBeenLastCalledWith(runtime.recordingFileKey);
+        expect(mockApiPost).toHaveBeenCalledTimes(uploadCalls);
+        expect(runtime.streamRecordedTelemetry).toHaveBeenCalledTimes(action === 'upload' ? 1 : 0);
         view.unmount(); view.host.remove();
     });
 
@@ -594,7 +676,11 @@ describe('recording session controls', () => {
         view.unmount(); view.host.remove();
     });
 
-    it('keeps the app recording after a failed upload and cleans up after a successful retry', async () => {
+    it('keeps telemetry and video after a failed upload and cleans up both after a successful retry', async () => {
+        const clip = { filePath: 'video.mp4', name: 'video.mp4', size: 4, mimeType: 'video/mp4', startedAt: 1 };
+        window.sessionVideo = { create: jest.fn(), append: jest.fn(), finish: jest.fn(),
+            list: jest.fn().mockResolvedValue([clip]), read: jest.fn().mockResolvedValue({ data: 'AQIDBA==', bytesRead: 4 }),
+            delete: jest.fn().mockResolvedValue(undefined), reveal: jest.fn() };
         let failCompletion = true;
         mockApiPost.mockImplementation((url: string) => {
             if (String(url).includes('/complete?') && failCompletion) throw new Error('Network unavailable');
@@ -615,6 +701,7 @@ describe('recording session controls', () => {
         expect(await screen.findByText('Network unavailable')).toBeInTheDocument();
         expect(runtime.clearPersistedDraft).not.toHaveBeenCalled();
         expect(window.electronAPI.deleteTempFile).not.toHaveBeenCalled();
+        expect(window.sessionVideo.delete).not.toHaveBeenCalled();
         failCompletion = false;
         fireEvent.click(screen.getByRole('button', { name: 'Retry Upload' }));
         await waitFor(() => expect(runtime.clearPersistedDraft).toHaveBeenCalledTimes(1));
@@ -623,6 +710,8 @@ describe('recording session controls', () => {
         expect(initializations.every(([, body]) => body.game_recorded_from === 'iracing_live')).toBe(true);
         expect(runtime.streamRecordedTelemetry).toHaveBeenCalledTimes(2);
         expect(window.electronAPI.deleteTempFile).toHaveBeenCalledTimes(1);
+        expect(window.sessionVideo.delete).toHaveBeenCalledTimes(1);
+        expect(window.sessionVideo.delete).toHaveBeenCalledWith(clip.filePath);
         expect(window.electronAPI.importLocalIRacingTelemetry).not.toHaveBeenCalled();
         view.unmount(); view.host.remove();
     });

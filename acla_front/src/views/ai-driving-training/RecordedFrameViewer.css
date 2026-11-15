@@ -1,0 +1,25 @@
+.recorded-frame-viewer { grid-column: 1 / -1; }
+.recorded-frame-viewer h3 { font-size: 15px; margin: 16px 0 12px; }
+.recorded-frame-viewer label { display: grid; gap: 7px; color: #a3adb7; font-size: 12px; min-width: 0; }
+.recorded-file-inputs, .recorded-settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin: 14px 0; }
+.recorded-frame-viewer input:not([type="range"]), .recorded-frame-viewer select { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; border: 1px solid #3a414d; border-radius: 6px; color: #edf3f2; background: #232934; }
+.recorded-frame-viewer input:disabled, .recorded-frame-viewer select:disabled { opacity: .5; }
+.recorded-frame-viewer input:focus-visible, .recorded-frame-viewer select:focus-visible { outline: 2px solid #00e676; outline-offset: 3px; }
+.recorded-frame-viewer input[type="file"] { font-size: 11px; }
+.recorded-setting { margin: 12px 0; max-width: 420px; }
+.recorded-video { display: block; width: 100%; max-height: 480px; background: #07090d; border-radius: 8px; margin-top: 16px; }
+.recorded-timeline { margin: 12px 0 22px; font-variant-numeric: tabular-nums; }
+.recorded-timeline input { width: 100%; accent-color: #00e676; }
+.recorded-feature-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
+.recorded-feature-images figure { min-width: 0; margin: 0; }
+.recorded-feature-images img, .recorded-feature-images canvas { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; display: block; background: #07090d; border-radius: 6px; }
+.recorded-feature-images canvas { image-rendering: pixelated; }
+.recorded-feature-images figcaption { font-size: 12px; color: #a3adb7; margin-top: 8px; }
+.recorded-channel-gallery { display: grid; gap: 12px; margin-top: 14px; }
+.recorded-channel-gallery > section { padding: 12px; border: 1px solid #303441; border-radius: 8px; }
+.recorded-channel-gallery h4 { margin: 0 0 10px; font-size: 13px; }
+.recorded-example-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.driving-training .recorded-example-row button { display: flex; flex-direction: column; align-items: stretch; padding: 4px; gap: 6px; min-width: 0; text-align: left; font-variant-numeric: tabular-nums; }
+.recorded-example-row img { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #07090d; }
+.recorded-example-row span { padding: 2px; font-size: 11px; overflow-wrap: anywhere; }
+@media (max-width: 650px) { .recorded-feature-images { grid-template-columns: 1fr; } .recorded-example-row { grid-template-columns: 1fr; } }

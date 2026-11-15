@@ -4,6 +4,11 @@
 .driving-eyebrow { color: var(--lp-green, #00e676); font-size: 11px; letter-spacing: .16em; }
 .driving-training h1 { font-size: 26px; line-height: 1.25; margin: 8px 0; }
 .driving-training h2 { font-size: 17px; margin: 0; }
+.driving-source-picker { margin-bottom: 20px; }
+.driving-source-picker label { display: block; font-size: 14px; margin-bottom: 10px; }
+.driving-source-picker select { width: min(100%, 400px); padding: 10px; border: 1px solid #3a414d; border-radius: 6px; background: #232934; color: #edf3f2; }
+.driving-source-picker select:focus-visible { outline: 2px solid #00e676; outline-offset: 3px; }
+.driving-source-picker p { margin-bottom: 0; }
 .driving-training p { color: var(--lp-muted, #a3adb7); font-size: 13px; line-height: 1.65; margin: 10px 0 18px; }
 .driving-status { display: flex; align-items: center; gap: 10px; padding: 14px 18px; background: rgba(0, 230, 118, .06); border: 1px solid var(--lp-border, #303441); border-radius: 10px; margin-bottom: 20px; font-size: 13px; }
 .driving-status > span { width: 8px; height: 8px; border-radius: 50%; background: #737c8a; flex-shrink: 0; }

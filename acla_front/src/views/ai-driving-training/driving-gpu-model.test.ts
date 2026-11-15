@@ -1,6 +1,6 @@
 import { DrivingGpuModel, GpuPolicyPass } from './driving-gpu-model';
 import { DrivingPolicy } from './driving-policy';
-import { cloneConfig, drivingMemorySlots, drivingObservationInputs } from './driving-model-config';
+import { cloneConfig, drivingCameraLayers, drivingMemorySlots, drivingObservationInputs } from './driving-model-config';
 import { drivingMemoryInputs, drivingMemorySlotInputs } from './driving-memory';
 
 function deferred<T>() {
@@ -55,8 +55,75 @@ async function setup() {
     };
     const allocations = () => [device.createBuffer.mock.calls.length, device.createBindGroup.mock.calls.length];
     const buffers = () => device.createBuffer.mock.results.filter(({ type }) => type === 'return').map(({ value }) => value);
-    return { model, device, input, allocations, buffers, mapping, lost };
+    return { model, device, config, input, allocations, buffers, mapping, lost };
 }
+
+it('reads every convolution map with its real dimensions without running learning or writing model weights', async () => {
+    const { model, device, config, input, buffers } = await setup();
+    const camera = input().cameras[0]!;
+    const weights = buffers();
+    device.queue.writeBuffer.mockClear();
+    device.createComputePipelineAsync.mockClear();
+    const inspection = await model.inspectCamera(camera);
+    expect(inspection.layers.map(({ values, ...shape }) => ({ ...shape, count: values.length }))).toEqual(
+        drivingCameraLayers(config).map(({ width, height, channels }, index) => ({ index, width, height, channels, count: width * height * channels })));
+    expect(device.queue.writeBuffer).toHaveBeenCalledTimes(1);
+    expect(device.queue.writeBuffer.mock.calls[0][2]).toBe(camera.rgb);
+    expect(device.queue.writeBuffer.mock.calls.some(([buffer]) => weights.includes(buffer))).toBe(false);
+    expect(device.createComputePipelineAsync).not.toHaveBeenCalled();
+    const bindings = device.createBindGroup.mock.calls.map(([descriptor]) => descriptor.entries.map((entry: GPUBindGroupEntry) => entry.binding));
+    expect(bindings).toHaveLength(config.network.cameraLayers.length + 2);
+    expect(bindings.slice(0, config.network.cameraLayers.length)).toEqual(config.network.cameraLayers.map(() => [0, 1, 2]));
+});
+
+it('preserves HWC map readback values and separates layers at their exact sizes', async () => {
+    const { model, config, input, mapping, buffers } = await setup();
+    mapping.mockImplementationOnce(async () => {
+        const staging = buffers().find((buffer) => buffer.usage & GPUBufferUsage.MAP_READ)!;
+        staging.getMappedRange.mockReturnValue(Float32Array.from({ length: staging.size / 4 }, (_, i) => i + 0.5).buffer);
+    });
+    const inspection = await model.inspectCamera(input().cameras[0]!);
+    let offset = 0;
+    drivingCameraLayers(config).forEach((layer, index) => {
+        const count = layer.width * layer.height * layer.channels;
+        expect(inspection.layers[index].values[0]).toBe(offset + 0.5);
+        expect(inspection.layers[index].values[count - 1]).toBe(offset + count - 0.5);
+        offset += count;
+    });
+});
+
+it('keeps overlapping inspections exclusive and reuses their resources after readback', async () => {
+    const { model, input, mapping, buffers, device, allocations } = await setup();
+    const firstMap = deferred<void>(), secondMap = deferred<void>();
+    mapping.mockImplementationOnce(() => firstMap.promise).mockImplementationOnce(() => secondMap.promise);
+    device.queue.writeBuffer.mockClear();
+    const first = model.inspectCamera(input().cameras[0]!), second = model.inspectCamera(input().cameras[0]!);
+    const writes = device.queue.writeBuffer.mock.calls;
+    expect(writes[0][0]).not.toBe(writes[1][0]);
+    expect(buffers().filter((buffer) => buffer.usage & GPUBufferUsage.MAP_READ)).toHaveLength(2);
+    secondMap.resolve(); await second;
+    firstMap.resolve(); await first;
+    // Retiring the excess readback drops cached bindings; warm them once again.
+    await model.inspectCamera(input().cameras[0]!);
+    const warmed = allocations();
+    await model.inspectCamera(input().cameras[0]!);
+    expect(allocations()).toEqual(warmed);
+});
+
+it('rejects incompatible images and retires resources after invalid activations', async () => {
+    const { model, input, mapping, buffers } = await setup();
+    const camera = input().cameras[0]!;
+    await expect(model.inspectCamera({ ...camera, width: 1 })).rejects.toThrow(/RGB pixels/);
+    await expect(model.inspectCamera({ ...camera, rgb: new Uint8Array(3) })).rejects.toThrow(/RGB pixels/);
+    mapping.mockImplementationOnce(async () => {
+        const staging = buffers().find((buffer) => buffer.usage & GPUBufferUsage.MAP_READ)!;
+        const values = new Float32Array(staging.size / 4); values[0] = NaN;
+        staging.getMappedRange.mockReturnValue(values.buffer);
+    });
+    await expect(model.inspectCamera(camera)).rejects.toThrow(/invalid camera activations/);
+    model.dispose();
+    expect(buffers().every((buffer) => buffer.destroy.mock.calls.length === 1)).toBe(true);
+});
 
 const targets = [{ step: 0, action: { throttle: 0.7, brake: 0.1, steering: -0.3 }, shifts: { up: true, down: false } }];
 const transition = { reward: 1, elapsedSeconds: 0.2, terminal: false,

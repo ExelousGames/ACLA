@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useOptionalOperationComponentRefDirectory } from 'contexts/OperationComponentRefContext';
 import { getVisualizationComponentName } from 'views/session-shared/visualization/visualization-component-names';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
@@ -15,6 +15,11 @@ import { DrivingImpactMonitor } from './driving-impact-monitor';
 import type { AccControlPreset, ControllerAction, VirtualController } from './virtual-controller';
 import ManualDrivingControls, { ManualDrivingControlsHandle } from './ManualDrivingControls';
 import ObservationInputDelays, { ObservationDelaySnapshot } from './ObservationInputDelays';
+import RecordedFrameViewer, { RecordedDrivingFrame, RecordedFrameViewerHandle } from './RecordedFrameViewer';
+import { findRecordedTelemetry, readRecordedDrivingObservation } from './recorded-driving-session';
+import { loadRecordedDrivingReferences, RecordedDrivingReferences, recordedTrackKey } from './recorded-driving-reference';
+import { RecordedDrivingReplay } from './recorded-driving-replay';
+import { selectLiveMapReference } from 'views/live-session/live-map-reference';
 import './AiDrivingTraining.css';
 
 const TEST_CONTROLS = [
@@ -67,6 +72,17 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const [aggression, setAggression] = useState(configuration.current.aggression);
     const aggressionRef = useRef(aggression);
     const [testAction, setTestAction] = useState<ControllerAction>(NEUTRAL);
+    const [inputSource, setInputSource] = useState<'live' | 'recorded'>('live');
+    const inputSourceRef = useRef(inputSource);
+    const recordedViewer = useRef<RecordedFrameViewerHandle>(null);
+    const recordedFrame = useRef<RecordedDrivingFrame | null>(null);
+    const recordedReferences = useRef<{ sessionId: string; data?: RecordedDrivingReferences; error?: string } | null>(null);
+    const [recordedSession, setRecordedSession] = useState<RecordedDrivingFrame['session'] | null>(null);
+    const [referenceAttempt, setReferenceAttempt] = useState(0);
+    const [viewerBusy, setViewerBusy] = useState(false);
+    const [replaying, setReplaying] = useState(false);
+    const [replayStatus, setReplayStatus] = useState('');
+    const replayAbort = useRef<AbortController | null>(null);
     const running = state.mode !== 'idle';
     const aiActive = state.mode === 'training' || state.mode === 'evaluation';
 
@@ -98,7 +114,27 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         trackDrivingModelSave(destination, task);
         return task;
     };
-    const read = (): ObservationResult & { delays: ObservationDelaySnapshot } => {
+    const readRecorded = (frame: RecordedDrivingFrame | null): ObservationResult => {
+        if (!frame) return { error: 'Choose a recorded video and telemetry JSONL, then select a frame.' };
+        const references = recordedReferences.current;
+        if (!references || references.sessionId !== frame.session.id || !references.data) {
+            return { error: references?.sessionId === frame.session.id && references.error
+                ? references.error : 'Loading matching circuit maps and reference laps for this recording…' };
+        }
+        const row = findRecordedTelemetry(frame.session, frame.videoSeconds, frame.offsetSeconds,
+            configuration.current.runtime.telemetryMaxAgeMs);
+        const sample = row?.sample;
+        const lap = selectLiveMapReference(references.data.laps, frame.session.game, sample?.Static_track,
+            sample?.Static_car_model, sample?.Graphics_track_grip_status);
+        const map = sample?.Static_track
+            ? references.data.maps.get(recordedTrackKey(frame.session.game, sample.Static_track)) ?? null : null;
+        if (row && !lap) return { error: 'No reference lap matches this recording’s game, car and circuit.' };
+        if (row && !map) return { error: 'No saved circuit map matches this recording. Add its centerline in Circuit Maps.' };
+        return readRecordedDrivingObservation(frame.session, frame.videoSeconds, frame.camera, lap,
+            aggressionRef.current, configuration.current, map, frame.offsetSeconds);
+    };
+    const read = (): ObservationResult & { delays?: ObservationDelaySnapshot } => {
+        if (inputSourceRef.current === 'recorded') return readRecorded(recordedFrame.current);
         const vision = directoryRef.current?.findComponentRef<TrackVisionHandle>(getVisualizationComponentName('track-vision'))?.current;
         const map = directoryRef.current?.findComponentRef<LiveTrajectoryMapHandle>(getVisualizationComponentName('live-trajectory-map'))?.current;
         const live = liveTelemetryStore.getSnapshot();
@@ -113,6 +149,23 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             observationMs: performance.now() - started, observationReady: Boolean(result.observation),
             modelTiming: loop.current?.getModelTimingSnapshot() } };
     };
+    const updateRecordedFrame = useCallback((frame: RecordedDrivingFrame | null) => {
+        recordedFrame.current = frame;
+        // Seeking temporarily has no decoded frame; keep the session's references.
+        if (frame) setRecordedSession(frame.session);
+    }, []);
+    useEffect(() => {
+        if (!recordedSession || inputSource !== 'recorded') return;
+        let cancelled = false;
+        recordedReferences.current = { sessionId: recordedSession.id };
+        void loadRecordedDrivingReferences(recordedSession).then((data) => {
+            if (!cancelled) recordedReferences.current = { sessionId: recordedSession.id, data };
+        }).catch((reason) => {
+            if (!cancelled) recordedReferences.current = { sessionId: recordedSession.id,
+                error: `Could not load recorded training references. ${errorMessage(reason)}` };
+        });
+        return () => { cancelled = true; };
+    }, [recordedSession, inputSource, referenceAttempt]);
     const changeAggression = (value: number) => {
         configuration.current.aggression = value;
         aggressionRef.current = value;
@@ -188,8 +241,9 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         };
         const emergencyStop = () => {
             startGeneration.current++;
+            replayAbort.current?.abort();
             releaseTest();
-            void loop.current?.stop('Emergency stop. Controller released.');
+            if (inputSourceRef.current === 'live') void loop.current?.stop('Emergency stop. Controller released.');
         };
         const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') emergencyStop(); };
         const onBlur = () => {
@@ -203,6 +257,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         window.addEventListener('beforeunload', onUnload);
         return () => {
             cancelled = true;
+            replayAbort.current?.abort();
             unsubscribeImpact();
             mounted.current = false;
             // This ref is a cancellation counter, not a DOM node.
@@ -216,7 +271,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             window.removeEventListener('keydown', onKey);
             window.removeEventListener('blur', onBlur);
             window.removeEventListener('beforeunload', onUnload);
-            void loop.current?.stop();
+            if (inputSourceRef.current === 'live') void loop.current?.stop();
             void api?.disconnect().catch(() => undefined);
             const current = policy.current;
             void save().finally(() => current?.dispose());
@@ -262,7 +317,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const start = async (train: boolean) => {
         setError('');
         try {
-            if (!connected || testTimer.current || initializingGpu || fileBusy || !modelPath.current) return;
+            if (inputSourceRef.current !== 'live' || !connected || testTimer.current || initializingGpu || fileBusy || !modelPath.current) return;
             const generation = ++startGeneration.current;
             setInitializingGpu(true);
             if (await saveTask.current === false) throw new Error('Save the model successfully before starting again.');
@@ -286,16 +341,79 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         } catch (reason) { if (mounted.current) setError(errorMessage(reason)); }
         finally { if (mounted.current) setInitializingGpu(false); }
     };
+    const startRecorded = async (train: boolean) => {
+        if (inputSourceRef.current !== 'recorded' || running || replayAbort.current || viewerBusy
+            || initializingGpu || fileBusy || !modelPath.current || !recordedViewer.current) return;
+        const abort = new AbortController();
+        replayAbort.current = abort;
+        const active = () => mounted.current && !abort.signal.aborted;
+        setReplaying(true); setInitializingGpu(true); setError(''); setReplayStatus('Preparing recorded replay…');
+        try {
+            if (await saveTask.current === false) throw new Error('Save the model successfully before starting again.');
+            if (!active()) return;
+            const document = await loadDrivingModel(modelPath.current);
+            if (!active()) return;
+            activateDocument(document);
+            const input = readRecorded(recordedFrame.current);
+            if (!input.observation) throw new Error(input.error);
+            if (!train && !policy.current?.steps) throw new Error('Train a model before evaluation.');
+            if (!policy.current) policy.current = new DrivingPolicy(input.observation.context,
+                input.observation.features.length, Math.random, configuration.current);
+            const current = policy.current;
+            configuration.current = current.configuration;
+            await current.initializeGpu();
+            if (!active()) return;
+            setInitializingGpu(false);
+            const replay = new RecordedDrivingReplay(current, train);
+            let savedAt = current.steps;
+            await recordedViewer.current!.replay(async (frame) => {
+                if (!active()) return;
+                const result = readRecorded(frame);
+                setInputs(result);
+                await replay.consume(result, active);
+                if (!active()) return;
+                const progress = replay.progress;
+                setModelSteps(current.steps);
+                if (train) setSaved(false);
+                setReplayStatus(`${train ? 'Learning from' : 'Evaluating'} recording · ${frame.videoSeconds.toFixed(1)} s · ${progress.samples} samples · ${progress.skipped} skipped`
+                    + (train ? '' : ` · pedal MAE ${progress.pedalError.toFixed(3)} · steering MAE ${progress.steeringError.toFixed(3)}`)
+                    + (progress.lastError ? ` · Last skipped frame: ${progress.lastError}` : ''));
+                if (train && current.steps - savedAt >= configuration.current.runtime.saveEverySteps) {
+                    if (!await save()) throw new Error('Recorded training stopped because the model could not be saved.');
+                    savedAt = current.steps;
+                }
+            }, abort.signal);
+            if (active()) {
+                if (!replay.progress.samples) throw new Error(replay.progress.lastError || 'No consecutive aligned samples were available for replay.');
+                setReplayStatus((status) => `Completed. ${status}`);
+            }
+        } catch (reason) {
+            if (reason instanceof Error && reason.name === 'AbortError') abort.abort();
+            else if (active()) { setError(errorMessage(reason)); setReplayStatus('Recorded replay failed.'); }
+        } finally {
+            if (mounted.current) {
+                if (abort.signal.aborted) setReplayStatus((status) => `Stopped. ${status}`);
+                if (train) await save();
+                if (mounted.current) { setReplaying(false); setInitializingGpu(false); setModelSteps(policy.current?.steps ?? null); }
+            }
+            if (replayAbort.current === abort) replayAbort.current = null;
+        }
+    };
+    const changeInputSource = (source: 'live' | 'recorded') => {
+        if (running || replayAbort.current || viewerBusy || initializingGpu || testTimer.current) return;
+        inputSourceRef.current = source;
+        setInputSource(source); setError(''); setReplayStatus(''); setInputs(read());
+    };
     const changeSource = (source: ControlSource) => {
         setError('');
-        if (!connected || testTimer.current) return;
+        if (inputSourceRef.current !== 'live' || !connected || testTimer.current) return;
         try {
             if (source === 'manual' && loop.current?.state.mode === 'idle') loop.current.startManual();
             else loop.current?.setControlSource(source);
         } catch (reason) { setError(errorMessage(reason)); }
     };
     const chooseModel = async (mode: 'new' | 'open') => {
-        if (running || initializingGpu || fileBusy) return;
+        if (running || replaying || viewerBusy || initializingGpu || fileBusy) return;
         setFileBusy(true); setError('');
         try {
             await saveTask.current;
@@ -364,12 +482,25 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     return <section className="driving-training" aria-label="AI Self-Driving Training">
         <header className="driving-training-header">
             <div><span className="driving-eyebrow">SIMULATOR LAB</span><h1>AI Self-Driving Training</h1>
-                <p>Two drivers. One virtual wheel. Choose who controls the car.</p></div>
+                <p>{inputSource === 'live' ? 'Two drivers. One virtual wheel. Choose who controls the car.'
+                    : 'Learn from recorded driving and inspect what the camera model responds to.'}</p></div>
             <button onClick={onOpenLiveSession}>Open Live Session</button>
         </header>
-        <div className="driving-status" role="status"><span data-active={running} />{state.status}</div>
+        <section className="driving-card driving-source-picker" aria-label="Observation input source">
+            <label htmlFor="driving-input-source">AI observation input source</label>
+            <select id="driving-input-source" value={inputSource}
+                disabled={running || replaying || viewerBusy || initializingGpu || connecting || disconnecting || Boolean(testTimer.current)}
+                onChange={(event) => changeInputSource(event.target.value as 'live' | 'recorded')}>
+                <option value="live">Live Session</option>
+                <option value="recorded">Recorded session from local folder</option>
+            </select>
+            <p>{inputSource === 'live' ? 'Use live telemetry and Track Vision camera frames.'
+                : 'Choose the recorded video and telemetry JSONL. Replay trains from demonstrations or evaluates a fixed model without driving the simulator.'}</p>
+        </section>
+        <div className="driving-status" role="status"><span data-active={running || replaying} />{inputSource === 'live'
+            ? state.status : replayStatus || 'Choose a recording to review camera frames or prepare recorded training.'}</div>
         {error && <p className="driving-error" role="alert">{error}</p>}
-        <section className="driving-routing" aria-label="Shared control system">
+        {inputSource === 'live' && <section className="driving-routing" aria-label="Shared control system">
             <div className="driving-route-source" data-active={state.source === 'manual'}>
                 <span className="driving-eyebrow">HUMAN INPUT</span><strong>Human takeover</strong>
                 <span>Wheel, pedals or gamepad</span>
@@ -388,21 +519,26 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 <span>{aiActive ? state.mode === 'training' ? 'Training enabled' : 'Evaluation · learning off' : 'Not started'}</span>
             </div>
             <p>One driver owns steering, pedals and shifts at a time. Human takeover stays active until you explicitly return control to AI. Stop releases every input.</p>
-        </section>
+        </section>}
         <div className="driving-grid">
-            <ManualDrivingControls ref={manualControls} connected={connected} running={running} source={state.source}
-                testing={Boolean(testMode.current)} aiActive={aiActive} aiReady={Boolean(observation && !mismatched)} onSourceChange={changeSource} />
+            {inputSource === 'recorded' && <RecordedFrameViewer ref={recordedViewer} configuration={config}
+                policy={policy.current} disabled={replaying || initializingGpu || fileBusy}
+                onFrame={updateRecordedFrame} onBusyChange={setViewerBusy} />}
+            {inputSource === 'live' && <ManualDrivingControls ref={manualControls} connected={connected} running={running} source={state.source}
+                testing={Boolean(testMode.current)} aiActive={aiActive} aiReady={Boolean(observation && !mismatched)} onSourceChange={changeSource} />}
             <section className="driving-card driving-ai-input" aria-label="AI driver">
-                <div className="driving-card-title"><h2>AI driver</h2><span>{aiActive ? state.source === 'ai' ? 'Driving' : 'Human has control' : 'Not started'}</span></div>
-                <p>Start AI training or evaluation when live inputs are ready. If you are already driving, you keep control until Return to AI.</p>
+                <div className="driving-card-title"><h2>AI driver</h2><span>{inputSource === 'recorded' ? replaying ? 'Recorded replay' : 'Offline'
+                    : aiActive ? state.source === 'ai' ? 'Driving' : 'Human has control' : 'Not started'}</span></div>
+                <p>{inputSource === 'live' ? 'Start AI training or evaluation when live inputs are ready. If you are already driving, you keep control until Return to AI.'
+                    : 'Recorded training learns held pedal and steering values plus single gear changes from aligned telemetry. Evaluation compares the fixed model with recorded controls. Gaps reset observation history.'}</p>
                 <p>CNN–LSTM actor–critic · {config.network.hiddenUnits} recurrent units · continuous throttle/brake and steering, plus learned hold gear, shift up and shift down. Throttle/brake ranges from −1 (full brake) through 0 (both released) to 1 (full throttle).</p>
                 <p>{config.memory.windowMs / 1000}-second observation history covers {fullObservationHistory ? 'all AI observation inputs' : 'the observation inputs selected in this saved model'} during training and evaluation, sampled in {config.memory.intervalMs} ms bins. Memory starts fresh after stopping, changing drivers or interrupted inputs.</p>
-                <p>AI training collects {config.learning.sequenceSeconds} seconds of driving before updating the model. Each decision learns from its immediate reward and discounted later consequences. Adjust learning.sequenceSeconds in the model JSON to experiment with the collection duration.</p>
+                {inputSource === 'live' && <p>AI training collects {config.learning.sequenceSeconds} seconds of driving before updating the model. Each decision learns from its immediate reward and discounted later consequences. Adjust learning.sequenceSeconds in the model JSON to experiment with the collection duration.</p>}
                 <p>One action plan predicts {config.actions.planTimesSeconds.length} control steps from 0 to {planEnd} seconds. The AI smoothly blends steering and throttle/brake between steps while computing; gear shifts occur at their scheduled steps. A new output replaces the whole plan as soon as it is ready. Reward trains the steps contributing to each control command; human driving teaches future steps from demonstrated actions.</p>
-                <p>AI steering limits tighten with live speed: full range at rest, 50% at 100 km/h and 20% at 200 km/h. The plan shows requested steering; the current controls show the applied steering.</p>
+                {inputSource === 'live' && <p>AI steering limits tighten with live speed: full range at rest, 50% at 100 km/h and 20% at 200 km/h. The plan shows requested steering; the current controls show the applied steering.</p>}
                 <p className="driving-note">Each model JSON contains its inputs, memory, network, training settings and weights. Training and evaluation load that JSON each time they start.</p>
-                <p className="driving-note">Use the same model across games, cars and maps. After switching, stop and restart training or evaluation with fresh live inputs and a matching Live Map reference lap. Learned weights are preserved.</p>
-                <table className="driving-pedals" aria-label="Planned driving actions">
+                {inputSource === 'live' && <p className="driving-note">Use the same model across games, cars and maps. After switching, stop and restart training or evaluation with fresh live inputs and a matching Live Map reference lap. Learned weights are preserved.</p>}
+                {inputSource === 'live' && <table className="driving-pedals" aria-label="Planned driving actions">
                     <caption>Action plan · 0–{planEnd} seconds</caption>
                     <thead><tr><th scope="col">Time</th><th scope="col">Throttle / brake</th><th scope="col">Steering</th><th scope="col">Shift</th></tr></thead>
                     <tbody>{state.plan ? state.plan.map(({ timeSeconds, action }) => <tr key={timeSeconds}>
@@ -410,29 +546,38 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                         <td>{(action.throttle - action.brake).toFixed(3)}</td>
                         <td>{action.steering.toFixed(3)}</td><td>{action.shiftUp ? 'Up' : action.shiftDown ? 'Down' : 'Hold'}</td>
                     </tr>) : <tr><td colSpan={4}>Waiting for AI control and fresh inputs.</td></tr>}</tbody>
-                </table>
-                <p className="driving-note">Disable automatic gears in the simulator and bind both shift buttons before training. The model learns gear choices from driving rewards. Human and AI shifts have no cooldown. Shifts use {config.actions.shiftPulseMs / 1000}-second presses; a new shift releases the previous press immediately. Downshifts are allowed in every gear, including neutral and reverse.</p>
+                </table>}
+                {inputSource === 'live' && <p className="driving-note">Disable automatic gears in the simulator and bind both shift buttons before training. The model learns gear choices from driving rewards. Human and AI shifts have no cooldown. Shifts use {config.actions.shiftPulseMs / 1000}-second presses; a new shift releases the previous press immediately. Downshifts are allowed in every gear, including neutral and reverse.</p>}
                 <div className="driving-metrics"><div><strong>{modelSteps ?? 0}</strong><span>Learning steps</span></div>
-                    <div><strong>{state.episodeReward.toFixed(2)}</strong><span>Episode reward</span></div></div>
+                    {inputSource === 'live' && <div><strong>{state.episodeReward.toFixed(2)}</strong><span>Episode reward</span></div>}</div>
                 {mismatched && <div className="driving-error" role="alert">
                     <p>The saved model’s input configuration does not match the live inputs.</p>
                     <ul>{inputMismatches.map((difference) => <li key={difference}>{difference}</li>)}</ul>
                     <p>Use matching live inputs, open a matching model file, or create a new model.</p>
                 </div>}
                 <div className="driving-buttons">
-                    <button className="driving-primary" disabled={!filePath || fileBusy || !connected || !observation || aiActive || initializingGpu || Boolean(mismatched) || Boolean(testTimer.current)} onClick={() => { void start(true); }}>Start training</button>
-                    <button disabled={!filePath || fileBusy || !connected || !observation || aiActive || initializingGpu || !modelSteps || Boolean(mismatched) || Boolean(testTimer.current)} onClick={() => { void start(false); }}>Run trained model</button>
+                    {inputSource === 'live' ? <>
+                        <button className="driving-primary" disabled={!filePath || fileBusy || !connected || !observation || aiActive || initializingGpu || Boolean(mismatched) || Boolean(testTimer.current)} onClick={() => { void start(true); }}>Start training</button>
+                        <button disabled={!filePath || fileBusy || !connected || !observation || aiActive || initializingGpu || !modelSteps || Boolean(mismatched) || Boolean(testTimer.current)} onClick={() => { void start(false); }}>Run trained model</button>
+                    </> : <>
+                        <button className="driving-primary" disabled={!filePath || fileBusy || !observation || replaying || viewerBusy || initializingGpu || mismatched}
+                            onClick={() => { void startRecorded(true); }}>Train from recording</button>
+                        <button disabled={!filePath || fileBusy || !observation || replaying || viewerBusy || initializingGpu || !modelSteps || mismatched}
+                            onClick={() => { void startRecorded(false); }}>Evaluate recording</button>
+                        <button className="driving-stop" disabled={!replaying} onClick={() => replayAbort.current?.abort()}>Stop replay</button>
+                    </>}
                 </div>
                 <p className="driving-model-path"><strong>Model file</strong><br />{filePath || 'Choose New model to select a save location, or Open model to continue training a saved file.'}</p>
                 <div className="driving-buttons">
-                    <button disabled={running || initializingGpu || fileBusy} onClick={() => { void chooseModel('new'); }}>New model</button>
-                    <button disabled={running || initializingGpu || fileBusy} onClick={() => { void chooseModel('open'); }}>Open model</button>
-                    <button disabled={!filePath || fileBusy || initializingGpu || saving || !documentReady.current} onClick={() => { setError(''); void save(); }}>Save model</button>
+                    <button disabled={running || replaying || viewerBusy || initializingGpu || fileBusy} onClick={() => { void chooseModel('new'); }}>New model</button>
+                    <button disabled={running || replaying || viewerBusy || initializingGpu || fileBusy} onClick={() => { void chooseModel('open'); }}>Open model</button>
+                    <button disabled={!filePath || fileBusy || replaying || viewerBusy || initializingGpu || saving || !documentReady.current} onClick={() => { setError(''); void save(); }}>Save model</button>
                 </div>
                 <p className="driving-note" role="status">{saving ? 'Saving model…' : saved ? 'Model saved to file.' : 'Model not saved.'} The complete model saves to the selected file every {config.runtime.saveEverySteps} learning steps and when stopped.</p>
-                <p className="driving-note">Training explores controls; use a practice session and reposition the car between episodes. A new policy starts untrained.</p>
+                {inputSource === 'live' ? <p className="driving-note">Training explores controls; use a practice session and reposition the car between episodes. A new policy starts untrained.</p>
+                    : <p className="driving-note">Replay samples every {Math.max(100, config.runtime.controlIntervalMs)} ms of video. Pedal and steering MAE measure absolute error in normalized controls; they do not measure image recognition accuracy. A new policy starts untrained.</p>}
             </section>
-            <section className="driving-card driving-shared-output" aria-label="Shared vJoy output">
+            {inputSource === 'live' && <section className="driving-card driving-shared-output" aria-label="Shared vJoy output">
                 <div className="driving-card-title"><h2>Steering wheel (vJoy)</h2><span>{connected ? 'Connected' : 'Disconnected'}</span></div>
                 <p>Shared output for human and AI driving. Steering, pedals and shifts use one set of simulator bindings.</p>
                 <div className="driving-output-options">
@@ -490,21 +635,24 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 <p className="driving-note">Use timed tests in the simulator’s controls setup: switch windows during the 5-second countdown. Axes stay active for 10 seconds; shift buttons press once for 0.3 seconds, then release. Pedal tests use the full range. For iRacing steering calibration, test full left, full right, then center; use 20% left for its 90° step with a 900° range.</p>
                 {testStatus && <p role="status">{testStatus}</p>}
                 <p className="driving-note">Connected means the virtual device is ready; verify the simulator’s input meters before driving. Stop or Escape in this app cancels tests. AI driving neutralizes controls and retries delayed or invalid inputs, then resumes automatically; human driving continues while learning pauses.</p>
-            </section>
+            </section>}
             <section className="driving-card driving-live-inputs" aria-label="AI observation inputs">
                 <h2>AI observation inputs</h2>
-                <p>Start live telemetry, load a circuit map with a centerline in Live Map, add Track Vision, then start screen capture in Live Session.</p>
+                <p>{inputSource === 'live' ? 'Start live telemetry, load a circuit map with a centerline in Live Map, add Track Vision, then start screen capture in Live Session.'
+                    : 'Video frames pair with the most recent telemetry sample at or before their timestamp. Training uses saved reference laps and circuit maps matching the recording.'}</p>
+                {inputSource === 'recorded' && <button disabled={!recordedSession || replaying || viewerBusy || initializingGpu}
+                    onClick={() => setReferenceAttempt((attempt) => attempt + 1)}>Reload recorded references</button>}
                 <div className="driving-input-status" data-ready={Boolean(observation)}>{observation ? 'All model inputs ready' : inputs.error}</div>
                 <div className="driving-aggression">
                     <div><label htmlFor="driving-aggression">Driving aggression</label><output htmlFor="driving-aggression">{aggression}</output></div>
-                    <input id="driving-aggression" type="range" min="0" max="100" step="1" value={aggression} disabled={fileBusy || initializingGpu}
+                    <input id="driving-aggression" type="range" min="0" max="100" step="1" value={aggression} disabled={fileBusy || initializingGpu || replaying || viewerBusy}
                         aria-describedby="driving-aggression-meaning" onChange={(event) => changeAggression(Number(event.target.value))} />
                     <div className="driving-aggression-scale"><span>0 · Cautious</span><span>50 · Reference</span><span>100 · Aggressive</span></div>
                     <p id="driving-aggression-meaning">{aggression < 50
                         ? `Uses the same speed targets as Live Phrases at ${100 - 2 * aggression}% braking adjustment. 0 matches Live Phrases 100%; 50 follows the recorded reference.`
                         : aggression > 50 ? `Raises reference speed by ${aggression - 50}%. 50 follows the recorded reference; 100 targets 50% higher speed.`
                             : 'Reference uses the recorded speed targets (Live Phrases 0% braking adjustment).'}</p>
-                    <button disabled={fileBusy || initializingGpu} onClick={() => changeAggression(50)}>Reset to reference</button>
+                    <button disabled={fileBusy || initializingGpu || replaying || viewerBusy} onClick={() => changeAggression(50)}>Reset to reference</button>
                 </div>
                 <dl className="driving-details">
                     <dt>Game / car</dt><dd>{observation ? `${observation.context.game} / ${observation.context.car}` : 'Waiting'}</dd>
@@ -523,7 +671,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 </dl>
                 <p className="driving-note">The policy uses car-local velocity XYZ, g-force XYZ, yaw rate, speed, current gear, engine RPM, game, car, map, normalized position, current controls, camera pixels, relative centerline XYZ, aggression, reference speed and target speed. Centerline input covers 50 map steps behind and 50 ahead, relative to the centerline at the current lap position, wrapping at start/finish. Speed targets follow the Live Phrases calculation up to aggression 50, then increase reference speed linearly up to 50% at aggression 100. The policy generates the pedal commands. Aggression applies during training and evaluation; further training teaches its response. Evaluation does not update weights. Models saved with a different observation input set or aggression calculation need to be trained again.</p>
             </section>
-            <section className="driving-card">
+            {inputSource === 'live' && <section className="driving-card">
                 <h2>Reward signal</h2>
                 <dl className="driving-rewards">
                     <div><dt>Acceleration / deceleration</dt><dd>{state.reward?.timing.toFixed(3) ?? '0.000'}</dd>
@@ -547,9 +695,9 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                             : `${state.reward.impactEstimate.detected ? 'Possible impact' : 'No impact detected'} · Confidence ${(state.reward.impactEstimate.confidence * 100).toFixed(0)}% · Estimated severity ${(state.reward.impactEstimate.severity * 100).toFixed(0)}/100 · Excess Δv ${state.reward.impactEstimate.deltaV.toFixed(2)} m/s`}</p>
                     </div>
                 </dl>
-            </section>
-            <ObservationInputDelays snapshot={inputs.delays} telemetryMaxAgeMs={config.runtime.telemetryMaxAgeMs}
-                visionMaxAgeMs={config.runtime.visionMaxAgeMs} />
+            </section>}
+            {inputSource === 'live' && <ObservationInputDelays snapshot={inputs.delays} telemetryMaxAgeMs={config.runtime.telemetryMaxAgeMs}
+                visionMaxAgeMs={config.runtime.visionMaxAgeMs} />}
         </div>
     </section>;
 }

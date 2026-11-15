@@ -85,6 +85,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
     }, [analysisContext.sessionGame, recorderHostId]);
 
     const uploadInFlightRef = useRef(false);
+    const uploadCompletedRef = useRef(false);
     const hasRecordedData = Boolean(analysisContext.recordingFileKey)
         && (
             recordedSampleCount > 0
@@ -174,20 +175,16 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         };
     }, [stopRecordingProcess]);
 
-    const cleanupTelemetryFile = useCallback(async (filePath: string) => {
-        try {
-            if (window.electronAPI?.deleteTempFile) {
-                const result = await window.electronAPI.deleteTempFile(filePath);
-                return result.success;
-            }
-            return false;
-        } catch {
-            return false;
-        }
+    const cleanupRecordingFiles = useCallback(async (filePath: string) => {
+        const videos = await window.sessionVideo?.list(filePath) ?? [];
+        for (const clip of videos) await window.sessionVideo!.delete(clip.filePath);
+        const result = await window.electronAPI?.deleteTempFile?.(filePath);
+        if (!result?.success) throw new Error(result?.error || 'Could not delete the local telemetry file.');
     }, []);
 
     const resetRecorderUi = useCallback(() => {
         uploadInFlightRef.current = false;
+        uploadCompletedRef.current = false;
         setDataStructureOpen(false);
         setUploadProgress(0); setUploadStatus(''); setUploadError(null); setShowRetryButton(false); setUploadDialogOpen(false); setIsUploading(false);
         startInFlightRef.current = false;
@@ -220,44 +217,49 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         if (!initialContext.recordingMetadata?.sessionName || !initialContext.recordingMetadata?.mapName || !initialContext.sessionGame || !auth?.userEmail) { setUploadError('Missing required session or user information'); setShowRetryButton(false); return false; }
         uploadInFlightRef.current = true; setIsUploading(true); setUploadProgress(0); setUploadStatus('Preparing telemetry data...'); setUploadError(null); setShowRetryButton(false);
         try {
-            try {
-                await stopVideo().catch((error) => { if (includeVideo) throw error; });
-            } finally {
-                if (initialContext.recordingState === RecordingState.RECORDING) {
-                    await initialContext.stopRecordingSession('manual');
+            if (!uploadCompletedRef.current) {
+                try {
+                    await stopVideo().catch((error) => { if (includeVideo) throw error; });
+                } finally {
+                    if (initialContext.recordingState === RecordingState.RECORDING) {
+                        await initialContext.stopRecordingSession('manual');
+                    }
                 }
+                const uploadContext = analysisContextRef.current;
+                const videos = includeVideo ? await refreshVideos() : [];
+                const metadata: UploadReacingSessionInitDto = {
+                    sessionName: uploadContext.recordingMetadata!.sessionName,
+                    mapName: uploadContext.recordingMetadata!.mapName,
+                    carName: uploadContext.recordingMetadata!.carName,
+                    userId: auth?.userProfile.id || 'unknown',
+                    game_recorded_from: uploadContext.recordingMetadata!.gameRecordedFrom,
+                };
+                await uploadRecording({
+                    metadata,
+                    filePath: uploadContext.recordingFileKey!,
+                    stream: uploadContext.streamRecordedTelemetry,
+                    videos,
+                    onProgress: (progress, status) => { setUploadProgress(progress); setUploadStatus(status); },
+                });
+                uploadCompletedRef.current = true;
             }
             const uploadContext = analysisContextRef.current;
-            const videos = includeVideo ? await refreshVideos() : [];
-            const metadata: UploadReacingSessionInitDto = {
-                sessionName: uploadContext.recordingMetadata!.sessionName,
-                mapName: uploadContext.recordingMetadata!.mapName,
-                carName: uploadContext.recordingMetadata!.carName,
-                userId: auth?.userProfile.id || 'unknown',
-                game_recorded_from: uploadContext.recordingMetadata!.gameRecordedFrom,
-            };
-            await uploadRecording({
-                metadata,
-                filePath: uploadContext.recordingFileKey!,
-                stream: uploadContext.streamRecordedTelemetry,
-                videos,
-                onProgress: (progress, status) => { setUploadProgress(progress); setUploadStatus(status); },
-            });
+            setUploadStatus('Removing local recording files...');
+            if (uploadContext.recordingFileKey) await cleanupRecordingFiles(uploadContext.recordingFileKey);
             setUploadProgress(100); setUploadStatus('Upload completed successfully!');
-            if (uploadContext.recordingFileKey) await cleanupTelemetryFile(uploadContext.recordingFileKey);
             uploadContext.clearPersistedDraft?.();
             setTimeout(() => { setIsUploading(false); setTimeout(() => returnToDetectionGate(), POST_SUCCESS_DIALOG_CLOSE_MS); }, POST_UPLOAD_RESET_DELAY_MS);
             uploadInFlightRef.current = false;
             return true;
         } catch (e: any) {
             const errorMessage = e?.message || (e instanceof Error ? e.message : 'Upload failed');
-            setUploadError(errorMessage);
+            setUploadError(uploadCompletedRef.current ? `Upload succeeded, but local cleanup failed: ${errorMessage}` : errorMessage);
             setIsUploading(false);
             setShowRetryButton(true);
             uploadInFlightRef.current = false;
             return false;
         }
-    }, [auth, cleanupTelemetryFile, returnToDetectionGate, stopVideo, refreshVideos, includeVideo]);
+    }, [auth, cleanupRecordingFiles, returnToDetectionGate, stopVideo, refreshVideos, includeVideo]);
 
     const handleDiscardSession = useCallback(async () => {
         if (uploadInFlightRef.current) return;
@@ -272,17 +274,15 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         }
         if (fileKey) {
             try {
-                const videos = await window.sessionVideo?.list(fileKey) ?? [];
-                for (const clip of videos) await window.sessionVideo!.delete(clip.filePath);
+                await cleanupRecordingFiles(fileKey);
             } catch (error) {
                 setUploadError(error instanceof Error ? error.message : String(error));
                 return;
             }
-            await cleanupTelemetryFile(fileKey);
         }
         discardContext.clearPersistedDraft?.();
         returnToDetectionGate();
-    }, [cleanupTelemetryFile, returnToDetectionGate, stopRecordingProcess, stopVideo]);
+    }, [cleanupRecordingFiles, returnToDetectionGate, stopRecordingProcess, stopVideo]);
     const handleRetryUpload = useCallback(() => { setUploadError(null); setShowRetryButton(false); setUploadProgress(0); handleUpload(); }, [handleUpload]);
 
     const openUploadDialog = useCallback(() => {
@@ -349,7 +349,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                             </>
                         )}
                         {uploadError && <Text size="2" color="red" mt="2">{uploadError}</Text>}
-                        {showRetryButton && !isUploading && <Flex mt="2" gap="2"><Button size="1" variant="outline" onClick={handleRetryUpload}>Retry Upload</Button></Flex>}
+                        {showRetryButton && !isUploading && <Flex mt="2" gap="2"><Button size="1" variant="outline" onClick={handleRetryUpload}>{uploadCompletedRef.current ? 'Retry Cleanup' : 'Retry Upload'}</Button></Flex>}
                     </Box>
                 )}
                 <Card size="4">
@@ -376,9 +376,10 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                     </label>
                     <Text as="p" size="2" color="gray">
                         {video.saving ? 'The video will be saved before uploading.' : video.clips.length
-                            ? `Local video, ${(video.clips[0].size / 1048576).toFixed(1)} MB. The local video is kept after upload.`
+                            ? `Local video, ${(video.clips[0].size / 1048576).toFixed(1)} MB.`
                             : 'No video recorded. Share your game screen before starting a new session recording to include video.'}
                     </Text>
+                    <Text as="p" size="2" color="gray">Local telemetry and video are deleted after upload or discard, even if video is excluded.</Text>
                     {video.error && <Text as="p" size="2" color="red" role="alert">{video.error} Uncheck “Include recorded video” to upload telemetry only.</Text>}
                 </Box>
                 <details className="data-structure" open={dataStructureOpen} onToggle={(event) => setDataStructureOpen(event.currentTarget.open)}>
@@ -401,7 +402,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                         <>
                             <Button variant="outline" color="gray" onClick={closeUploadDialog}>Keep Session</Button>
                             <Button variant="outline" color="red" onClick={() => { void handleDiscardSession(); }}>Discard Session</Button>
-                            <Button onClick={() => { void handleUpload(); }} disabled={isUploading || !hasRecordedData}>Upload Session</Button>
+                            <Button onClick={() => { void handleUpload(); }} disabled={isUploading || !hasRecordedData || uploadCompletedRef.current}>Upload Session</Button>
                         </>
                     )}
                     {isUploading && uploadProgress < 100 && (<Button variant="outline" disabled><Spinner size="1" />Uploading...</Button>)}

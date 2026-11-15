@@ -163,8 +163,8 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     // Half strength at 0.01 lap/second; faster progress approaches 0.25 * progressWeight per lap.
     // Weight by signed distance so extra samples do not earn extra reward at the same rate.
     const signedProgress = positionChange < 0 ? clamp(positionChange, -r.progressLimit, 0) : forwardProgress;
-    // No movement incurs a time-based penalty: -0.25 per second with default weights.
-    const progress = current.speed === 0 || positionChange === 0
+    // Both speed and position must show no movement for the time-based stationary penalty.
+    const progress = current.speed === 0 && positionChange === 0
         ? -0.25 * r.progressWeight * 0.01 * measuredSeconds
         : 0.25 * r.progressWeight * signedProgress * progressPerSecond / (progressPerSecond + 0.01);
     // Keep both ends of the speed profile on the settings that produced the action.

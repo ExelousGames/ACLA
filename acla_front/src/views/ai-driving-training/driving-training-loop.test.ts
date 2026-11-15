@@ -927,7 +927,7 @@ it.each([true, false])('learns and reports reward without a yaw reversal penalty
         jest.advanceTimersByTime(200); await flush();
         const reward = run.loop.state.reward!;
         expect(reward).not.toHaveProperty('instability');
-        expect(reward.total).toBeCloseTo(-0.05); // Only the unchanged-position penalty applies.
+        expect(reward.total).toBe(0); // Nonzero speed prevents a stationary penalty for unchanged position.
         expect(reward.total).toBeCloseTo(reward.timing + reward.progress);
     }
     const reward = run.loop.state.reward!;
@@ -1529,7 +1529,8 @@ it.each([true, false].flatMap((train) => [0.248, 0.25].map((normalizedPosition) 
     const run = setup();
     const learn = jest.spyOn(run.policy, 'learnAsync');
     run.loop.start(run.policy, train); await flush();
-    run.input({ observation: { ...run.fixture.observation, capturedAt: 1200, normalizedPosition } }, 1200);
+    run.input({ observation: { ...run.fixture.observation, capturedAt: 1200, normalizedPosition,
+        speed: normalizedPosition === 0.25 ? 0 : run.fixture.observation.speed } }, 1200);
     jest.advanceTimersByTime(200); await flush();
     const reward = run.loop.state.reward!;
     expect(reward.progress).toBeLessThan(0);

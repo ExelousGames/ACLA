@@ -375,8 +375,9 @@ The normalized-position progress reward uses the signed lap-position change, cor
 for start/finish crossings, divided by elapsed telemetry seconds. With
 `rate = abs(positionChange / telemetrySeconds)`, it adds
 `0.25 × progressWeight × cappedSignedProgress × rate / (rate + 0.01)`.
-Faster forward progress earns more and negative progress incurs a penalty. Zero speed
-or unchanged normalized position instead incurs `-0.25 × progressWeight × 0.01 × telemetrySeconds`,
+Faster forward progress earns more and negative progress incurs a penalty. Only when
+speed is zero and normalized position is unchanged does the stationary penalty apply:
+`-0.25 × progressWeight × 0.01 × telemetrySeconds`,
 or -0.25 reward per second with default weights. This stationary penalty scales with
 elapsed telemetry time so its accumulated value is independent of sampling frequency.
 Positive rewards also require nonzero speed and a non-reverse

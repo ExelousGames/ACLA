@@ -3,6 +3,8 @@ import { DrivingPolicyInput } from './driving-memory';
 import { cloneConfig, DEFAULT_DRIVING_CONFIG, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingFeatureEncoding, drivingObservationInputs, drivingPolicyInputs, upgradeDrivingConfig, validateDrivingConfig } from './driving-model-config';
 import { DrivingGpuModel, GpuPolicyPass } from './driving-gpu-model';
 import { DrivingRolloutInterval, drivingSequenceTargets } from './driving-rollout';
+import type { PolicyCameraImage } from 'views/live-session/track-vision/policy-camera';
+import type { DrivingCameraInspection } from './driving-camera-inspection';
 
 /** Categorical order: hold gear, shift up, shift down. */
 export type ShiftChoice = 0 | 1 | 2;
@@ -151,6 +153,12 @@ export class DrivingPolicy {
             outputs.slice(step * this.actionOutputs, (step + 1) * this.actionOutputs), timeSeconds,
             explore, step === 0 ? shifts : { up: true, down: true }));
         return { input, gpu: pass, value: outputs[this.criticOutput], plan };
+    }
+
+    async inspectCameraAsync(image: PolicyCameraImage): Promise<DrivingCameraInspection> {
+        await this.initializeGpu();
+        await this.gpuBatch;
+        return this.requireGpu().inspectCamera(image);
     }
 
     private requireGpu(): DrivingGpuModel {
