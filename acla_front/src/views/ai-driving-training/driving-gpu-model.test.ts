@@ -72,7 +72,7 @@ it('reads every convolution map with its real dimensions without running learnin
     expect(device.queue.writeBuffer.mock.calls.some(([buffer]) => weights.includes(buffer))).toBe(false);
     expect(device.createComputePipelineAsync).not.toHaveBeenCalled();
     const bindings = device.createBindGroup.mock.calls.map(([descriptor]) => descriptor.entries.map((entry: GPUBindGroupEntry) => entry.binding));
-    expect(bindings).toHaveLength(config.network.cameraLayers.length + 2);
+    expect(bindings).toHaveLength(config.network.cameraLayers.length + 3);
     expect(bindings.slice(0, config.network.cameraLayers.length)).toEqual(config.network.cameraLayers.map(() => [0, 1, 2]));
 });
 
@@ -154,7 +154,7 @@ it('accumulates repeated interpolation credits while keeping categorical weight 
     const data = device.queue.writeBuffer.mock.calls[0][2] as Float32Array;
     expect(Array.from(data.slice(10, 17))).toEqual(Array.from(new Float32Array([1, 0.3, -0.4, 1, 1, 1, 0.5])));
     model.learnTransition(pass, input(), { ...transition, terminal: true, actions: [analog] });
-    const next = device.queue.writeBuffer.mock.calls[1][2] as Float32Array;
+    const next = device.queue.writeBuffer.mock.calls.filter(([, , values]) => values instanceof Float32Array)[1][2] as Float32Array;
     expect(Array.from(next.slice(10, 17))).toEqual(Array.from(new Float32Array([0.25, 0.3, -0.4, 0, 0, 0, 0])));
     model.release(pass);
 });

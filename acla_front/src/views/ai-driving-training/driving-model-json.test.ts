@@ -26,6 +26,83 @@ it('keeps a widescreen spatial grid and projects it to 256 visual LSTM inputs', 
     expect(saved.model.cameraProjectionWeights.every((row) => row.length === 2049)).toBe(true);
 });
 
+it('starts fresh normalization parameters and round-trips their learned values', async () => {
+    const config = cloneConfig();
+    config.network.hiddenUnits = 3;
+    config.network.cameraProjectionUnits = 4;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    const { observation } = trainingFixture();
+    const policy = new DrivingPolicy(observation.context, observation.features.length, () => 0.6, config);
+    const initial = policy.checkpoint();
+    expect(initial.configuration.network).toMatchObject({ cameraLayerNorm: true, lstmLayerNorm: true, layerNormEpsilon: 0.00001 });
+    expect(initial.model.cameraNormWeights).toEqual([[1, 1, 1, 1], [0, 0, 0, 0]]);
+    expect(initial.model.lstmNormWeights).toEqual([Array(12).fill(1), [0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0]]);
+    expect(initial.model.lstmWeights.every((row) => row[row.length - 1] === 0)).toBe(true);
+    initial.model.cameraNormWeights![0][0] = 1.2;
+    initial.model.lstmNormWeights![1][0] = -0.1;
+    expect(policy.checkpoint().model.cameraNormWeights![0][0]).toBe(1);
+    const restored = DrivingPolicy.restore(initial);
+    expect(restored.checkpoint()).toEqual(initial);
+    await restored.initializeGpu();
+    expect(await restored.checkpointAsync()).toEqual(initial);
+    restored.dispose();
+});
+
+it('keeps legacy checkpoints unnormalized and leaves the source baseline untouched', () => {
+    const config = cloneConfig();
+    config.network.cameraLayerNorm = false;
+    config.network.lstmLayerNorm = false;
+    config.network.hiddenUnits = 3;
+    config.network.cameraProjectionUnits = 4;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    const { observation } = trainingFixture();
+    const legacy: any = new DrivingPolicy(observation.context, observation.features.length, () => 0.6, config).checkpoint();
+    delete legacy.configuration.network.cameraLayerNorm;
+    delete legacy.configuration.network.lstmLayerNorm;
+    delete legacy.configuration.network.layerNormEpsilon;
+    delete legacy.configuration.learning.gradientNormLimit;
+    const before = JSON.stringify(legacy);
+    const restored = readTrainingDocument(legacy);
+    expect(restored.configuration.network).toMatchObject({ cameraLayerNorm: false, lstmLayerNorm: false });
+    expect(restored.configuration.learning.gradientNormLimit).toBe(1);
+    expect(restored.model).toEqual(legacy.model);
+    expect(restored.model).not.toHaveProperty('cameraNormWeights');
+    expect(restored.model).not.toHaveProperty('lstmNormWeights');
+    expect(JSON.stringify(legacy)).toBe(before);
+    expect(readTrainingDocument(restored)).toEqual(restored);
+});
+
+it.each([
+    (c: any) => { delete c.model.cameraNormWeights; },
+    (c: any) => { delete c.model.lstmNormWeights; },
+    (c: any) => { c.model.cameraNormWeights[0].pop(); },
+    (c: any) => { c.model.lstmNormWeights[1][0] = NaN; },
+    (c: any) => { c.configuration.network.cameraLayerNorm = false; },
+    (c: any) => { c.configuration.network.lstmLayerNorm = false; },
+])('rejects checkpoint normalization parameters inconsistent with its computation %#', (change) => {
+    const config = cloneConfig();
+    config.network.hiddenUnits = 3;
+    config.network.cameraProjectionUnits = 4;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    const { observation } = trainingFixture();
+    const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
+    change(checkpoint);
+    expect(() => DrivingPolicy.restore(checkpoint)).toThrow(/checkpoint/);
+});
+
+it.each([
+    (c: any) => { c.network.cameraLayerNorm = 'true'; },
+    (c: any) => { delete c.network.lstmLayerNorm; },
+    (c: any) => { c.network.layerNormEpsilon = 0; },
+    (c: any) => { c.network.layerNormEpsilon = 1; },
+    (c: any) => { c.learning.gradientNormLimit = 0; },
+    (c: any) => { c.learning.gradientNormLimit = NaN; },
+])('rejects invalid normalization and clipping configuration %#', (change) => {
+    const document = emptyTrainingDocument();
+    change(document.configuration);
+    expect(() => readTrainingDocument(document)).toThrow(/configuration/);
+});
+
 it('rebuilds the whole observation, memory, network and plan from a non-default JSON document', async () => {
     const config = cloneConfig();
     config.observation.features.reverse();

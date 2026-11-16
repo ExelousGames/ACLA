@@ -10,6 +10,9 @@
     ],
     "cameraPooling": { "type": "adaptive-average", "width": 8, "height": 4 },
     "cameraProjectionUnits": 256,
+    "cameraLayerNorm": true,
+    "lstmLayerNorm": true,
+    "layerNormEpsilon": 0.00001,
     "hiddenUnits": 128,
     "activation": "tanh",
     "initialActionBias": [0, 0, 1, 0, 0],
@@ -58,6 +61,7 @@
     "advantageLimit": 5,
     "policyGradientLimit": 10,
     "demonstrationGradientLimit": 5,
+    "gradientNormLimit": 1,
     "actionEpsilon": 0.001,
     "weightLimit": 5,
     "planTargetToleranceMs": 50

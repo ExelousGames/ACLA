@@ -183,9 +183,10 @@ immediately and queues neutral after any in-flight write, so a late acknowledgem
 cannot restart driving. The Electron/Python bridge releases controls on disconnect or failure.
 `DrivingTrainingLoop` schedules the active source and keeps learning separate from
 output ownership. Human control updates on the control clock even between camera
-frames. Training samples acknowledged
-actions once per fresh observation: AI actions use actor–critic learning, while
-human actions supervise the existing actor through behavior cloning. Handover
+frames. AI actions use actor–critic learning. Human demonstrations record every
+acknowledged control sample and individual paddle press, with telemetry collected
+on its own stream events and camera observations captured independently of training.
+Completed demonstration futures supervise the existing actor through behavior cloning. Handover
 discards the pending transition and waits for a fresh observation before learning
 or resuming AI output, avoiding mixed-driver reward attribution. Human controller
 state and driver identity are **not added to model inputs**; the existing telemetry
@@ -195,8 +196,10 @@ Disconnecting any mapped device while takeover is enabled stops the session,
 even if AI currently owns the controls. Telemetry/capture loss while AI is driving
 neutralizes vJoy controls and retries automatically without ending the session or
 resetting model progress. Fresh, matching observations resume AI driving. During human control, missing or
-mismatched AI observations pause learning and discard the pending transition;
-physical input keeps driving vJoy. Valid observations can resume learning, but
+mismatched AI observations prevent new demonstration origins; a camera-only gap
+still permits collecting the future of existing observations while telemetry is valid.
+Invalid telemetry, session/reference changes and position jumps discard interrupted
+demonstrations; physical input keeps driving vJoy. Valid observations can resume learning, but
 returning to AI still requires an explicit handoff. Stop, Escape in the app and
 disconnect release both sources. Calibration tests are exclusive and cannot run
 during either human or AI driving.
@@ -233,29 +236,45 @@ that actually controlled the car, weighted by their acknowledged execution time
 and contribution to each interpolated command. Gear credit follows only the due
 step's executed choice and mask, independently of the analog blend.
 This includes the outgoing plan's actions while a replacement was computing;
-steps that neither execute nor contribute to a blend receive no actor gradient. Human demonstrations
-continue to teach future plan slots from later acknowledged human actions within
-50 ms of each slot's due time; missing targets are skipped.
+steps that neither execute nor contribute to a blend receive no actor gradient. Each
+human camera observation retains its input history and collects targets at capture
+time plus 0, 0.1, 0.2, …, 3.0 seconds. After the three-second horizon and 50 ms
+sampling tolerance, all available targets train together in one optimizer update.
+Analog targets use the nearest acknowledged control within 50 ms; missing targets
+are skipped. Paddle edges label their nearest slot once, independent of the held
+100 ms output pulse. Multiple presses in one slot suppress that slot's shift loss
+while preserving its analog targets. GPU completion time never selects labels.
+Collection continues during GPU work. The CPU buffer retains up to 512 observation
+origins, dropping the oldest completed samples first if training falls behind;
+the human-control status reports any drops. Handoff closes partial futures using
+only available targets; Stop cancels queued and incomplete demonstrations.
 
-AI actor–critic training collects a sequence before updating weights. Set
+AI consequence collection runs independently of model training and inference. Set
 `configuration.learning.sequenceSeconds` in the model JSON (default **4 seconds**;
 3–5 seconds is an initial experiment, not an established optimum). The five-second
 observation history supplies past context independently of this training window.
-Collection keeps the policy fixed and retains observation inputs, acknowledged
-actions and shift masks, rewards, and capture/execution timestamps. Rewards are
+Collection retains observation inputs, acknowledged actions and shift masks,
+rewards, and capture/execution timestamps. Rewards are
 calculated backward: `G[t] = r[t] + discount^(dt / discountIntervalSeconds) * G[t+1]`.
-The final value bootstraps from the last valid observation under the collection
-policy; reaching the collection duration is not an episode terminal. Immediate
-reward still follows acknowledged execution duration, and later rewards propagate
+The final value bootstraps from the batch's last valid observation under the weights
+used for that update; reaching the collection duration is not an episode terminal.
+Immediate reward still follows acknowledged execution duration, and later rewards propagate
 to earlier executed decisions. Plan slots that never contribute controls receive
 no actor gradient.
-All batch gradients use the collection weights, and accumulated updates commit
-together. Older CNN activations are released and their saved inputs replayed on
-the GPU, so retaining the sequence does not retain every decision's GPU workspace.
-Plans may keep driving during the update, but their remaining actions are excluded
-from the next policy's training sequence. Stop, handoff, invalid inputs and long
-telemetry gaps discard incomplete sequences. Human demonstration learning retains
-its per-observation updates.
+Training takes completed windows while collection fills the next window, including
+consequences of outgoing plans that keep driving during GPU work. Each batch replays
+saved inputs against one fixed set of current weights, retaining the actions actually
+executed; accumulated updates commit together. Older CNN activations are released,
+so retaining the sequence does not retain every decision's GPU workspace.
+The backlog retains up to two completed windows plus the window being collected;
+if training falls behind, the oldest complete window is dropped without shortening
+the requested batch duration. Evaluation continues collection and reward reporting
+without updating weights. Stop, invalid inputs and long telemetry gaps discard
+queued and incomplete sequences. Driver handoffs flush the outgoing partial window
+before starting a separate ownership segment. Human demonstration learning uses
+one grouped update per buffered observation, including its available future targets.
+Sequence and demonstrated-plan gradients are summed, then globally clipped once
+per update; they are not averaged by replay count or available plan-target count.
 
 Gear choices learn from the same driving reward as the continuous controls.
 Human and AI shifts have no cooldown. Each shift presses one paddle for 100 ms
@@ -298,12 +317,13 @@ updates run on a hardware WebGPU device. The CPU sends demonstration/plan target
 reward, elapsed time and the sampled actions with per-slot execution weights. The GPU calculates target transforms,
 masked shift probabilities, the TD advantage and clipped gradients without intermediate
 readbacks. Weights, activations and training predictions stay on the GPU; only control
-decisions read the small action/value output. Each training tick waits once for GPU
-completion, without copying results, to keep queued work bounded during human driving.
+decisions read the small action/value output. Each demonstration update waits once
+for GPU completion without copying results, while CPU collection continues into
+the bounded buffer.
 Repeated images share convolution activations within a decision;
 each later decision re-encodes images with the current learned weights. Pending
 decisions retain their own activations while active; sequence training replays
-released decisions from their stored inputs.
+all decisions from their stored inputs using that batch's weights.
 Saving the model reads the current trained weights back after the entire training tick.
 Training and evaluation require GPU acceleration and report an error if unavailable;
 the CPU inference/training implementation has been removed. Human driving remains
@@ -352,12 +372,15 @@ The acceleration/deceleration reward credits measured speed changes toward the g
 on every fresh forward-driving transition, including held pedals. It uses one fixed
 goal at the destination position for both speed readings:
 `gapClosed = abs(previousSpeed - targetSpeed) - abs(currentSpeed - targetSpeed)`.
-Closing the gap immediately earns positive reward, even far from the goal. Moving
-away earns negative reward, and overshooting reduces credit according to the remaining
-gap. Unchanged speed earns zero acceleration/deceleration reward. Throttle and brake
+Closing the gap immediately earns positive reward, even far from the goal. When the
+gap stays unchanged or grows, the remaining speed error produces a penalty. This
+includes holding a speed above or below the target and overshooting to an equally
+distant speed. Holding exactly the target speed stays neutral. Overshooting while
+still reducing the gap earns credit only for the net reduction. Throttle and brake
 inputs do not affect this signal.
 The correction rate uses elapsed telemetry time, not camera processing time:
-`correction = clamp(gapClosed / (3.6 × telemetrySeconds × accelerationTolerance), -1, 1)`.
+`speedCorrection = gapClosed > 0 ? gapClosed : -abs(currentSpeed - targetSpeed)`;
+`correction = clamp(speedCorrection / (3.6 × telemetrySeconds × accelerationTolerance), -1, 1)`.
 With default weights, the acceleration/deceleration reward is
 `100 × forwardProgress × correction`.
 `accelerationTolerance` defaults to 3 m/s². The legacy `speedTolerance` setting remains
@@ -375,12 +398,13 @@ The normalized-position progress reward uses the signed lap-position change, cor
 for start/finish crossings, divided by elapsed telemetry seconds. With
 `rate = abs(positionChange / telemetrySeconds)`, it adds
 `0.25 × progressWeight × cappedSignedProgress × rate / (rate + 0.01)`.
-Faster forward progress earns more and negative progress incurs a penalty. Only when
-speed is zero and normalized position is unchanged does the stationary penalty apply:
+Faster forward progress earns more and negative progress incurs a penalty. Whenever
+speed is below 1 km/h, a low-speed penalty replaces the signed-progress reward,
+regardless of normalized-position changes:
 `-0.25 × progressWeight × 0.01 × telemetrySeconds`,
-or -0.25 reward per second with default weights. This stationary penalty scales with
+or -0.25 reward per second with default weights. This low-speed penalty scales with
 elapsed telemetry time so its accumulated value is independent of sampling frequency.
-Positive rewards also require nonzero speed and a non-reverse
+Positive progress rewards require speed of at least 1 km/h and a non-reverse
 gear. Signed progress uses the existing 0.02-per-observation cap. At 0.01 lap/second
 the rate factor is one half; it approaches 1 as the rate increases, keeping the
 bonus below `0.25 × progressWeight × cappedForwardProgress`.

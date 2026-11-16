@@ -40,6 +40,10 @@
 .driving-aggression input { display: block; box-sizing: border-box; width: 100%; margin: 12px 0; accent-color: #00e676; }
 .driving-aggression input:focus-visible { outline: 2px solid #00e676; outline-offset: 3px; }
 .driving-aggression-scale { font-size: 11px; color: #a3adb7; }
+.driving-exploration { border: 1px solid #3a414d; border-radius: 8px; padding: 16px; margin: 20px 0; min-width: 0; }
+.driving-exploration legend { padding: 0 6px; font-size: 14px; }
+.driving-exploration .driving-aggression { margin-top: 12px; }
+.driving-exploration input:disabled { opacity: .4; }
 .driving-pedals { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
 .driving-pedals caption { text-align: left; color: #a3adb7; margin: 16px 0 8px; }
 .driving-pedals th, .driving-pedals td { padding: 8px 2px; text-align: right; overflow-wrap: anywhere; border-bottom: 1px solid #ffffff0d; }

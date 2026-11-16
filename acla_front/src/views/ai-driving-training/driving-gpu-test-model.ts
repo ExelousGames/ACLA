@@ -1,5 +1,5 @@
 import { DrivingGpuModel, GpuPolicyPass } from './driving-gpu-model';
-import type { PolicyModelState } from './driving-policy';
+import type { PolicyWeights } from './driving-policy';
 import { drivingCameraLayers } from './driving-model-config';
 
 /** GPU boundary stub for UI/coordination tests in jsdom. Returns preset output
@@ -10,6 +10,8 @@ export function mockDrivingGpu() {
         const weights = {
             cameraWeights: state.cameraWeights,
             cameraProjectionWeights: state.cameraProjectionWeights,
+            ...(state.cameraNormWeights && { cameraNormWeights: state.cameraNormWeights }),
+            ...(state.lstmNormWeights && { lstmNormWeights: state.lstmNormWeights }),
             lstmWeights: state.lstmWeights,
             outputWeights: state.outputWeights,
         };
@@ -33,7 +35,8 @@ export function mockDrivingGpu() {
             }),
             release: jest.fn((pass: GpuPolicyPass) => { pass.released = true; }),
             finishTraining: jest.fn(async () => undefined),
-            weights: jest.fn(async (): Promise<Pick<PolicyModelState, 'cameraWeights' | 'cameraProjectionWeights' | 'lstmWeights' | 'outputWeights'>> =>
+            trainingDiagnostics: jest.fn(async () => undefined),
+            weights: jest.fn(async (): Promise<PolicyWeights> =>
                 JSON.parse(JSON.stringify(weights))),
             dispose: jest.fn(),
         } as unknown as DrivingGpuModel;

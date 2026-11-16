@@ -5,11 +5,21 @@ export type DrivingModelConfig = typeof defaults;
 export const DEFAULT_DRIVING_CONFIG: DrivingModelConfig = defaults;
 export const cloneConfig = (config = DEFAULT_DRIVING_CONFIG): DrivingModelConfig => JSON.parse(JSON.stringify(config));
 
-/** These runtime/training changes do not change saved inputs or weight dimensions. */
+/** Upgrade runtime settings while retaining the computation declared by legacy models. */
 export function upgradeDrivingConfig(value: unknown): unknown {
     let config = value as DrivingModelConfig | undefined;
+    if (config?.network && !Object.prototype.hasOwnProperty.call(config.network, 'cameraLayerNorm')
+        && !Object.prototype.hasOwnProperty.call(config.network, 'lstmLayerNorm')
+        && !Object.prototype.hasOwnProperty.call(config.network, 'layerNormEpsilon')) {
+        // Existing weights remain an unnormalized baseline. Only new models enable LayerNorm.
+        config = { ...config, network: { ...config.network, cameraLayerNorm: false, lstmLayerNorm: false,
+            layerNormEpsilon: defaults.network.layerNormEpsilon } };
+    }
     if (config?.learning && !Object.prototype.hasOwnProperty.call(config.learning, 'sequenceSeconds')) {
         config = { ...config, learning: { ...config.learning, sequenceSeconds: 4 } };
+    }
+    if (config?.learning && !Object.prototype.hasOwnProperty.call(config.learning, 'gradientNormLimit')) {
+        config = { ...config, learning: { ...config.learning, gradientNormLimit: defaults.learning.gradientNormLimit } };
     }
     if (config?.learning && !Object.prototype.hasOwnProperty.call(config.learning, 'shiftTemperature')) {
         // Upgrade the old exploration default once; retain explicitly tuned noise and all learned weights.
@@ -112,6 +122,8 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
             Object.keys(expected).forEach((key) => shape(actual[key], expected[key], path ? `${path}.${key}` : key));
         } else if (typeof expected === 'number') {
             if (typeof actual !== 'number' || !Number.isFinite(actual) || actual < 0 || actual > 1e6) invalid();
+        } else if (typeof expected === 'boolean') {
+            if (typeof actual !== 'boolean') invalid();
         } else if (actual !== expected) invalid();
     };
     shape(value, defaults);
@@ -122,7 +134,8 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
         || layer.padding !== defaults.network.cameraLayers[i].padding || !integer(layer.channels, 1, 64))) return invalid();
     if (c.network.cameraPooling.width !== defaults.network.cameraPooling.width
         || c.network.cameraPooling.height !== defaults.network.cameraPooling.height
-        || !integer(c.network.cameraProjectionUnits, 1, 256)) return invalid();
+        || !integer(c.network.cameraProjectionUnits, 1, 256)
+        || c.network.layerNormEpsilon < 1e-9 || c.network.layerNormEpsilon > 0.01) return invalid();
     if (!integer(c.network.hiddenUnits, 1, 256) || !integer(o.categoryBits, 1, 32)
         || o.cameraWidth !== POLICY_CAMERA_WIDTH || o.cameraHeight !== POLICY_CAMERA_HEIGHT
         || 4 * c.network.hiddenUnits * (drivingPolicyInputs(c) + c.network.hiddenUnits + 1) > 2000000
@@ -130,7 +143,7 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
         || o.centerlineStepsPerSide !== defaults.observation.centerlineStepsPerSide
         || ![o.velocityScale, o.speedScale, o.gearScale, o.rpmScale, o.yawRateScale, o.gForceScale, o.centerlineScale,
             l.explorationSigma, l.discountIntervalSeconds, l.weightLimit, l.advantageLimit, l.policyGradientLimit,
-            l.demonstrationGradientLimit, c.reward.totalLimit,
+            l.demonstrationGradientLimit, l.gradientNormLimit, c.reward.totalLimit,
             c.reward.speedTolerance, c.reward.accelerationTolerance].every((n) => n > 0)
         || c.aggression > 100 || l.discount > 1 || l.explorationSigma < 1e-6 || l.actionEpsilon < 1e-9 || l.actionEpsilon >= 0.5
         || l.shiftTemperature < 0.001 || l.shiftTemperature > 1

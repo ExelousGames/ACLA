@@ -39,11 +39,16 @@ export interface DrivingObservation {
     speedTargets: ReferenceSpeedTargets;
     offTrack: boolean | null;
 }
-export type ObservationResult = {
+export type DrivingTelemetrySample = Pick<DrivingObservation, 'measuredAt' | 'session' | 'context' | 'normalizedPosition'
+    | 'speed' | 'localVelocity' | 'gForce' | 'yawRate' | 'gear' | 'rpm' | 'controls'> & { sampleIndex?: number };
+export type ObservationResult = ({
     observation: DrivingObservation; error?: never;
-    /** Latest telemetry speed for control limits, separate from capture-time learning inputs. */
-    liveSpeedKmh?: number;
-} | { error: string; observation?: never };
+} | { error: string; observation?: never }) & {
+    /** Current telemetry is collected independently of the camera's capture-time pair. */
+    telemetry?: DrivingTelemetrySample;
+    /** Camera interruptions may leave an otherwise valid demonstration running. */
+    cameraUnavailable?: boolean;
+};
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 
 // A deterministic encoding preserves categorical inputs across saved policies.
@@ -56,11 +61,41 @@ function category(value: string, bits: number): number[] {
 export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: TrackVisionDetection | null,
     referenceLap: TopLapReferenceEntry | null, aggression = DEFAULT_DRIVING_CONFIG.aggression, now = Date.now(), config = DEFAULT_DRIVING_CONFIG,
     circuitMap: CircuitMapDto | null = null): ObservationResult {
+    const telemetry = readDrivingTelemetry(live, now, config);
+    return { ...readCameraObservation(live, vision, referenceLap, aggression, now, config, circuitMap),
+        ...(telemetry && { telemetry }) };
+}
+
+export function readDrivingTelemetry(live: LiveTelemetrySnapshot, now = Date.now(), config = DEFAULT_DRIVING_CONFIG): DrivingTelemetrySample | undefined {
+    if (live.telemetryStatus !== ACC_STATUS.ACC_LIVE || !finite(live.receivedAt)
+        || now - live.receivedAt > config.runtime.telemetryMaxAgeMs || now < live.receivedAt) return;
+    const sample = live.currentTelemetry;
+    const game = live.game, car = sample.Static_car_model, map = sample.Static_track;
+    const localVelocity = [sample.Physics_local_velocity_x, sample.Physics_local_velocity_y, sample.Physics_local_velocity_z];
+    const gForce = [sample.Physics_g_force_x, sample.Physics_g_force_y, sample.Physics_g_force_z];
+    const yawRate = game === 'iracing' ? sample.Physics_local_angular_vel_y : sample.Physics_local_angular_vel_z;
+    const throttle = sample.Physics_gas, brake = sample.Physics_brake, steering = sample.Physics_steer_angle;
+    const speed = sample.Physics_speed_kmh, normalizedPosition = sample.Graphics_normalized_car_position;
+    if (!game || !car || !map || sample.Physics_autoshifter_on === true
+        || ![...localVelocity, ...gForce, yawRate, throttle, brake, steering, speed, normalizedPosition].every(finite)
+        || normalizedPosition! < 0 || normalizedPosition! > 1 || speed! < 0
+        || throttle! < 0 || throttle! > 1 || brake! < 0 || brake! > 1 || Math.abs(steering!) > 1) return;
+    return { measuredAt: live.receivedAt, sampleIndex: live.sampleIndex,
+        session: JSON.stringify([live.sessionGeneration, live.streamGeneration, game, car, map]), context: { game, car, map },
+        normalizedPosition: normalizedPosition!, speed: speed!, localVelocity: localVelocity as [number, number, number],
+        gForce: gForce as [number, number, number], yawRate: yawRate!,
+        gear: finite(sample.Physics_gear) ? sample.Physics_gear - 1 : 0, rpm: finite(sample.Physics_rpm) ? sample.Physics_rpm : 0,
+        controls: { throttle: throttle!, brake: brake!, steering: steering! } };
+}
+
+function readCameraObservation(live: LiveTelemetrySnapshot, vision: TrackVisionDetection | null,
+    referenceLap: TopLapReferenceEntry | null, aggression: number, now: number, config: typeof DEFAULT_DRIVING_CONFIG,
+    circuitMap: CircuitMapDto | null): ObservationResult {
     const o = config.observation;
     if (live.telemetryStatus !== ACC_STATUS.ACC_LIVE || !finite(live.receivedAt)
         || now - live.receivedAt > config.runtime.telemetryMaxAgeMs || now < live.receivedAt) return { error: 'Waiting for fresh, running live telemetry.' };
     if (!vision || !finite(vision.capturedAt) || now - vision.capturedAt > config.runtime.visionMaxAgeMs || now < vision.capturedAt) {
-        return { error: 'Start Track Vision capture in Live Session. A fresh image is required.' };
+        return { error: 'Start Track Vision capture in Live Session. A fresh image is required.', cameraUnavailable: true };
     }
     const paired = vision.telemetry;
     if (!paired || paired.telemetryStatus !== ACC_STATUS.ACC_LIVE || !finite(paired.receivedAt)
@@ -68,7 +103,7 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
         || paired.sessionGeneration !== live.sessionGeneration || paired.streamGeneration !== live.streamGeneration
         || paired.game !== live.game || paired.currentTelemetry.Static_track !== live.currentTelemetry.Static_track
         || paired.currentTelemetry.Static_car_model !== live.currentTelemetry.Static_car_model) {
-        return { error: 'Waiting for Track Vision and telemetry from the same live session.' };
+        return { error: 'Waiting for Track Vision and telemetry from the same live session.', cameraUnavailable: true };
     }
     const sample = paired.currentTelemetry;
     const game = paired.game, car = sample.Static_car_model, map = sample.Static_track;
@@ -100,7 +135,7 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
     const camera = vision.camera;
     if (!camera || camera.width !== o.cameraWidth || camera.height !== o.cameraHeight
         || !(camera.rgb instanceof Uint8Array) || camera.rgb.length !== camera.width * camera.height * 3) {
-        return { error: `Track Vision camera pixels must be ${o.cameraWidth} × ${o.cameraHeight} RGB. Restart screen capture in Live Session.` };
+        return { error: `Track Vision camera pixels must be ${o.cameraWidth} × ${o.cameraHeight} RGB. Restart screen capture in Live Session.`, cameraUnavailable: true };
     }
     const centerline = drivingCenterlineInput(circuitMap, game, map, position!, config);
     if (!centerline) return { error: 'Live Map needs a valid centerline for the current game and circuit. Load a matching circuit map in Live Session.' };
@@ -116,8 +151,7 @@ export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: Trac
         aggression: [normalizedAggression(aggression)], referenceSpeed: [clamp(speedTargets.reference / o.speedScale, 0, 1)],
         targetSpeed: [clamp(speedTargets.target / o.speedScale, 0, 1)],
     };
-    const liveSpeed = live.currentTelemetry.Physics_speed_kmh;
-    return { liveSpeedKmh: finite(liveSpeed) && liveSpeed >= 0 ? liveSpeed : speed!, observation: {
+    return { observation: {
         capturedAt: vision.capturedAt,
         measuredAt: paired.receivedAt,
         session: JSON.stringify([paired.sessionGeneration, paired.streamGeneration, game, car, map]),
@@ -163,8 +197,8 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     // Half strength at 0.01 lap/second; faster progress approaches 0.25 * progressWeight per lap.
     // Weight by signed distance so extra samples do not earn extra reward at the same rate.
     const signedProgress = positionChange < 0 ? clamp(positionChange, -r.progressLimit, 0) : forwardProgress;
-    // Both speed and position must show no movement for the time-based stationary penalty.
-    const progress = current.speed === 0 && positionChange === 0
+    // Penalize speeds below 1 km/h even when normalized position changes.
+    const progress = current.speed < 1
         ? -0.25 * r.progressWeight * 0.01 * measuredSeconds
         : 0.25 * r.progressWeight * signedProgress * progressPerSecond / (progressPerSecond + 0.01);
     // Keep both ends of the speed profile on the settings that produced the action.
@@ -176,8 +210,11 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     // Compare both measured speeds with the same destination goal. A changing reference
     // or simply being close to it cannot earn credit without a useful speed change.
     // Absolute errors also charge for overshooting, instead of rewarding all acceleration.
-    const speedGoalProgress = Math.abs(previous.speed - speeds.target) - Math.abs(current.speed - speeds.target);
-    const correction = clamp(speedGoalProgress / (3.6 * measuredSeconds * r.accelerationTolerance));
+    const remainingSpeedError = Math.abs(current.speed - speeds.target);
+    const speedGoalProgress = Math.abs(previous.speed - speeds.target) - remainingSpeedError;
+    // Failing to close an outstanding gap is a penalty; holding the target stays neutral.
+    const speedCorrection = speedGoalProgress <= 0 && remainingSpeedError > 0 ? -remainingSpeedError : speedGoalProgress;
+    const correction = clamp(speedCorrection / (3.6 * measuredSeconds * r.accelerationTolerance));
     // Score the direction of the speed change immediately, even far from the goal.
     const timing = forwardProgress > 0
         ? r.timingWeight * forwardProgress * correction : 0;

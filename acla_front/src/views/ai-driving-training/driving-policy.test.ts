@@ -24,6 +24,7 @@ it('requires GPU initialization for every prediction and learning entry point', 
     await expect(policy.decideAsync(input, false)).rejects.toThrow(/Initialize.*GPU/);
     await expect(policy.learnAsync({} as any, 1, input, 0.2, [])).rejects.toThrow(/Initialize.*GPU/);
     await expect(policy.learnDemonstrationAsync(input, action, shifts)).rejects.toThrow(/Initialize.*GPU/);
+    await expect(policy.learnDemonstratedPlanAsync(input, [])).rejects.toThrow(/Initialize.*GPU/);
     await expect(policy.learnPlannedActionsAsync(input, [])).rejects.toThrow(/Initialize.*GPU/);
     const train = jest.fn(async () => undefined);
     await expect(policy.trainBatchAsync(train)).rejects.toThrow(/Initialize.*GPU/);
@@ -181,6 +182,29 @@ it('sends raw demonstration and delayed targets straight to GPU learning without
     expect(gpu.forward).not.toHaveBeenCalled();
     expect(gpu.weights).not.toHaveBeenCalled();
     expect(policy.steps).toBe(1);
+});
+
+it('trains all available outputs of a demonstrated future together and counts the origin once', async () => {
+    const { policy, input } = setup();
+    await policy.initializeGpu();
+    const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
+    const targets = policy.planTimes.map((_, step) => ({ step, action: {
+        throttle: step / 30, brake: 0, steering: -step / 30, shiftUp: step === 3, shiftDown: step === 15,
+    }, shifts: { up: true, down: true } }));
+    await policy.learnDemonstratedPlanAsync(input, targets);
+    expect(gpu.learnTargets).toHaveBeenCalledTimes(1);
+    expect(gpu.learnTargets).toHaveBeenLastCalledWith(input, targets);
+    expect(policy.steps).toBe(1);
+    const available = targets.filter(({ step }) => [0, 2, 9].includes(step));
+    await policy.learnDemonstratedPlanAsync(input, available);
+    expect(gpu.learnTargets).toHaveBeenCalledTimes(2);
+    expect(gpu.learnTargets).toHaveBeenLastCalledWith(input, available);
+    expect(policy.steps).toBe(2);
+    await policy.learnDemonstratedPlanAsync(input, []);
+    expect(gpu.learnTargets).toHaveBeenCalledTimes(2);
+    expect(policy.steps).toBe(2);
+    expect(gpu.forward).not.toHaveBeenCalled();
+    expect(gpu.weights).not.toHaveBeenCalled();
 });
 
 it.each([false, true])('sends reward and every executed plan slot to GPU actor/critic learning (terminal=%s)', async (terminal) => {

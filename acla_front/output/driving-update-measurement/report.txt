@@ -1,0 +1,110 @@
+SELF-DRIVING UPDATE MEASUREMENT
+User-local date: 2026-11-15 (America/Toronto)
+
+Finding: the global cap is active and materially reduces these measured gradients.
+These controlled probes do not establish that raising it improves actual driving.
+
+INPUTS AND SCOPE
+Saved model: F:\self driving model training\driving-model-2.json
+SHA-256: 033751a4a07a1bbe9f80a5e4a82fbb5a1c63a23d4bf5e650151243ee833ae3dd
+Learning steps saved: 69,703
+Trainable scalar parameters: 993,020
+Weight L2 norm: 43.703513171
+Telemetry: 6,939 rows, 216.123 seconds; 6,640 running, 299 paused rows.
+Video: 1252 x 720, 14.985 fps, 215.927 seconds; converted to contained 384 x 216 RGB at 10 Hz.
+Hardware WebGPU: nvidia / ampere.
+No application sources, original input files, model settings, or saved weights were changed.
+
+WHAT THE CURRENT CODE DOES
+For accumulated per-sample gradients g_i and N samples:
+  mean = sum(g_i) / N
+  clipScale = min(1, gradientNormLimit / ||mean||_2)
+  delta = max(actorRate, criticRate, demonstrationRate) * clipScale * mean
+Defaults and this checkpoint: max rate = 0.001, gradientNormLimit = 1.
+Therefore ||delta||_2 <= 0.001, before per-weight guards and floating-point rounding.
+Relative actor/critic/demonstration rates are already incorporated into the gradients.
+AI: learnSequenceAsync accumulates many targets and commits once; steps counts each target.
+Human: learnDemonstratedPlanAsync averages available future plan targets into one origin loss;
+each origin increments steps once and applies one update. This probe used all 31 future slots.
+trainBatchAsync itself only coordinates completion/checkpoints; it is not an averaging optimizer.
+The 69,703 saved steps alone cannot reveal historical update counts or the AI/human split.
+
+MEASURED CASES
+Every case starts from the original saved checkpoint; this is not a continued training run.
+Demonstration origin times (video seconds): 44, 58, 74, 84, 96, 110, 124, 138, 152, 166, 182, 196.
+AI origin times: 58, 124, 182, each tested at controlled advantages +1 and +5.
+Both reference-input variants are tested, for 24 demonstration updates and 12 AI batches.
+Each AI batch contains eight learning calls spanning four seconds and commits one update.
+
+Variant | Case | N updates | Median pre-clip norm | Median gradient retained | Norm range
+lap-proxy | Demonstration | 12 | 3.1481 | 31.884% | 1.2396 to 7.0168
+lap-proxy | Controlled AI, advantage +1 | 3 | 14.1194 | 7.082% | 8.2291 to 24.5960
+lap-proxy | Controlled AI, advantage +5 | 3 | 70.5973 | 1.416% | 41.1457 to 122.9799
+reference-ablated | Demonstration | 12 | 2.6697 | 37.483% | 1.2150 to 3.3042
+reference-ablated | Controlled AI, advantage +1 | 3 | 9.1962 | 10.874% | 8.9935 to 9.2868
+reference-ablated | Controlled AI, advantage +5 | 3 | 45.9813 | 2.175% | 44.9678 to 46.4338
+
+Clipped: 36/36; all finite. GPU mean-gradient norms agree with independent CPU reductions.
+Maximum relative CPU/GPU norm discrepancy: 9.51e-08.
+Measured actual default update norms: 0.000999996583 to 0.001000005940.
+A 0.001 step is 0.00229% of the saved weight L2 norm.
+This relative size is descriptive; it is not by itself evidence of under-training.
+
+CAP SENSITIVITY (SAME FROZEN GRADIENT, SAME STARTING WEIGHTS)
+Values below are medians over 12 demonstration cases per variant.
+Variant | Cap | Actual update norm | Mean plan-control change | Same-target latent MSE reduction
+lap-proxy | 1 | 0.001000 | 0.0003090 | 0.1016%
+lap-proxy | 5 | 0.003148 | 0.0009947 | 0.2736%
+lap-proxy | 10 | 0.003148 | 0.0009947 | 0.2736%
+lap-proxy | none | 0.003148 | 0.0009947 | 0.2736%
+reference-ablated | 1 | 0.001000 | 0.0002745 | 0.0917%
+reference-ablated | 5 | 0.002670 | 0.0007158 | 0.2503%
+reference-ablated | 10 | 0.002670 | 0.0007158 | 0.2503%
+reference-ablated | none | 0.002670 | 0.0007158 | 0.2503%
+Control change averages absolute changes of tanh outputs across 31 pedal and 31 steering values.
+The loss is axis-only latent MSE on the same targets used for the update, not held-out accuracy.
+At the default cap all 24 demonstration cases reduce that loss. Cap 5 gives a larger immediate reduction.
+Controlled AI advantages +1 and +5 produce nearly the same clipped update: scaling the gradient
+fivefold is canceled by global clipping when its direction stays the same.
+AI-to-telemetry imitation error is included in raw results only as a response metric; it is not
+an evaluation of the AI reinforcement-learning objective or of driving performance.
+
+FLOAT32 AND TENSOR CHECKS
+demonstration: median changed parameters 793,516; median nonzero gradients rounded to zero 70,051.
+  Median rounding-error L2 norm 1.17e-06 (~0.12% of the 0.001 step).
+controlled-ai-batch: median changed parameters 833,505; median nonzero gradients rounded to zero 41,484.
+  Median rounding-error L2 norm 1.18e-06 (~0.12% of the 0.001 step).
+Rounding is measurable but does not erase the global update. Every parameter group moves.
+
+LIMITATIONS
+- Not a historical replay. Original map, speed reference, camera timing, controller ownership, sampled policy noise and action credits are absent.
+- lap-proxy uses the recorded full lap as a surrogate racing line at assumed resolution 1000 and its speed as both reference and target; it is not the original centerline.
+- reference-ablated zeros centerline and reference/target speeds. Both use recorded telemetry and video with zero alignment offset and 10 Hz resampling.
+- Shift targets and shift gradients are masked: telemetry does not preserve paddle edges.
+- AI uses eight sampled observations over four seconds, seeded policy exploration, five equally credited plan slots, and engineered advantages +1/+5. These are controlled sensitivity tests, not recorded rewards.
+- Every measured case starts at the supplied checkpoint. Cap sweeps reuse the same gradient. Same-target loss changes do not measure held-out or closed-loop driving performance.
+- A recording with mixed controller ownership cannot identify which frames were human demonstrations.
+  The demonstration probes therefore treat selected recorded control trajectories as candidate labels.
+- Resampled video pixels and timing need not equal the exact live capture pixels/timestamps.
+- Current source hashes are saved. The files do not identify the source revision that originally trained the checkpoint.
+
+INTERPRETATION
+Confirmed: the cap binds in these probes, and it suppresses controlled AI gradients especially strongly.
+There is numerical headroom for larger demonstration updates, but this is not a validated tuning change.
+To decide whether it is too restrictive in use, record post-update diagnostics by controller mode
+(sample count, pre-clip norm, clip scale, update norm, completed updates) and compare unchanged
+learning rates at caps 1 and 5 on the same held-out recording and controlled simulator evaluation.
+Keep update counts and sample counts separate; do not infer convergence from Learning steps.
+
+ARTIFACTS
+F:\Git-Repo\ACLA\acla_front\output\driving-update-measurement\results.json
+F:\Git-Repo\ACLA\acla_front\output\driving-update-measurement\measurements.png
+F:\Git-Repo\ACLA\acla_front\tmp\driving-update-measurement\measure.cjs
+F:\Git-Repo\ACLA\acla_front\tmp\driving-update-measurement\summarize.py
+
+REPRODUCTION
+1. Recreate tmp/driving-update-measurement/frames.rgb with ffmpeg using the supplied video:
+   -vf "fps=10,scale=384:216:force_original_aspect_ratio=decrease,pad=384:216:(ow-iw)/2:(oh-ih)/2:black" -pix_fmt rgb24 -f rawvideo
+2. Run node_modules/electron/dist/electron.exe tmp/driving-update-measurement/measure.cjs.
+3. Run python tmp/driving-update-measurement/summarize.py.
+The large intermediate RGB file is removed after analysis; original video remains intact.

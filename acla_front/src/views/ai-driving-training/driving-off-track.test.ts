@@ -157,7 +157,7 @@ it.each([
 it('awards on-track lap crossings and clamps the combined positive reward', () => {
     const { observation } = trainingFixture();
     const before = { ...observation, normalizedPosition: 0.999, offTrack: false };
-    const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.001 };
+    const after = { ...before, capturedAt: 1200, measuredAt: 1200, normalizedPosition: 0.001, speed: 110 };
     expect(drivingReward(before, after).onTrack).toBeCloseTo(0.2);
     const config = cloneConfig();
     config.reward.totalLimit = 0.1;

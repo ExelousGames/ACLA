@@ -20,12 +20,6 @@ export interface ManualMapping {
 export interface ManualControls { action: DrivingAction; toggleControl: boolean }
 export type ControlSource = 'ai' | 'manual';
 
-/** AI steering keeps full lock at rest, half lock at 100 km/h and one fifth at 200 km/h. */
-export function limitAiSteering(steering: number, speedKmh: number): number {
-    const limit = 1 / (1 + (speedKmh / 100) ** 2);
-    return Math.max(-limit, Math.min(limit, steering));
-}
-
 /** Detect deliberate movement from rest, ignoring axis jitter and ambiguous inputs. */
 export function detectAxisBinding(baseline: PhysicalController[], devices: PhysicalController[]): AxisBinding | null {
     const candidates: { binding: AxisBinding; movement: number }[] = [];

@@ -4,7 +4,9 @@ import { DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCa
 import { drivingLstmShaders } from './driving-lstm-shaders';
 import { drivingCameraShaders } from './driving-camera-shaders';
 import { drivingLearningShaders } from './driving-learning-shaders';
-import type { PlannedActionTarget, PolicyModelState, ShiftAvailability } from './driving-policy';
+import { drivingNormalizationShaders } from './driving-normalization-shaders';
+import { drivingUpdateShaders } from './driving-update-shaders';
+import type { PlannedActionTarget, PolicyModelState, PolicyWeights, ShiftAvailability } from './driving-policy';
 import { assembleDrivingInput } from './driving-policy-input';
 import type { DrivingCameraInspection } from './driving-camera-inspection';
 
@@ -13,6 +15,7 @@ export interface GpuPolicyPass {
     states: GPUBuffer;
     count: GPUBuffer;
     outputs: GPUBuffer;
+    gateCache?: GPUBuffer;
     cameras: { offset: GPUBuffer; activations: GPUBuffer[] }[];
     steps: number;
     released: boolean;
@@ -30,7 +33,7 @@ export class DrivingGpuModel {
     private idlePasses: GpuWorkspace[] = [];
     private passWorkspaces = new WeakMap<GpuPolicyPass, GpuWorkspace>();
     private training: GpuWorkspace = new Map();
-    private sequence?: { weights: Map<GPUBuffer, GPUBuffer>; bootstrap: GpuPolicyPass };
+    private sequence?: { samples: number; bootstrap: GpuPolicyPass };
     private readbacks = new Map<number, GPUBuffer>();
     private failure?: string;
     private disposed = false;
@@ -38,6 +41,8 @@ export class DrivingGpuModel {
     private outputWeights: GPUBuffer;
     private cameraWeights: GPUBuffer[];
     private cameraProjectionWeights: GPUBuffer;
+    private cameraNormWeights?: GPUBuffer;
+    private lstmNormWeights?: GPUBuffer;
     private layers;
     private times: GPUBuffer[];
     private readonly inputs: number;
@@ -57,6 +62,8 @@ export class DrivingGpuModel {
         this.cameraProjectionWeights = this.upload(state.cameraProjectionWeights.flat());
         this.lstmWeights = this.upload(state.lstmWeights.flat());
         this.outputWeights = this.upload(state.outputWeights.flat());
+        if (config.network.cameraLayerNorm) this.cameraNormWeights = this.upload(state.cameraNormWeights!.flat());
+        if (config.network.lstmLayerNorm) this.lstmNormWeights = this.upload(state.lstmNormWeights!.flat());
         this.times = Array.from({ length: drivingMemorySlots(config) + 1 },
             (_, t) => this.upload(new Uint32Array([t])));
         device.lost.then((info) => { if (!this.disposed) this.failure = `Training GPU lost: ${info.message || info.reason}. Restart training.`; });
@@ -129,10 +136,17 @@ export class DrivingGpuModel {
     }
 
     private async compile() {
-        await Promise.all(Object.entries({ ...drivingLstmShaders(this.config), ...drivingCameraShaders(this.config),
-            ...drivingLearningShaders(this.config) }).map(async ([name, shader]) => {
-            this.pipelines[name] = await this.device.createComputePipelineAsync({ label: `Driving ${name}`, layout: 'auto',
-                compute: { module: this.device.createShaderModule({ code: shader }), entryPoint: 'main' } });
+        const shaders = { ...drivingLstmShaders(this.config), ...drivingCameraShaders(this.config),
+            ...drivingLearningShaders(this.config), ...drivingUpdateShaders(this.config),
+            ...(this.cameraNormWeights ? drivingNormalizationShaders(this.config) : {}) };
+        if (!this.lstmNormWeights) {
+            ['gateSums', 'normalizedForward', 'gateNormBackward'].forEach((name) => { delete shaders[name]; });
+        } else delete shaders.forward;
+        await Promise.all(Object.entries(shaders).map(async ([name, shader]) => {
+            try {
+                this.pipelines[name] = await this.device.createComputePipelineAsync({ label: `Driving ${name}`, layout: 'auto',
+                    compute: { module: this.device.createShaderModule({ code: shader }), entryPoint: 'main' } });
+            } catch (error) { throw new Error(`Driving ${name}: ${(error as Error).message || String(error)}`); }
         }));
     }
 
@@ -149,6 +163,12 @@ export class DrivingGpuModel {
         this.dispatch(commands, 'cameraPool', [activations[activations.length - 1], pooled], Math.ceil(this.pooledInputs / 64));
         this.dispatch(commands, 'cameraProject', [pooled, this.cameraProjectionWeights, projected], this.cameraInputs);
         activations.push(pooled, projected);
+        if (this.cameraNormWeights) {
+            const cache = buffer('normalizationCache', (this.cameraInputs + 1) * 4);
+            const normalized = buffer('normalized', this.cameraInputs * 4);
+            this.dispatch(commands, 'cameraNormalize', [projected, this.cameraNormWeights, normalized, cache], 1);
+            activations.push(cache, normalized);
+        }
         return activations;
     }
 
@@ -205,6 +225,7 @@ export class DrivingGpuModel {
                 states: this.scratch(workspace, 'states', (capacity + 1) * 6 * this.hidden * 4),
                 count: this.scratch(workspace, 'count', 4), steps: assembled.steps, released: false,
                 outputs: this.scratch(workspace, 'outputs', this.outputs * 4), cameras: [] };
+            if (this.lstmNormWeights) pass.gateCache = this.scratch(workspace, 'gateCache', capacity * (4 * this.hidden + 4) * 4);
             this.device.queue.writeBuffer(pass.features, 0, new Float32Array(assembled.features));
             this.device.queue.writeBuffer(pass.count, 0, new Uint32Array([assembled.steps]));
             // All subsequent states are overwritten; only the initial hidden/cell
@@ -223,7 +244,10 @@ export class DrivingGpuModel {
                 commands.copyBufferToBuffer(activations[activations.length - 1], 0, pass.features, offset * 4, this.cameraInputs * 4);
             }
             for (let t = 0; t < pass.steps; t++) {
-                this.dispatch(commands, 'forward', [this.lstmWeights, pass.features, pass.states, this.times[t]], this.hidden);
+                if (this.lstmNormWeights) {
+                    this.dispatch(commands, 'gateSums', [this.lstmWeights, pass.features, pass.states, this.times[t], pass.gateCache!], this.hidden);
+                    this.dispatch(commands, 'normalizedForward', [pass.gateCache!, this.lstmNormWeights, pass.states, this.times[t]], 1);
+                } else this.dispatch(commands, 'forward', [this.lstmWeights, pass.features, pass.states, this.times[t]], this.hidden);
             }
             this.dispatch(commands, 'output', [this.outputWeights, pass.states, pass.count, pass.outputs], Math.ceil(this.outputs / 64));
             this.device.queue.submit([commands.finish()]);
@@ -238,15 +262,10 @@ export class DrivingGpuModel {
     beginSequence(next: DrivingPolicyInput) {
         this.assertReady();
         if (this.sequence) throw new Error('A training sequence is already being updated.');
-        const weights = new Map<GPUBuffer, GPUBuffer>();
         const commands = this.device.createCommandEncoder();
-        [...this.cameraWeights, this.cameraProjectionWeights, this.lstmWeights, this.outputWeights].forEach((source, i) => {
-            const target = this.scratch(this.training, `sequenceWeight${i}`, source.size);
-            commands.copyBufferToBuffer(source, 0, target, 0, source.size);
-            weights.set(source, target);
-        });
+        this.parameters().forEach(({ gradient }) => commands.clearBuffer(gradient));
         this.device.queue.submit([commands.finish()]);
-        this.sequence = { weights, bootstrap: this.forwardPass(next) };
+        this.sequence = { samples: 0, bootstrap: this.forwardPass(next) };
     }
 
     endSequence(commit: boolean) {
@@ -254,13 +273,54 @@ export class DrivingGpuModel {
         if (!sequence) return;
         this.sequence = undefined;
         try {
-            if (commit) {
+            if (commit && sequence.samples) {
                 this.assertReady();
                 const commands = this.device.createCommandEncoder();
-                sequence.weights.forEach((updated, original) => commands.copyBufferToBuffer(updated, 0, original, 0, original.size));
+                this.applyGradients(commands, sequence.samples);
                 this.device.queue.submit([commands.finish()]);
             }
         } finally { this.release(sequence.bootstrap); }
+    }
+
+    private parameters() {
+        const entries: [string, GPUBuffer, boolean][] = [
+            ...this.cameraWeights.map((weights, i): [string, GPUBuffer, boolean] => [`cameraGradient${i}`, weights, false]),
+            ['projectionGradient', this.cameraProjectionWeights, false],
+            ['lstmGradient', this.lstmWeights, false], ['headGradient', this.outputWeights, false],
+        ];
+        if (this.cameraNormWeights) entries.push(['cameraNormGradient', this.cameraNormWeights, true]);
+        if (this.lstmNormWeights) entries.push(['lstmNormGradient', this.lstmNormWeights, true]);
+        return entries.map(([name, weights, normalized]) => ({ weights, normalized,
+            gradient: this.scratch(this.training, name, weights.size) }));
+    }
+
+    private applyGradients(commands: GPUCommandEncoder, samples: number) {
+        const parameters = this.parameters();
+        const count = this.scratch(this.training, 'gradientSamples', 4);
+        const stats = this.scratch(this.training, 'gradientStats', 6 * 4);
+        const partialCount = parameters.reduce((sum, { gradient }) => sum + Math.ceil(gradient.size / (4 * 256)), 0);
+        const partials = this.scratch(this.training, 'gradientPartials', partialCount * 4);
+        this.device.queue.writeBuffer(count, 0, new Uint32Array([samples]));
+        let offset = 0;
+        parameters.forEach(({ gradient }, i) => {
+            const position = this.scratch(this.training, `gradientOffset${i}`, 4);
+            this.device.queue.writeBuffer(position, 0, new Uint32Array([offset]));
+            const groups = Math.ceil(gradient.size / (4 * 256));
+            this.dispatch(commands, 'gradientPartialNorm', [gradient, partials, position], groups);
+            offset += groups;
+        });
+        this.dispatch(commands, 'gradientGlobalNorm', [partials, count, stats], 1);
+        parameters.forEach(({ weights, gradient, normalized }) => this.dispatch(commands,
+            normalized ? 'applyNormGradient' : 'applyGradient', [weights, gradient, stats], Math.ceil(weights.size / (4 * 64))));
+    }
+
+    /** Optional diagnostic readback; normal training keeps all gradients on the GPU.
+     * updateNorm is the proposed step before the final weight guard, an upper bound on the actual step. */
+    async trainingDiagnostics() {
+        const stats = this.training.get('gradientStats');
+        if (!stats) return undefined;
+        const [gradientNorm, clipScale, updateNorm, learningRate, samples, valid] = Array.from(await this.download([stats]));
+        return { gradientNorm, clipScale, updateNorm, learningRate, samples, finite: valid === 1 };
     }
 
     learnTargets(input: DrivingPolicyInput, targets: PlannedActionTarget[]) {
@@ -317,16 +377,21 @@ export class DrivingGpuModel {
         // Hidden gradients and deltas are overwritten. Cell gradients and weight
         // accumulators must start at zero on every update, including reuse.
         commands.clearBuffer(upstream, this.hidden * 4, this.hidden * 4);
-        [projectionGradient, ...cameraGradients].forEach((gradient) => commands.clearBuffer(gradient));
+        if (!this.sequence) this.parameters().forEach(({ gradient }) => commands.clearBuffer(gradient));
         this.dispatch(commands, gradientShader, [...targets, outputGradient], Math.ceil(this.outputs / 64));
         this.dispatch(commands, 'hiddenGradient', [this.outputWeights, outputGradient, upstream], Math.ceil(this.hidden / 64));
         for (let t = pass.steps - 1; t >= 0; t--) {
             this.dispatch(commands, 'gateGradient', [pass.states, upstream, deltas, this.times[t]], Math.ceil(this.hidden / 64));
+            if (this.lstmNormWeights) this.dispatch(commands, 'gateNormBackward',
+                [pass.gateCache!, this.lstmNormWeights, deltas, this.times[t], buffer('lstmNormGradient', this.lstmNormWeights.size)], 4);
             if (t > 0) this.dispatch(commands, 'recurrentGradient', [this.lstmWeights, deltas, upstream, this.times[t]], Math.ceil(this.hidden / 64));
         }
         for (const camera of pass.cameras) {
             this.dispatch(commands, 'cameraGradient', [this.lstmWeights, deltas, camera.offset, projectionDelta],
                 Math.ceil(this.cameraInputs / 64));
+            if (this.cameraNormWeights) this.dispatch(commands, 'cameraNormalizeBackward',
+                [camera.activations[this.layers.length + 3], this.cameraNormWeights, projectionDelta,
+                    buffer('cameraNormGradient', this.cameraNormWeights.size)], 1);
             this.dispatch(commands, 'cameraProjectionBackward', [this.cameraProjectionWeights, projectionDelta, pooledDelta],
                 Math.ceil(this.pooledInputs / 64));
             this.dispatch(commands, 'cameraProjectionWeightGradient', [camera.activations[this.layers.length + 1], projectionDelta, projectionGradient],
@@ -344,16 +409,13 @@ export class DrivingGpuModel {
                     layer.channels * layer.columns);
             }
         }
-        // Backprop reads the collection weights. Only the update destinations
-        // accumulate changes until endSequence commits the completed rollout.
-        const destination = (weights: GPUBuffer) => this.sequence?.weights.get(weights) ?? weights;
-        this.layers.forEach((layer, l) => this.dispatch(commands, `cameraUpdate${l}`, [destination(this.cameraWeights[l]), cameraGradients[l]],
-            Math.ceil(layer.channels * layer.columns / 64)));
-        this.dispatch(commands, 'cameraProjectionUpdate', [destination(this.cameraProjectionWeights), projectionGradient],
-            Math.ceil(this.cameraInputs * (this.pooledInputs + 1) / 64));
-        this.dispatch(commands, 'updateLstm', [destination(this.lstmWeights), pass.features, pass.states, deltas, pass.count],
+        // History sums follow BPTT's chain rule. Frozen sequence samples accumulate
+        // into one summed gradient, clipped only when the entire sequence is committed.
+        this.dispatch(commands, 'lstmWeightGradient', [buffer('lstmGradient', this.lstmWeights.size), pass.features, pass.states, deltas, pass.count],
             Math.ceil(4 * this.hidden * (this.inputs + this.hidden + 1) / 64));
-        this.dispatch(commands, 'updateOutput', [destination(this.outputWeights), pass.states, outputGradient, pass.count], Math.ceil(this.outputs * (this.hidden + 1) / 64));
+        this.dispatch(commands, 'outputWeightGradient', [buffer('headGradient', this.outputWeights.size), pass.states, outputGradient, pass.count], Math.ceil(this.outputs * (this.hidden + 1) / 64));
+        if (this.sequence) this.sequence.samples++;
+        else this.applyGradients(commands, 1);
         this.device.queue.submit([commands.finish()]);
     }
 
@@ -399,19 +461,21 @@ export class DrivingGpuModel {
         }
     }
 
-    async weights(): Promise<Pick<PolicyModelState, 'cameraWeights' | 'cameraProjectionWeights' | 'lstmWeights' | 'outputWeights'>> {
-        const values = await this.download([...this.cameraWeights, this.cameraProjectionWeights, this.lstmWeights, this.outputWeights]);
+    async weights(): Promise<PolicyWeights> {
+        const values = await this.download([...this.cameraWeights, this.cameraProjectionWeights, this.lstmWeights, this.outputWeights,
+            ...(this.cameraNormWeights ? [this.cameraNormWeights] : []), ...(this.lstmNormWeights ? [this.lstmNormWeights] : [])]);
         if (!values.every(Number.isFinite)) throw new Error('Invalid GPU model weights; the checkpoint was not saved.');
         let offset = 0;
-        const matrix = (rows: number, columns: number) => Array.from({ length: rows }, () => {
-            const limit = this.config.learning.weightLimit;
+        const matrix = (rows: number, columns: number, limit = this.config.learning.weightLimit) => Array.from({ length: rows }, () => {
             const row = Array.from(values.subarray(offset, offset + columns), (value) => Math.max(-limit, Math.min(limit, value)));
             offset += columns; return row;
         });
         return { cameraWeights: this.layers.map((layer) => matrix(layer.channels, layer.columns)),
             cameraProjectionWeights: matrix(this.cameraInputs, this.pooledInputs + 1),
             lstmWeights: matrix(4 * this.hidden, this.inputs + this.hidden + 1),
-            outputWeights: matrix(this.outputs, this.hidden + 1) };
+            outputWeights: matrix(this.outputs, this.hidden + 1),
+            ...(this.cameraNormWeights ? { cameraNormWeights: matrix(2, this.cameraInputs, Math.max(1, this.config.learning.weightLimit)) } : {}),
+            ...(this.lstmNormWeights ? { lstmNormWeights: matrix(2, 4 * this.hidden, Math.max(1, this.config.learning.weightLimit)) } : {}) };
     }
 
     dispose() {

@@ -5,6 +5,8 @@ import AiDrivingTraining from './AiDrivingTraining';
 import type { ObservationResult } from './driving-observation';
 import { circuitMapFixture, referenceLapFixture, trainingFixture } from './training-fixtures';
 import { DrivingPolicy, emptyTrainingDocument } from './driving-policy';
+import { DrivingGpuModel } from './driving-gpu-model';
+import { DrivingTrainingLoop } from './driving-training-loop';
 import { cloneConfig } from './driving-model-config';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 import type { VisionTimingSnapshot } from 'views/live-session/track-vision/vision-timing';
@@ -65,6 +67,24 @@ beforeEach(() => {
         })) };
 });
 afterEach(async () => { await flush(); delete window.virtualController; delete window.drivingModelFiles; jest.restoreAllMocks(); jest.useRealTimers(); });
+
+it('forwards every fresh telemetry event between controller ticks without a camera', async () => {
+    const collect = jest.spyOn(DrivingTrainingLoop.prototype, 'recordTelemetry');
+    const { live } = trainingFixture(Date.now());
+    await renderTraining();
+    act(() => { liveTelemetryStore.resetSession(); });
+    collect.mockClear();
+    act(() => {
+        liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence: 1, committedSequence: 1, committedCount: 1,
+            sample: { ...live.currentTelemetry, Physics_gas: 0.2 } });
+        liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence: 2, committedSequence: 2, committedCount: 2,
+            sample: { ...live.currentTelemetry, Physics_gas: 0.8 } });
+    });
+    expect(collect.mock.calls.map(([sample]) => sample.controls.throttle)).toEqual([0.2, 0.8]);
+    expect(collect.mock.calls.map(([sample]) => sample.sampleIndex)).toEqual([0, 1]);
+    expect(collect.mock.calls[1][0].measuredAt).toBe(collect.mock.calls[0][0].measuredAt);
+    expect(mockInput.observation).toBeUndefined();
+});
 
 it('passes the Live Map centerline and boundaries to observations and displays track rewards', async () => {
     const circuitMap: CircuitMapDto = { id: 'monza', game: 'acc', source_track_key: 'monza', circuit_name: 'Monza', resolution: 1000,
@@ -933,6 +953,80 @@ it.each(['Stop', 'Escape', 'Disconnect', 'blur', 'pointerCancel', 'lostPointerCa
     expect(api.apply).toHaveBeenCalledTimes(count);
 });
 
+it('saves exploration with an untrained model, restores it on remount and resets its defaults', async () => {
+    const view = await renderTraining();
+    const pedals = screen.getByRole('slider', { name: 'Pedal and steering exploration' });
+    const gears = screen.getByRole('slider', { name: 'Gear exploration' });
+    expect(pedals).toHaveValue('0.05');
+    expect(gears).toHaveValue('0.25');
+    fireEvent.change(pedals, { target: { value: '0.15' } });
+    fireEvent.change(gears, { target: { value: '0.6' } }); await flush();
+    expect(JSON.parse(files.get(MODEL_PATH)!)).toMatchObject({ model: null,
+        configuration: { learning: { explorationSigma: 0.15, shiftTemperature: 0.6 } } });
+    view.unmount();
+    await renderTraining();
+    expect(screen.getByRole('slider', { name: 'Pedal and steering exploration' })).toHaveValue('0.15');
+    expect(screen.getByRole('slider', { name: 'Gear exploration' })).toHaveValue('0.6');
+    fireEvent.click(screen.getByRole('button', { name: 'Reset exploration' })); await flush();
+    expect(screen.getByRole('slider', { name: 'Pedal and steering exploration' })).toHaveValue('0.05');
+    expect(screen.getByRole('slider', { name: 'Gear exploration' })).toHaveValue('0.25');
+    expect(JSON.parse(files.get(MODEL_PATH)!).configuration.learning).toMatchObject({ explorationSigma: 0.05, shiftTemperature: 0.25 });
+});
+
+it.each([true, false])('loads exploration into the GPU and locks it for the run without changing weights (training=%s)', async (train) => {
+    const { observation } = trainingFixture(Date.now()), config = cloneConfig();
+    config.network.hiddenUnits = 2;
+    config.network.cameraProjectionUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    config.learning.explorationSigma = 0.12;
+    config.learning.shiftTemperature = 0.4;
+    const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
+    checkpoint.model.steps = 7;
+    files.set(MODEL_PATH, JSON.stringify(checkpoint));
+    mockInput = { observation };
+    const decide = jest.spyOn(DrivingPolicy.prototype, 'decideAsync');
+    await renderTraining();
+    const pedals = screen.getByRole('slider', { name: 'Pedal and steering exploration' });
+    const gears = screen.getByRole('slider', { name: 'Gear exploration' });
+    expect(pedals).toHaveValue('0.12');
+    expect(gears).toHaveValue('0.4');
+    fireEvent.change(pedals, { target: { value: '0.2' } });
+    fireEvent.change(gears, { target: { value: '0.7' } }); await flush();
+    expect(JSON.parse(files.get(MODEL_PATH)!).model).toEqual(checkpoint.model);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    const startLabel = train ? 'Start training' : 'Run trained model';
+    fireEvent.click(screen.getByRole('button', { name: startLabel }));
+    expect(pedals).toBeDisabled();
+    expect(gears).toBeDisabled();
+    await flush();
+    expect(DrivingGpuModel.create).toHaveBeenLastCalledWith(expect.objectContaining({
+        learning: expect.objectContaining({ explorationSigma: 0.2, shiftTemperature: 0.7 }),
+    }), checkpoint.model);
+    expect(decide).toHaveBeenCalledWith(expect.anything(), train, expect.anything());
+    expect(pedals).toBeDisabled();
+    expect(gears).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reset exploration' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
+    expect(pedals).toBeEnabled();
+    expect(gears).toBeEnabled();
+    fireEvent.change(pedals, { target: { value: '0.08' } }); await flush();
+    fireEvent.click(screen.getByRole('button', { name: startLabel })); await flush();
+    expect(DrivingGpuModel.create).toHaveBeenCalledTimes(2);
+    expect(DrivingGpuModel.create).toHaveBeenLastCalledWith(expect.objectContaining({
+        learning: expect.objectContaining({ explorationSigma: 0.08, shiftTemperature: 0.7 }),
+    }), checkpoint.model);
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
+});
+
+it('keeps exploration disabled until a model file is selected', async () => {
+    selectedFile = null;
+    await renderTraining();
+    expect(screen.getByRole('slider', { name: 'Pedal and steering exploration' })).toBeDisabled();
+    expect(screen.getByRole('slider', { name: 'Gear exploration' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Reset exploration' })).toBeDisabled();
+    expect(window.drivingModelFiles!.write).not.toHaveBeenCalled();
+});
+
 it('persists the aggression setting, restores it on remount and resets to reference', async () => {
     const view = await renderTraining();
     const slider = screen.getByRole('slider', { name: 'Driving aggression' });
@@ -997,6 +1091,7 @@ it.each([true, false])('uses Live Map’s speed targets without position output 
     delete fixture.vision.position;
     act(() => { jest.advanceTimersByTime(100); }); await flush();
     expect(screen.getByText(/Last scored at aggression 0/)).toBeInTheDocument();
+    expect(Number(getDefinition('Acceleration / deceleration').textContent)).toBeLessThan(0);
     const progress = Number(getDefinition('Normalized position progress').textContent);
     expect(progress).toBeGreaterThan(0);
     expect(screen.queryByText('Follow the reference line')).not.toBeInTheDocument();
@@ -1005,7 +1100,7 @@ it.each([true, false])('uses Live Map’s speed targets without position output 
     fixture = trainingFixture(Date.now(), 50, referenceLap);
     fixture.live.currentTelemetry.Graphics_normalized_car_position = 0.252;
     delete fixture.vision.position;
-    fixture.live.currentTelemetry.Physics_speed_kmh = 0;
+    fixture.live.currentTelemetry.Physics_speed_kmh = 0.5;
     act(() => { jest.advanceTimersByTime(100); }); await flush();
     expect(Number(getDefinition('Normalized position progress').textContent)).toBeLessThan(0);
     fireEvent.click(screen.getByRole('button', { name: 'Reset to reference' }));

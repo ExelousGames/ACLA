@@ -1,17 +1,20 @@
 import { DrivingModelConfig } from './driving-model-config';
+import { drivingLearningRate } from './driving-update-shaders';
 
 /** Learning targets enter from the CPU; predictions and output gradients stay on the GPU. */
 export function drivingLearningShaders(config: DrivingModelConfig): Record<string, string> {
     const l = config.learning;
+    // Preserve relative actor/critic rates while clipping before the common base rate.
+    const rate = drivingLearningRate(config) || 1;
     const constants = `
 const ACTIONS = ${config.actions.outputs.length}u;
 const AXES = 2u;
 const CRITIC = ${config.actions.planTimesSeconds.length * config.actions.outputs.length}u;
 const EPSILON = ${l.actionEpsilon.toExponential()}f;
-const DEMONSTRATION_RATE = ${l.demonstrationRate.toExponential()}f;
+const DEMONSTRATION_RATE = ${(l.demonstrationRate / rate).toExponential()}f;
 const DEMONSTRATION_LIMIT = ${l.demonstrationGradientLimit.toExponential()}f;
-const ACTOR_RATE = ${l.actorRate.toExponential()}f;
-const CRITIC_RATE = ${l.criticRate.toExponential()}f;
+const ACTOR_RATE = ${(l.actorRate / rate).toExponential()}f;
+const CRITIC_RATE = ${(l.criticRate / rate).toExponential()}f;
 const ADVANTAGE_LIMIT = ${l.advantageLimit.toExponential()}f;
 const POLICY_LIMIT = ${l.policyGradientLimit.toExponential()}f;
 const VARIANCE = ${(l.explorationSigma ** 2).toExponential()}f;

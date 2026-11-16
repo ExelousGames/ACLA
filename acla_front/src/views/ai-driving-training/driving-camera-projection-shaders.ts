@@ -89,13 +89,5 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     if (column < INPUTS) { value = inputs[column]; }
     gradient[id.x] += deltas[id.x / COLS] * value;
 }`,
-        cameraProjectionUpdate: projection + `
-@group(0) @binding(0) var<storage, read_write> weights: array<f32>;
-@group(0) @binding(1) var<storage, read> gradient: array<f32>;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-    if (id.x >= OUTPUTS * COLS) { return; }
-    weights[id.x] = clamp(weights[id.x] + gradient[id.x], -${config.learning.weightLimit.toExponential()}f, ${config.learning.weightLimit.toExponential()}f);
-}`,
     };
 }

@@ -48,6 +48,9 @@ export interface PolicyModelState {
     steps: number;
     cameraWeights: number[][][];
     cameraProjectionWeights: number[][];
+    /** LayerNorm rows are [gain, bias]; absent for the original unnormalized computation. */
+    cameraNormWeights?: number[][];
+    lstmNormWeights?: number[][];
     lstmWeights: number[][];
     outputWeights: number[][];
 }
@@ -59,6 +62,8 @@ export interface DrivingTrainingDocument {
     model: PolicyModelState | null;
 }
 export interface PolicyCheckpoint extends DrivingTrainingDocument { model: PolicyModelState }
+export type PolicyWeights = Pick<PolicyModelState, 'cameraWeights' | 'cameraProjectionWeights' | 'cameraNormWeights'
+    | 'lstmNormWeights' | 'lstmWeights' | 'outputWeights'>;
 
 export function emptyTrainingDocument(configuration = DEFAULT_DRIVING_CONFIG): DrivingTrainingDocument {
     return { format: 'kestrel-self-driving-model', algorithm: 'online-actor-critic', configuration: cloneConfig(configuration), model: null };
@@ -77,7 +82,7 @@ export function readTrainingDocument(value: unknown): DrivingTrainingDocument {
 
 /** Gaussian axes, categorical shifting and a multi-step critic share a CNN and temporal LSTM. */
 export class DrivingPolicy {
-    private initialWeights?: Pick<PolicyModelState, 'cameraWeights' | 'cameraProjectionWeights' | 'lstmWeights' | 'outputWeights'>;
+    private initialWeights?: PolicyWeights;
     private gpu?: DrivingGpuModel;
     private gpuInitialization?: Promise<void>;
     private gpuBatch?: Promise<void>;
@@ -110,7 +115,7 @@ export class DrivingPolicy {
                 : Math.max(-limit, Math.min(limit, (random() * 2 - 1) * Math.sqrt(6 / (pooled + projected))))));
         const lstmWeights = Array.from({ length: 4 * units }, (_, row) =>
             Array.from({ length: inputs + units + 1 }, (_, column) => {
-                const value = column === inputs + units ? Number(row >= units && row < 2 * units)
+                const value = column === inputs + units ? Number(!configuration.network.lstmLayerNorm && row >= units && row < 2 * units)
                     : (random() * 2 - 1) / Math.sqrt(inputs + units);
                 return Math.max(-limit, Math.min(limit, value));
             }));
@@ -118,6 +123,13 @@ export class DrivingPolicy {
             (_, j) => j === this.configuration.network.hiddenUnits ? (i === this.criticOutput ? 0 : this.configuration.network.initialActionBias[i % this.actionOutputs])
                 : (random() * 2 - 1) * this.configuration.network.initialOutputWeightScale));
         this.initialWeights = { cameraWeights, cameraProjectionWeights, lstmWeights, outputWeights };
+        if (configuration.network.cameraLayerNorm) {
+            this.initialWeights.cameraNormWeights = [Array(projected).fill(1), Array(projected).fill(0)];
+        }
+        if (configuration.network.lstmLayerNorm) {
+            this.initialWeights.lstmNormWeights = [Array(4 * units).fill(1),
+                Array.from({ length: 4 * units }, (_, row) => Number(row >= units && row < 2 * units))];
+        }
     }
 
     matches(observation: DrivingObservation): boolean {
@@ -208,7 +220,7 @@ export class DrivingPolicy {
         const gpu = this.requireGpu();
         if (!Number.isFinite(reward) || !Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) throw new Error('Invalid training transition.');
         if (!decision.gpu) throw new Error('Missing GPU training sample.');
-        const pass = decision.gpu.released ? gpu.replay(decision.input) : decision.gpu;
+        const pass = this.learningSequence || decision.gpu.released ? gpu.replay(decision.input) : decision.gpu;
         try {
             gpu.learnTransition(pass, next, { reward, elapsedSeconds, terminal,
                 actions: credits.map((credit) => ({ ...credit, latent: decision.plan[credit.step].latent })) });
@@ -216,13 +228,16 @@ export class DrivingPolicy {
         this.steps++;
     }
 
-    /** One pass over a rollout, with all gradients and bootstrap values evaluated
-     * on its collection policy. Publish weights only after the whole sequence. */
+    private learningSequence = false;
+
+    /** Buffered consequences can span weight updates. Replay their saved inputs
+     * with the batch's frozen weights and retain the actions actually executed. */
     async learnSequenceAsync(sequence: DrivingRolloutInterval[], next: DrivingPolicyInput, active = () => true): Promise<void> {
         const gpu = this.requireGpu(), steps = this.steps;
         const targets = drivingSequenceTargets(sequence, this.configuration.learning);
         if (!targets.length || !active()) return;
         gpu.beginSequence(next);
+        this.learningSequence = true;
         let commit = false;
         try {
             for (const target of targets) {
@@ -231,6 +246,7 @@ export class DrivingPolicy {
             }
             commit = active();
         } finally {
+            this.learningSequence = false;
             gpu.endSequence(commit);
             if (!commit) this.steps = steps;
         }
@@ -238,6 +254,11 @@ export class DrivingPolicy {
 
     async learnDemonstrationAsync(input: DrivingPolicyInput, action: DrivingAction, shifts: ShiftAvailability): Promise<void> {
         await this.learnTargetsAsync(input, [{ step: 0, action, shifts }], true);
+    }
+
+    /** Train one observation against its available demonstrated future in one update. */
+    async learnDemonstratedPlanAsync(input: DrivingPolicyInput, targets: PlannedActionTarget[]): Promise<void> {
+        await this.learnTargetsAsync(input, targets, true);
     }
 
     async learnPlannedActionsAsync(input: DrivingPolicyInput, targets: PlannedActionTarget[]): Promise<void> {
@@ -263,7 +284,9 @@ export class DrivingPolicy {
         }
     }
 
-    /** Keep a checkpoint from observing only part of a training tick. */
+    /** Keep a checkpoint from observing only part of a training batch.
+     * Each demonstrated origin trains its available targets together in one globally
+     * clipped update. Autonomous rollouts accumulate via learnSequenceAsync. */
     async trainBatchAsync(train: () => Promise<void>, onSubmitted?: () => void): Promise<void> {
         const gpu = this.requireGpu();
         let finish!: () => void;
@@ -276,6 +299,12 @@ export class DrivingPolicy {
         finally { this.gpuBatch = undefined; finish(); }
     }
 
+    /** Explicit measurement only; optimizer diagnostics are not stored in checkpoints. */
+    async trainingDiagnosticsAsync() {
+        await this.gpuBatch;
+        return this.gpu ? this.requireGpu().trainingDiagnostics() : undefined;
+    }
+
     /** Serialize seed/restored weights before upload; trained weights require checkpointAsync. */
     checkpoint(): PolicyCheckpoint {
         if (!this.initialWeights) throw new Error('GPU checkpoints must be awaited.');
@@ -283,6 +312,8 @@ export class DrivingPolicy {
             context: { ...this.context }, inputs: this.inputs, steps: this.steps,
             cameraWeights: this.initialWeights.cameraWeights.map((rows) => rows.map((row) => row.slice())),
             cameraProjectionWeights: this.initialWeights.cameraProjectionWeights.map((row) => row.slice()),
+            ...(this.initialWeights.cameraNormWeights && { cameraNormWeights: this.initialWeights.cameraNormWeights.map((row) => row.slice()) }),
+            ...(this.initialWeights.lstmNormWeights && { lstmNormWeights: this.initialWeights.lstmNormWeights.map((row) => row.slice()) }),
             lstmWeights: this.initialWeights.lstmWeights.map((row) => row.slice()), outputWeights: this.initialWeights.outputWeights.map((row) => row.slice()) } };
     }
 
@@ -303,9 +334,9 @@ export class DrivingPolicy {
             || Object.keys(document).some((key) => !['format', 'algorithm', 'configuration', 'model'].includes(key))) return invalid();
         const config = upgradeDrivingConfig(document.configuration), data = document.model;
         validateDrivingConfig(config);
-        const matrix = (rows: unknown, height: number, width: number) => Array.isArray(rows) && rows.length === height
-            && rows.every((row) => Array.isArray(row) && row.length === width && row.every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= config.learning.weightLimit));
-        if (!data || Object.keys(data).some((key) => !['context', 'inputs', 'steps', 'cameraWeights', 'cameraProjectionWeights', 'lstmWeights', 'outputWeights'].includes(key))
+        const matrix = (rows: unknown, height: number, width: number, limit = config.learning.weightLimit) => Array.isArray(rows) && rows.length === height
+            && rows.every((row) => Array.isArray(row) && row.length === width && row.every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= limit));
+        if (!data || Object.keys(data).some((key) => !['context', 'inputs', 'steps', 'cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'lstmNormWeights', 'lstmWeights', 'outputWeights'].includes(key))
             || !Number.isInteger(data.inputs) || data.inputs < 1
             || !Number.isSafeInteger(data.steps) || data.steps < 0
             || !data.context || !['game', 'car', 'map'].every((key) => typeof (data.context as any)[key] === 'string' && (data.context as any)[key].length > 0)
@@ -314,12 +345,18 @@ export class DrivingPolicy {
             || !Array.isArray(data.cameraWeights) || data.cameraWeights.length !== config.network.cameraLayers.length
             || drivingCameraLayers(config).some((layer, i) => !matrix(data.cameraWeights[i], layer.channels, layer.columns))
             || !matrix(data.cameraProjectionWeights, drivingCameraInputs(config), drivingCameraPooledInputs(config) + 1)
+            || (config.network.cameraLayerNorm ? !matrix(data.cameraNormWeights, 2, drivingCameraInputs(config), Math.max(1, config.learning.weightLimit))
+                : data.cameraNormWeights !== undefined)
+            || (config.network.lstmLayerNorm ? !matrix(data.lstmNormWeights, 2, 4 * config.network.hiddenUnits, Math.max(1, config.learning.weightLimit))
+                : data.lstmNormWeights !== undefined)
             || !matrix(data.lstmWeights, 4 * config.network.hiddenUnits, data.inputs + config.network.hiddenUnits + 1)
             || !matrix(data.outputWeights, config.actions.planTimesSeconds.length * config.actions.outputs.length + 1, config.network.hiddenUnits + 1)) return invalid();
         const policy = new DrivingPolicy(data.context, drivingObservationInputs(config), Math.random, config);
         policy.initialWeights = {
             cameraWeights: data.cameraWeights.map((rows) => rows.map((row) => row.slice())),
             cameraProjectionWeights: data.cameraProjectionWeights.map((row) => row.slice()),
+            ...(data.cameraNormWeights && { cameraNormWeights: data.cameraNormWeights.map((row) => row.slice()) }),
+            ...(data.lstmNormWeights && { lstmNormWeights: data.lstmNormWeights.map((row) => row.slice()) }),
             lstmWeights: data.lstmWeights.map((row) => row.slice()),
             outputWeights: data.outputWeights.map((row) => row.slice()),
         };

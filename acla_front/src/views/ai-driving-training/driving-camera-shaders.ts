@@ -109,14 +109,6 @@ fn main(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) lo
     }
     if (local == 0u) { gradient[group.x] += sums[0]; }
 }`;
-        shaders[`cameraUpdate${l}`] = `
-@group(0) @binding(0) var<storage, read_write> weights: array<f32>;
-@group(0) @binding(1) var<storage, read> gradient: array<f32>;
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-    if (id.x >= ${channels * columns}u) { return; }
-    weights[id.x] = clamp(weights[id.x] + gradient[id.x], -${config.learning.weightLimit.toExponential()}f, ${config.learning.weightLimit.toExponential()}f);
-}`;
     });
     return shaders;
 }

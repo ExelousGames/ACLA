@@ -35,6 +35,14 @@ async function checks(soakIterations) {
     const { DrivingPolicy } = require('views/ai-driving-training/driving-policy');
     const { cloneConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingMemorySlots, drivingObservationInputs, drivingPolicyInputs } = require('views/ai-driving-training/driving-model-config');
     const { drivingMemoryInputs, drivingMemorySlotInputs } = require('views/ai-driving-training/driving-memory');
+    // Preserve the original exact-value fixtures as a checkpoint compatibility
+    // suite. The normalized computation has independent checks below.
+    const legacyConfig = (source) => {
+        const config = cloneConfig(source);
+        config.network.cameraLayerNorm = config.network.lstmLayerNorm = false;
+        config.learning.gradientNormLimit = 1e6;
+        return config;
+    };
     const assert = (condition, label) => { if (!condition) throw new Error(label); };
     const errors = [];
     let readbacks = 0;
@@ -61,13 +69,15 @@ async function checks(soakIterations) {
     };
     const compare = (a, b, label) => {
         assert(a.model.steps === b.model.steps, `${label}: steps`);
-        for (const key of ['cameraWeights', 'cameraProjectionWeights', 'lstmWeights', 'outputWeights']) {
+        for (const key of ['cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'lstmWeights', 'lstmNormWeights', 'outputWeights']) {
+            if (!a.model[key] && !b.model[key]) continue;
             close(a.model[key].flat(2), b.model[key].flat(2), `${label}/${key}`);
         }
     };
     const changed = (a, b) => a.flat(2).some((value, i) => value !== b.flat(2)[i]);
     const finite = (checkpoint) => {
-        for (const key of ['cameraWeights', 'cameraProjectionWeights', 'lstmWeights', 'outputWeights']) {
+        for (const key of ['cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'lstmWeights', 'lstmNormWeights', 'outputWeights']) {
+            if (!checkpoint.model[key]) continue;
             assert(checkpoint.model[key].flat(2).every(Number.isFinite), `Finite ${key}`);
         }
     };
@@ -115,7 +125,7 @@ async function checks(soakIterations) {
     // Exercise the production forward/backward kernels against independent CPU
     // expectations. Finite gate sums can exceed the GPU tanh overflow threshold;
     // cell states can also exceed it with the supported 101-observation history.
-    const activationConfig = cloneConfig();
+    const activationConfig = legacyConfig();
     activationConfig.network.hiddenUnits = 1;
     activationConfig.network.cameraLayers.forEach(layer => { layer.channels = 1; });
     activationConfig.network.cameraProjectionUnits = 1;
@@ -153,7 +163,7 @@ async function checks(soakIterations) {
 
     const results = [];
     for (const layout of ['default', 'custom', 'boundary']) {
-        const config = cloneConfig();
+        const config = legacyConfig();
         if (layout !== 'default') {
             config.network.cameraLayers.forEach(layer => { layer.channels = 3; });
             config.observation.features = ['camera', 'speed', 'controls', 'centerline'];
@@ -295,7 +305,7 @@ async function checks(soakIterations) {
 
     // Check backpropagation against finite differences of an objective evaluated
     // by real GPU forward passes. No second model or CPU training algorithm.
-    const config = cloneConfig();
+    const config = legacyConfig();
     config.observation.features = ['camera', 'speed', 'centerline']; config.memory.features = ['camera', 'speed', 'centerline'];
     config.memory.windowMs = 400; config.network.hiddenUnits = 2;
     config.network.cameraLayers.forEach(layer => { layer.channels = 1; });
@@ -560,10 +570,225 @@ async function checks(soakIterations) {
         } else close(start.model.outputWeights.slice(2, 5).flat(), finish.model.outputWeights.slice(2, 5).flat(), 'Masked large logits');
         policy.dispose();
     }
+    // Independent CPU forward oracle and numerical derivatives exercise both
+    // normalizers through the production GPU path, including image history.
+    const normalizedConfig = cloneConfig();
+    normalizedConfig.observation.features = normalizedConfig.memory.features = ['camera', 'speed', 'centerline'];
+    normalizedConfig.memory.windowMs = 600;
+    normalizedConfig.network.cameraLayers.forEach(layer => { layer.channels = 2; });
+    normalizedConfig.network.hiddenUnits = 4;
+    normalizedConfig.network.cameraProjectionUnits = 16;
+    normalizedConfig.actions.planTimesSeconds = [0, 0.1, 0.2];
+    normalizedConfig.learning.demonstrationRate = 0.05;
+    normalizedConfig.learning.gradientNormLimit = 1e6;
+    const normalized = await create(normalizedConfig);
+    const normalizedSeed = await normalized.checkpointAsync();
+    normalizedSeed.model.outputWeights.forEach((row, r) => row.forEach((_value, c) => {
+        if (c < normalizedConfig.network.hiddenUnits) row[c] = Math.sin(1 + r * 0.7 + c) * 0.2;
+    }));
+    normalized.dispose();
+    const normalizedPolicy = await create(normalizedConfig, normalizedSeed);
+    const normalizedInput = makeInput(normalizedConfig, 2, true, true);
+    const norm = (values, gain, bias) => {
+        const mean = values.reduce((a, b) => a + b, 0) / values.length;
+        const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+        return values.map((value, i) => (value - mean) / Math.sqrt(variance + normalizedConfig.network.layerNormEpsilon) * gain[i] + bias[i]);
+    };
+    const normalizedPass = await normalizedPolicy.gpu.forward(normalizedInput);
+    const normalizedFeatures = await normalizedPolicy.gpu.download([normalizedPass.pass.features]);
+    for (const camera of normalizedPass.pass.cameras) {
+        const raw = await normalizedPolicy.gpu.download([camera.activations[normalizedConfig.network.cameraLayers.length + 2]]);
+        const offset = new Uint32Array((await normalizedPolicy.gpu.download([camera.offset])).buffer)[0];
+        close(Array.from(normalizedFeatures.slice(offset, offset + raw.length)),
+            norm(Array.from(raw), ...normalizedSeed.model.cameraNormWeights), 'Camera LayerNorm CPU oracle', 0.00003);
+    }
+    const normH = normalizedConfig.network.hiddenUnits, normInputs = drivingPolicyInputs(normalizedConfig);
+    let oracleHidden = new Array(normH).fill(0), oracleCell = new Array(normH).fill(0);
+    for (let t = 0; t < normalizedPass.pass.steps; t++) {
+        const vector = [...normalizedFeatures.slice(t * normInputs, (t + 1) * normInputs), ...oracleHidden, 1];
+        const sums = normalizedSeed.model.lstmWeights.map(row => row.reduce((sum, weight, i) => sum + weight * vector[i], 0));
+        const gates = [];
+        for (let gate = 0; gate < 4; gate++) gates.push(norm(sums.slice(gate * normH, (gate + 1) * normH),
+            ...normalizedSeed.model.lstmNormWeights.map(row => row.slice(gate * normH, (gate + 1) * normH))));
+        for (let i = 0; i < normH; i++) {
+            const sigmoid = x => 1 / (1 + Math.exp(-x));
+            oracleCell[i] = sigmoid(gates[1][i]) * oracleCell[i] + sigmoid(gates[0][i]) * Math.tanh(gates[2][i]);
+            oracleHidden[i] = sigmoid(gates[3][i]) * Math.tanh(oracleCell[i]);
+        }
+    }
+    const expectedOutputs = normalizedSeed.model.outputWeights.map(row => row[normH]
+        + oracleHidden.reduce((sum, value, i) => sum + value * row[i], 0));
+    close(normalizedPass.outputs, expectedOutputs, 'Gate-wise LayerNorm recurrent CPU oracle', 0.00003);
+    normalizedPolicy.gpu.release(normalizedPass.pass);
+    const normalizedTarget = { throttle: Math.tanh(0.4), brake: 0, steering: Math.tanh(-0.2) };
+    const noShifts = { up: false, down: false };
+    const normalizedObjective = async () => {
+        const decision = await predict(normalizedPolicy, normalizedInput, noShifts);
+        return -0.5 * decision.plan[0].means.reduce((sum, value, i) => sum + (value - [0.4, -0.2][i]) ** 2, 0);
+    };
+    const normBefore = await normalizedPolicy.checkpointAsync(), normCoordinates = [];
+    const addCoordinates = (key, rows, buffer, rowIndices, columns, layer) => {
+        for (const row of rowIndices) for (const column of columns) normCoordinates.push({ key, layer, row, column,
+            buffer, index: row * rows[0].length + column, value: rows[row][column] });
+    };
+    normBefore.model.cameraWeights.forEach((rows, layer) => addCoordinates('cameraWeights', rows,
+        normalizedPolicy.gpu.cameraWeights[layer], [0, 1], [0, rows[0].length - 1], layer));
+    addCoordinates('cameraProjectionWeights', normBefore.model.cameraProjectionWeights, normalizedPolicy.gpu.cameraProjectionWeights,
+        [0, 15], [0, 17, normBefore.model.cameraProjectionWeights[0].length - 1]);
+    for (let gate = 0; gate < 4; gate++) addCoordinates('lstmWeights', normBefore.model.lstmWeights,
+        normalizedPolicy.gpu.lstmWeights, [gate * normH], [2, normInputs, normInputs + normH]);
+    for (const key of ['cameraNormWeights', 'lstmNormWeights']) addCoordinates(key, normBefore.model[key], normalizedPolicy.gpu[key],
+        [0, 1], key === 'cameraNormWeights' ? [0, 7, 15] : [0, 4, 8, 12]);
+    addCoordinates('outputWeights', normBefore.model.outputWeights, normalizedPolicy.gpu.outputWeights, [0, 1], [0, normH]);
+    for (const coordinate of normCoordinates) {
+        const epsilon = 0.002;
+        normalizedPolicy.gpu.device.queue.writeBuffer(coordinate.buffer, coordinate.index * 4, new Float32Array([coordinate.value + epsilon]));
+        const plus = await normalizedObjective();
+        normalizedPolicy.gpu.device.queue.writeBuffer(coordinate.buffer, coordinate.index * 4, new Float32Array([coordinate.value - epsilon]));
+        const minus = await normalizedObjective();
+        normalizedPolicy.gpu.device.queue.writeBuffer(coordinate.buffer, coordinate.index * 4, new Float32Array([coordinate.value]));
+        coordinate.derivative = (plus - minus) / (2 * epsilon);
+    }
+    await withoutReadbacks('Normalized finite-difference update', () => normalizedPolicy.learnDemonstrationAsync(normalizedInput, normalizedTarget, noShifts));
+    const normAfter = await normalizedPolicy.checkpointAsync();
+    let normalizedDerivativeError = 0;
+    for (const coordinate of normCoordinates) {
+        const rows = coordinate.key === 'cameraWeights' ? normAfter.model.cameraWeights[coordinate.layer] : normAfter.model[coordinate.key];
+        const actual = (rows[coordinate.row][coordinate.column] - coordinate.value) / normalizedConfig.learning.demonstrationRate;
+        const error = Math.abs(actual - coordinate.derivative);
+        assert(error < 0.0002 + Math.abs(coordinate.derivative) * 0.03,
+            `Normalized finite differences ${coordinate.key}/${coordinate.layer ?? ''}/${coordinate.row}/${coordinate.column}: ${actual} vs ${coordinate.derivative}`);
+        normalizedDerivativeError = Math.max(normalizedDerivativeError, error);
+    }
+    for (const key of ['cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'lstmWeights', 'lstmNormWeights', 'outputWeights']) {
+        assert(normCoordinates.some(coordinate => coordinate.key === key && Math.abs(coordinate.derivative) > 1e-5),
+            `Normalized derivative fixture exercises ${key}`);
+        assert(changed(normBefore.model[key], normAfter.model[key]), `Normalized update trains ${key}`);
+    }
+    const normalizedReload = await create(normalizedConfig, JSON.parse(JSON.stringify(normAfter)));
+    close((await predict(normalizedPolicy, normalizedInput)).plan.flatMap(point => point.means),
+        (await predict(normalizedReload, normalizedInput)).plan.flatMap(point => point.means), 'Normalized checkpoint reload');
+    normalizedReload.dispose(); normalizedPolicy.dispose();
+
+    const allWeightKeys = ['cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'lstmWeights', 'lstmNormWeights', 'outputWeights'];
+    const flattenWeights = checkpoint => allWeightKeys.flatMap(key => checkpoint.model[key]?.flat(2) ?? []);
+    const normOf = values => Math.sqrt(values.reduce((sum, value) => sum + value * value, 0));
+    const deltaFrom = (before, after) => {
+        const initial = flattenWeights(before);
+        return flattenWeights(after).map((value, i) => value - initial[i]);
+    };
+    const clippingSeed = JSON.parse(JSON.stringify(normBefore));
+    clippingSeed.configuration.learning.gradientNormLimit = 0.05;
+    const clipped = await create(clippingSeed.configuration, clippingSeed);
+    await withoutReadbacks('Global clipped update', () => clipped.learnDemonstrationAsync(normalizedInput, normalizedTarget, noShifts));
+    const clippedAfter = await clipped.checkpointAsync(), clippedDiagnostics = await clipped.gpu.trainingDiagnostics();
+    const unclippedDelta = deltaFrom(normBefore, normAfter), clippedDelta = deltaFrom(clippingSeed, clippedAfter);
+    const clipScale = Math.min(1, clippingSeed.configuration.learning.gradientNormLimit * normalizedConfig.learning.demonstrationRate / normOf(unclippedDelta));
+    assert(clipScale < 0.9, 'Global clipping fixture exceeds the threshold');
+    close(clippedDelta, unclippedDelta.map(value => value * clipScale), 'Global clipping preserves full-parameter update direction', 0.0000003);
+    assert(normOf(clippedDelta) <= normalizedConfig.learning.demonstrationRate * clippingSeed.configuration.learning.gradientNormLimit + 0.000002,
+        'Global clipping bounds the full accumulated parameter update');
+    close([clippedDiagnostics.gradientNorm, clippedDiagnostics.clipScale, clippedDiagnostics.updateNorm],
+        [normOf(unclippedDelta) / normalizedConfig.learning.demonstrationRate, clipScale, normOf(clippedDelta)], 'Clipping diagnostics', 0.00003);
+    clipped.dispose();
+
+    // Frozen rollout commits sum all replay contributions before one global clip.
+    const sequenceClipped = await create(clippingSeed.configuration, clippingSeed), clipSequence = [];
+    for (let i = 0; i < 4; i++) {
+        const decision = await sequenceClipped.decideAsync(normalizedInput, true, noShifts);
+        sequenceClipped.releaseDecision(decision);
+        clipSequence.push({ startedAt: i * 100, endedAt: (i + 1) * 100, reward: 3,
+            samples: [{ decision, credits: credits(decision), rewardShare: 1 }] });
+    }
+    await withoutReadbacks('Clipped sequence commit', () => sequenceClipped.trainBatchAsync(() => sequenceClipped.learnSequenceAsync(clipSequence, normalizedInput)));
+    const clippedSequenceResult = await sequenceClipped.checkpointAsync(), sequenceDiagnostics = await sequenceClipped.gpu.trainingDiagnostics();
+    const sequenceUnclipped = await create(normalizedConfig, normBefore);
+    await sequenceUnclipped.trainBatchAsync(() => sequenceUnclipped.learnSequenceAsync(clipSequence, normalizedInput));
+    const sequenceDelta = deltaFrom(normBefore, await sequenceUnclipped.checkpointAsync());
+    const sequenceNorm = normOf(sequenceDelta) / normalizedConfig.learning.demonstrationRate;
+    const sequenceClipScale = Math.min(1, clippingSeed.configuration.learning.gradientNormLimit / sequenceNorm);
+    assert(sequenceClipScale < 0.9, 'Sequence clipping fixture exceeds the threshold');
+    close(deltaFrom(clippingSeed, clippedSequenceResult), sequenceDelta.map(value => value * sequenceClipScale),
+        'Sequence clipping preserves the summed gradient direction', 0.0000003);
+    close([sequenceDiagnostics.gradientNorm, sequenceDiagnostics.clipScale], [sequenceNorm, sequenceClipScale],
+        'Sequence diagnostics report the summed gradient norm', 0.00003);
+    assert(normOf(deltaFrom(clippingSeed, clippedSequenceResult)) <= normalizedConfig.learning.demonstrationRate * clippingSeed.configuration.learning.gradientNormLimit + 0.000002,
+        'Sequence global clip covers all accumulated replays');
+    assert(sequenceDiagnostics.samples === 4, 'Sequence diagnostics count all accumulated replays');
+    sequenceClipped.dispose(); sequenceUnclipped.dispose();
+
+    // Equal plan targets add their full trunk gradients and retain each head's contribution.
+    const planSumSeed = JSON.parse(JSON.stringify(normBefore));
+    for (let step = 1; step < normalizedConfig.actions.planTimesSeconds.length; step++) {
+        for (let row = 0; row < 5; row++) planSumSeed.model.outputWeights[step * 5 + row] = planSumSeed.model.outputWeights[row].slice();
+    }
+    const oneHead = await create(normalizedConfig, planSumSeed), allHeads = await create(normalizedConfig, planSumSeed);
+    const equalTargets = normalizedConfig.actions.planTimesSeconds.map((_time, step) => ({ step, action: normalizedTarget, shifts }));
+    await oneHead.learnPlannedActionsAsync(normalizedInput, equalTargets.slice(0, 1));
+    await allHeads.learnPlannedActionsAsync(normalizedInput, equalTargets);
+    const oneHeadAfter = await oneHead.checkpointAsync(), allHeadsAfter = await allHeads.checkpointAsync();
+    for (const key of allWeightKeys.filter(key => key !== 'outputWeights')) {
+        const initial = planSumSeed.model[key].flat(2);
+        close(allHeadsAfter.model[key].flat(2).map((value, i) => value - initial[i]),
+            oneHeadAfter.model[key].flat(2).map((value, i) => (value - initial[i]) * equalTargets.length),
+            `Plan targets sum trunk gradients/${key}`, 0.0000003);
+    }
+    for (const { step } of equalTargets) {
+        close(allHeadsAfter.model.outputWeights.slice(step * 5, step * 5 + 5).flat(),
+            oneHeadAfter.model.outputWeights.slice(0, 5).flat(),
+            `Plan loss preserves each active head contribution/${step}`, 0.0000003);
+    }
+    oneHead.dispose(); allHeads.dispose();
+
+    const invalidGradientPolicy = await create(normalizedConfig, normBefore);
+    const invalidGpu = invalidGradientPolicy.gpu, invalidParameters = invalidGpu.parameters();
+    for (const invalid of [Infinity, -Infinity, NaN, 0]) {
+        const clear = invalidGpu.device.createCommandEncoder();
+        invalidParameters.forEach(({ gradient }) => clear.clearBuffer(gradient));
+        invalidGpu.device.queue.submit([clear.finish()]);
+        invalidGpu.device.queue.writeBuffer(invalidParameters[0].gradient, 0, new Float32Array([invalid]));
+        if (invalid !== 0) invalidGpu.device.queue.writeBuffer(invalidParameters[1].gradient, 0, new Float32Array([1]));
+        const apply = invalidGpu.device.createCommandEncoder();
+        invalidGpu.applyGradients(apply, 1); invalidGpu.device.queue.submit([apply.finish()]);
+        compare(await invalidGradientPolicy.checkpointAsync(), normBefore, 'Nonfinite or zero global gradient preserves every parameter');
+        const diagnostic = await invalidGpu.trainingDiagnostics();
+        assert(diagnostic.updateNorm === 0 && diagnostic.finite === (invalid === 0), 'Invalid and zero gradient diagnostics');
+        assert(diagnostic.clipScale === (invalid === 0 ? 1 : 0), 'Nonfinite gradient rejects the entire commit');
+    }
+    invalidGradientPolicy.dispose();
+    const normalization = { finiteDifferences: normCoordinates.length, maxDerivativeError: normalizedDerivativeError,
+        clipping: clippedDiagnostics, sequenceClipping: sequenceDiagnostics };
+    const constantSeed = JSON.parse(JSON.stringify(normBefore));
+    constantSeed.configuration.learning.weightLimit = 2000;
+    for (const key of ['cameraProjectionWeights', 'lstmWeights']) constantSeed.model[key].forEach(row => {
+        row.fill(0); row[row.length - 1] = 1000;
+    });
+    const constantPolicy = await create(constantSeed.configuration, constantSeed);
+    const constantPass = await constantPolicy.gpu.forward(normalizedInput);
+    const constantFeatures = await constantPolicy.gpu.download([constantPass.pass.features]);
+    for (let t = 0; t < constantPass.pass.steps; t++) close(Array.from(constantFeatures.slice(t * normInputs + 2,
+        t * normInputs + 2 + normalizedConfig.network.cameraProjectionUnits)), new Array(16).fill(0), 'Zero-variance camera normalization');
+    close(constantPass.outputs, constantSeed.model.outputWeights.map(row => row[normH]), 'Large constant gate sums normalize before nonlinearities');
+    constantPolicy.gpu.release(constantPass.pass);
+    await withoutReadbacks('Zero-variance normalization backward', () => constantPolicy.learnDemonstrationAsync(normalizedInput, normalizedTarget, noShifts));
+    const constantAfter = await constantPolicy.checkpointAsync(); finite(constantAfter);
+    assert(changed(constantSeed.model.lstmNormWeights, constantAfter.model.lstmNormWeights), 'Zero-variance gates retain trainable bias gradients');
+    constantPolicy.dispose();
+
+    const productionConfig = cloneConfig(), productionPolicy = await create(productionConfig);
+    const productionSample = makeInput(productionConfig), productionBefore = await productionPolicy.checkpointAsync();
+    await withoutReadbacks('Default 256-feature normalized training', () => productionPolicy.learnDemonstrationAsync(productionSample, action, shifts));
+    const productionAfter = await productionPolicy.checkpointAsync();
+    assertTrained(productionBefore, productionAfter, 'Default normalized model');
+    for (const key of ['cameraNormWeights', 'lstmNormWeights']) assert(changed(productionBefore.model[key], productionAfter.model[key]), `Default normalized model trains ${key}`);
+    normalization.defaultClipping = await productionPolicy.gpu.trainingDiagnostics();
+    productionPolicy.dispose();
     const soak = [];
     if (soakIterations) for (const variant of ['default', 'saturated-long-history']) {
         const c = cloneConfig();
         if (variant === 'saturated-long-history') {
+            // Retain the original saturated baseline alongside the normalized default soak.
+            c.network.cameraLayerNorm = c.network.lstmLayerNorm = false;
             c.network.cameraLayers.forEach(layer => { layer.channels = 1; });
             c.network.cameraProjectionUnits = 32; c.network.hiddenUnits = 2;
             c.observation.features = ['camera', 'speed', 'centerline']; c.memory.features = ['camera', 'speed', 'centerline'];
@@ -639,7 +864,7 @@ async function checks(soakIterations) {
     return { adapter: { vendor: adapter.info.vendor, architecture: adapter.info.architecture },
         checks: 'GPU-only prediction and learning, zero intermediate readbacks, CNN/projection/LSTM/output finite differences, padded borders, spatial ordering and adaptive pooling gradients, all layers and gates train, historical camera gradients, masks, terminal/clipped transitions, delayed plans, checkpoint reload/synchronization, custom layouts/rates, allocation-free warmed ticks, reused versus fresh workspaces, bounded buffers and device loss passed',
         activationCases, sequenceChecks: 'Frozen collection, time-discounted returns, all-layer gradient accumulation, replay without readbacks, and interrupted-batch rollback passed',
-        soak, finiteDifferences: { weightsChecked: coordinates.length, maxDerivativeError }, results };
+        normalization, soak, finiteDifferences: { weightsChecked: coordinates.length, maxDerivativeError }, results };
 }
 
 app.whenReady().then(async () => {
