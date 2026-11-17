@@ -29,6 +29,17 @@ const TEST_CONTROLS = [
     { key: 'shiftDown', label: 'shift down', value: true },
     { key: 'shiftUp', label: 'shift up', value: true },
 ] as const;
+const EXPLORATION_CONTROLS = [
+    { key: 'throttleExplorationSigma', label: 'Throttle', control: 'throttle' },
+    { key: 'brakeExplorationSigma', label: 'Brake', control: 'brake' },
+    { key: 'steeringExplorationSigma', label: 'Steering', control: 'steering' },
+] as const;
+const EXPLORATION_FREQUENCIES = [
+    { key: 'throttleExplorationUpdateHz', label: 'Throttle', control: 'throttle' },
+    { key: 'brakeExplorationUpdateHz', label: 'Brake', control: 'brake' },
+    { key: 'steeringExplorationUpdateHz', label: 'Steering', control: 'steering' },
+    { key: 'gearExplorationUpdateHz', label: 'Gear', control: 'gear' },
+] as const;
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'Self-driving training failed.';
 
 export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSession: () => void }) {
@@ -58,6 +69,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const [accPreset, setAccPreset] = useState<AccControlPreset | null>(null);
     const [state, setState] = useState(initialTrainingState);
     const [inputs, setInputs] = useState<ObservationResult & { delays?: ObservationDelaySnapshot }>({ error: 'Waiting for Live Session inputs.' });
+    const sampledInputs = useRef(inputs);
     const [modelSteps, setModelSteps] = useState<number | null>(null);
     const [updateDiagnostics, setUpdateDiagnostics] = useState<Awaited<ReturnType<DrivingPolicy['trainingDiagnosticsAsync']>> | null>(null);
     const [measuringUpdate, setMeasuringUpdate] = useState(false);
@@ -74,8 +86,14 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const [aggression, setAggression] = useState(configuration.current.aggression);
     const aggressionRef = useRef(aggression);
     const [exploration, setExploration] = useState(() => ({
-        explorationSigma: configuration.current.learning.explorationSigma,
+        throttleExplorationSigma: configuration.current.learning.throttleExplorationSigma,
+        brakeExplorationSigma: configuration.current.learning.brakeExplorationSigma,
+        steeringExplorationSigma: configuration.current.learning.steeringExplorationSigma,
         shiftTemperature: configuration.current.learning.shiftTemperature,
+        throttleExplorationUpdateHz: configuration.current.learning.throttleExplorationUpdateHz,
+        brakeExplorationUpdateHz: configuration.current.learning.brakeExplorationUpdateHz,
+        steeringExplorationUpdateHz: configuration.current.learning.steeringExplorationUpdateHz,
+        gearExplorationUpdateHz: configuration.current.learning.gearExplorationUpdateHz,
     }));
     const [testAction, setTestAction] = useState<ControllerAction>(NEUTRAL);
     const [inputSource, setInputSource] = useState<'live' | 'recorded'>('live');
@@ -139,8 +157,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         return readRecordedDrivingObservation(frame.session, frame.videoSeconds, frame.camera, lap,
             aggressionRef.current, configuration.current, map, frame.offsetSeconds);
     };
-    const read = (): ObservationResult & { delays?: ObservationDelaySnapshot } => {
-        if (inputSourceRef.current === 'recorded') return readRecorded(recordedFrame.current);
+    const readLive = (): ObservationResult & { delays?: ObservationDelaySnapshot } => {
         const vision = directoryRef.current?.findComponentRef<TrackVisionHandle>(getVisualizationComponentName('track-vision'))?.current;
         const map = directoryRef.current?.findComponentRef<LiveTrajectoryMapHandle>(getVisualizationComponentName('live-trajectory-map'))?.current;
         const live = liveTelemetryStore.getSnapshot();
@@ -154,6 +171,21 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             publishedTiming: detection?.timing, latestTiming: vision?.getTimingSnapshot?.(),
             observationMs: performance.now() - started, observationReady: Boolean(result.observation),
             modelTiming: loop.current?.getModelTimingSnapshot() } };
+    };
+    const read = (frame = recordedFrame.current): ObservationResult & { delays?: ObservationDelaySnapshot } => {
+        // The consumer and the panel share the same sampled observation.
+        const result = inputSourceRef.current === 'recorded' ? readRecorded(frame) : readLive();
+        sampledInputs.current = result;
+        return result;
+    };
+    const refreshInputs = () => {
+        const mode = loop.current?.state.mode;
+        const consuming = replayAbort.current || mode === 'training' || mode === 'evaluation';
+        // Preview while idle; active runs own sampling, even while awaiting work.
+        const result = consuming ? sampledInputs.current : read();
+        // Refresh profiling without acquiring another observation.
+        setInputs(result.delays ? { ...result, delays: { ...result.delays, checkedAt: Date.now(),
+            modelTiming: loop.current?.getModelTimingSnapshot() } } : result);
     };
     const updateRecordedFrame = useCallback((frame: RecordedDrivingFrame | null) => {
         recordedFrame.current = frame;
@@ -176,7 +208,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         configuration.current.aggression = value;
         aggressionRef.current = value;
         setAggression(value);
-        setInputs(read());
+        refreshInputs();
         save();
     };
     const changeExploration = (next: typeof exploration) => {
@@ -196,8 +228,14 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         configuration.current = restored?.configuration ?? cloneConfig(document.configuration);
         aggressionRef.current = configuration.current.aggression;
         setAggression(aggressionRef.current);
-        setExploration({ explorationSigma: configuration.current.learning.explorationSigma,
-            shiftTemperature: configuration.current.learning.shiftTemperature });
+        setExploration({ throttleExplorationSigma: configuration.current.learning.throttleExplorationSigma,
+            brakeExplorationSigma: configuration.current.learning.brakeExplorationSigma,
+            steeringExplorationSigma: configuration.current.learning.steeringExplorationSigma,
+            shiftTemperature: configuration.current.learning.shiftTemperature,
+            throttleExplorationUpdateHz: configuration.current.learning.throttleExplorationUpdateHz,
+            brakeExplorationUpdateHz: configuration.current.learning.brakeExplorationUpdateHz,
+            steeringExplorationUpdateHz: configuration.current.learning.steeringExplorationUpdateHz,
+            gearExplorationUpdateHz: configuration.current.learning.gearExplorationUpdateHz });
         setModelSteps(restored?.steps ?? null);
         setUpdateDiagnostics(null); setMeasuringUpdate(false);
         setInputs(read());
@@ -268,7 +306,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             }, Date.now, () => manualControls.current?.read() ?? Promise.resolve(null),
             (previous, current) => monitor.between(previous, current));
         }
-        const timer = setInterval(() => setInputs(read()), 250);
+        const timer = setInterval(refreshInputs, 250);
         const releaseTest = () => {
             clearInterval(testTimer.current);
             testTimer.current = undefined;
@@ -363,10 +401,10 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             const document = await loadDrivingModel(modelPath.current);
             if (!mounted.current || generation !== startGeneration.current) return;
             activateDocument(document);
-            const input = read();
-            if (!input.observation) throw new Error(input.error);
             if (!train && (!policy.current || !policy.current.steps)) throw new Error('Train a model before evaluation.');
             if (!policy.current) {
+                const input = read();
+                if (!input.observation) throw new Error(input.error);
                 policy.current = new DrivingPolicy(input.observation.context, input.observation.features.length, Math.random, configuration.current);
                 configuration.current = policy.current.configuration;
             }
@@ -390,7 +428,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             const document = await loadDrivingModel(modelPath.current);
             if (!active()) return;
             activateDocument(document);
-            const input = readRecorded(recordedFrame.current);
+            const input = read();
             if (!input.observation) throw new Error(input.error);
             if (!train && !policy.current?.steps) throw new Error('Train a model before evaluation.');
             if (!policy.current) policy.current = new DrivingPolicy(input.observation.context,
@@ -404,7 +442,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             let savedAt = current.steps;
             await recordedViewer.current!.replay(async (frame) => {
                 if (!active()) return;
-                const result = readRecorded(frame);
+                const result = read(frame);
                 setInputs(result);
                 await replay.consume(result, active);
                 if (!active()) return;
@@ -514,6 +552,18 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const observation = inputs.observation;
     const inputMismatches = observation ? policy.current?.inputMismatches(observation) ?? [] : [];
     const mismatched = inputMismatches.length > 0;
+    const liveStartBlocker = fileBusy ? 'Wait for the model file to finish loading.'
+        : !filePath ? 'Create or open a model file.'
+        : initializingGpu ? 'Preparing the model and waiting for fresh live inputs.'
+        : aiActive ? 'AI is already running. Stop it before starting another run.'
+        : testTimer.current ? 'Stop the controller calibration test.'
+        : !connected ? 'Connect the virtual wheel.'
+        : !observation ? inputs.error
+        : mismatched ? inputMismatches.join(' ')
+        : null;
+    const liveStartStatus = liveStartBlocker ? `Cannot start AI: ${liveStartBlocker}`
+        : !modelSteps ? 'Ready to train. Run trained model becomes available after the model has learned at least one step.'
+        : 'Ready to train or run the loaded model.';
 
     return <section className="driving-training" aria-label="AI Self-Driving Training">
         <header className="driving-training-header">
@@ -567,24 +617,24 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     : aiActive ? state.source === 'ai' ? 'Driving' : 'Human has control' : 'Not started'}</span></div>
                 <p>{inputSource === 'live' ? 'Start AI training or evaluation when live inputs are ready. If you are already driving, you keep control until Return to AI.'
                     : 'Recorded training learns held pedal and steering values plus single gear changes from aligned telemetry. Evaluation compares the fixed model with recorded controls. Gaps reset observation history.'}</p>
-                <p>CNN–LSTM actor–critic · {config.network.hiddenUnits} recurrent units · continuous throttle/brake and steering, plus learned hold gear, shift up and shift down. Throttle/brake ranges from −1 (full brake) through 0 (both released) to 1 (full throttle).</p>
+                <p>CNN–LSTM soft actor–critic · {config.network.hiddenUnits} recurrent units · continuous throttle/brake and steering, plus learned hold gear, shift up and shift down. Throttle/brake ranges from −1 (full brake) through 0 (both released) to 1 (full throttle).</p>
                 <p>{config.memory.windowMs / 1000}-second observation history covers {fullObservationHistory ? 'all AI observation inputs' : 'the observation inputs selected in this saved model'} during training and evaluation, sampled in {config.memory.intervalMs} ms bins. Memory starts fresh after stopping, changing drivers or interrupted inputs.</p>
-                {inputSource === 'live' && <p>Consequences are collected continuously during training and inference. Training takes batches covering {config.learning.sequenceSeconds} seconds of driving while collection continues for the next batch. Each decision learns from its immediate reward and discounted later consequences. Adjust learning.sequenceSeconds in the model JSON to change the batch duration.</p>}
-                <p>One action plan predicts {config.actions.planTimesSeconds.length} control steps from 0 to {planEnd} seconds. The AI smoothly blends steering and throttle/brake between steps while computing; gear shifts occur at their scheduled steps. A new output replaces the whole plan as soon as it is ready. Reward trains the steps contributing to each control command; human driving teaches future steps from demonstrated actions.</p>
+                {inputSource === 'live' && <p>Actions and outcomes are recorded continuously during training and inference. After a delay of up to {config.learning.sequenceSeconds} seconds, SAC learns from recorded transitions and estimates their longer-term rewards while the current plan continues executing and new inference checks it.</p>}
+                <p>One action plan predicts {config.actions.planTimesSeconds.length} control steps from 0 to {planEnd} seconds. The AI smoothly blends throttle, brake and steering independently between steps while computing; gear shifts occur at their scheduled steps. The remaining plan continues when fresh inference agrees, and is replaced when it disagrees or expires. Reward trains the steps contributing to each executed control command; human driving teaches future steps from demonstrated actions.</p>
                 <p className="driving-note">Each model JSON contains its inputs, memory, network, training settings and weights. Training and evaluation load that JSON each time they start.</p>
                 {inputSource === 'live' && <p className="driving-note">Use the same model across games, cars and maps. After switching, stop and restart training or evaluation with fresh live inputs and a matching Live Map reference lap. Learned weights are preserved.</p>}
                 {inputSource === 'live' && <fieldset className="driving-exploration"
                     disabled={!filePath || !documentReady.current || fileBusy || initializingGpu || running || replaying || viewerBusy}>
                     <legend>Training exploration</legend>
-                    <div className="driving-aggression">
-                        <div><label htmlFor="driving-exploration-sigma">Pedal and steering exploration</label>
-                            <output htmlFor="driving-exploration-sigma">{Number(exploration.explorationSigma.toPrecision(3))}</output></div>
-                        <input id="driving-exploration-sigma" type="range" min={Math.min(0.001, exploration.explorationSigma)}
-                            max={Math.max(1, exploration.explorationSigma)} step="0.001" value={exploration.explorationSigma}
-                            aria-describedby="driving-exploration-sigma-meaning"
-                            onChange={(event) => changeExploration({ ...exploration, explorationSigma: Number(event.target.value) })} />
-                        <p id="driving-exploration-sigma-meaning">Higher values add more random variation to pedal and steering choices. Default: {DEFAULT_DRIVING_CONFIG.learning.explorationSigma}.</p>
-                    </div>
+                    {EXPLORATION_CONTROLS.map(({ key, label, control }) => <div className="driving-aggression" key={key}>
+                        <div><label htmlFor={`driving-${control}-exploration`}>{label} exploration</label>
+                            <output htmlFor={`driving-${control}-exploration`}>{Number(exploration[key].toPrecision(3))}</output></div>
+                        <input id={`driving-${control}-exploration`} type="range" min={Math.min(0.001, exploration[key])}
+                            max={Math.max(1, exploration[key])} step="0.001" value={exploration[key]}
+                            aria-describedby={`driving-${control}-exploration-meaning`}
+                            onChange={(event) => changeExploration({ ...exploration, [key]: Number(event.target.value) })} />
+                        <p id={`driving-${control}-exploration-meaning`}>Higher values add stronger state-dependent variation to {control} choices, evolving smoothly with the observed driving state. Default: {DEFAULT_DRIVING_CONFIG.learning[key]}.</p>
+                    </div>)}
                     <div className="driving-aggression">
                         <div><label htmlFor="driving-shift-temperature">Gear exploration</label>
                             <output htmlFor="driving-shift-temperature">{Number(exploration.shiftTemperature.toPrecision(3))}</output></div>
@@ -593,22 +643,38 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                             onChange={(event) => changeExploration({ ...exploration, shiftTemperature: Number(event.target.value) })} />
                         <p id="driving-shift-temperature-meaning">Higher values try a wider mix of gear choices. Lower values favor the model’s preferred gear choice. Default: {DEFAULT_DRIVING_CONFIG.learning.shiftTemperature}.</p>
                     </div>
-                    <button onClick={() => changeExploration({ explorationSigma: DEFAULT_DRIVING_CONFIG.learning.explorationSigma,
-                        shiftTemperature: DEFAULT_DRIVING_CONFIG.learning.shiftTemperature })}>Reset exploration</button>
+                    {EXPLORATION_FREQUENCIES.map(({ key, label, control }) => <div className="driving-aggression" key={key}>
+                        <div><label htmlFor={`driving-${control}-exploration-frequency`}>{label} exploration update frequency</label>
+                            <output htmlFor={`driving-${control}-exploration-frequency`}>{exploration[key]} Hz · every {Number((1 / exploration[key]).toPrecision(3))} s</output></div>
+                        <input id={`driving-${control}-exploration-frequency`} type="range" min="0.1" max="10" step="0.1"
+                            value={exploration[key]} aria-describedby={`driving-${control}-exploration-frequency-meaning`}
+                            onChange={(event) => changeExploration({ ...exploration, [key]: Number(event.target.value) })} />
+                        <p id={`driving-${control}-exploration-frequency-meaning`}>{control === 'gear'
+                            ? 'How often a new gear exploration draw is sampled.'
+                            : 'How often exploration weights refresh, blending smoothly between samples. Lower values keep exploration coherent longer while it responds to the driving state.'} Default: {DEFAULT_DRIVING_CONFIG.learning[key]} Hz.</p>
+                    </div>)}
+                    <button onClick={() => changeExploration({ throttleExplorationSigma: DEFAULT_DRIVING_CONFIG.learning.throttleExplorationSigma,
+                        brakeExplorationSigma: DEFAULT_DRIVING_CONFIG.learning.brakeExplorationSigma,
+                        steeringExplorationSigma: DEFAULT_DRIVING_CONFIG.learning.steeringExplorationSigma,
+                        shiftTemperature: DEFAULT_DRIVING_CONFIG.learning.shiftTemperature,
+                        throttleExplorationUpdateHz: DEFAULT_DRIVING_CONFIG.learning.throttleExplorationUpdateHz,
+                        brakeExplorationUpdateHz: DEFAULT_DRIVING_CONFIG.learning.brakeExplorationUpdateHz,
+                        steeringExplorationUpdateHz: DEFAULT_DRIVING_CONFIG.learning.steeringExplorationUpdateHz,
+                        gearExplorationUpdateHz: DEFAULT_DRIVING_CONFIG.learning.gearExplorationUpdateHz })}>Reset exploration</button>
                     <p className="driving-note">Saved with this model. Stop training to adjust exploration for the next run. Evaluation uses the model’s preferred actions without random exploration.</p>
                 </fieldset>}
                 {inputSource === 'live' && <table className="driving-pedals" aria-label="Planned driving actions">
                     <caption>Action plan · 0–{planEnd} seconds</caption>
-                    <thead><tr><th scope="col">Time</th><th scope="col">Throttle / brake</th><th scope="col">Steering</th><th scope="col">Shift</th></tr></thead>
+                    <thead><tr><th scope="col">Time</th><th scope="col">Throttle</th><th scope="col">Brake</th><th scope="col">Steering</th><th scope="col">Shift</th></tr></thead>
                     <tbody>{state.plan ? state.plan.map(({ timeSeconds, action }) => <tr key={timeSeconds}>
                         <th scope="row">{timeSeconds.toFixed(1)} s</th>
-                        <td>{(action.throttle - action.brake).toFixed(3)}</td>
+                        <td>{action.throttle.toFixed(3)}</td><td>{action.brake.toFixed(3)}</td>
                         <td>{action.steering.toFixed(3)}</td><td>{action.shiftUp ? 'Up' : action.shiftDown ? 'Down' : 'Hold'}</td>
-                    </tr>) : <tr><td colSpan={4}>Waiting for AI control and fresh inputs.</td></tr>}</tbody>
+                    </tr>) : <tr><td colSpan={5}>Waiting for AI control and fresh inputs.</td></tr>}</tbody>
                 </table>}
                 {inputSource === 'live' && <p className="driving-note">Disable automatic gears in the simulator and bind both shift buttons before training. The model learns gear choices from driving rewards. Human and AI shifts have no cooldown. Shifts use {config.actions.shiftPulseMs / 1000}-second presses; a new shift releases the previous press immediately. Downshifts are allowed in every gear, including neutral and reverse.</p>}
                 <div className="driving-metrics"><div><strong>{modelSteps ?? 0}</strong><span>Learning steps</span></div>
-                    {inputSource === 'live' && <div><strong>{state.episodeReward.toFixed(2)}</strong><span>Episode reward</span></div>}</div>
+                    {inputSource === 'live' && <div><strong>{state.episodeReward}</strong><span>Episode reward</span></div>}</div>
                 <button disabled={!policy.current || measuringUpdate || initializingGpu || fileBusy}
                     onClick={() => { void measureUpdate(); }}>{measuringUpdate ? 'Measuring update…' : 'Measure last update'}</button>
                 {updateDiagnostics && <div aria-label="Last training update">
@@ -630,8 +696,8 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 </div>}
                 <div className="driving-buttons">
                     {inputSource === 'live' ? <>
-                        <button className="driving-primary" disabled={!filePath || fileBusy || !connected || !observation || aiActive || initializingGpu || Boolean(mismatched) || Boolean(testTimer.current)} onClick={() => { void start(true); }}>Start training</button>
-                        <button disabled={!filePath || fileBusy || !connected || !observation || aiActive || initializingGpu || !modelSteps || Boolean(mismatched) || Boolean(testTimer.current)} onClick={() => { void start(false); }}>Run trained model</button>
+                        <button className="driving-primary" disabled={Boolean(liveStartBlocker)} aria-describedby="driving-start-status" onClick={() => { void start(true); }}>Start training</button>
+                        <button disabled={Boolean(liveStartBlocker) || !modelSteps} aria-describedby="driving-start-status" onClick={() => { void start(false); }}>Run trained model</button>
                     </> : <>
                         <button className="driving-primary" disabled={!filePath || fileBusy || !observation || replaying || viewerBusy || initializingGpu || mismatched}
                             onClick={() => { void startRecorded(true); }}>Train from recording</button>
@@ -640,6 +706,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                         <button className="driving-stop" disabled={!replaying} onClick={() => replayAbort.current?.abort()}>Stop replay</button>
                     </>}
                 </div>
+                {inputSource === 'live' && <p id="driving-start-status" className="driving-note" role="status" aria-label="AI start status">{liveStartStatus}</p>}
                 <p className="driving-model-path"><strong>Model file</strong><br />{filePath || 'Choose New model to select a save location, or Open model to continue training a saved file.'}</p>
                 <div className="driving-buttons">
                     <button disabled={running || replaying || viewerBusy || initializingGpu || fileBusy} onClick={() => { void chooseModel('new'); }}>New model</button>
@@ -648,7 +715,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 </div>
                 <p className="driving-note" role="status">{saving ? 'Saving model…' : saved ? 'Model saved to file.' : 'Model not saved.'} The complete model saves to the selected file every {config.runtime.saveEverySteps} learning steps and when stopped.</p>
                 {inputSource === 'live' ? <p className="driving-note">Training explores controls; use a practice session and reposition the car between episodes. A new policy starts untrained.</p>
-                    : <p className="driving-note">Replay samples every {Math.max(100, config.runtime.controlIntervalMs)} ms of video. Pedal and steering MAE measure absolute error in normalized controls; they do not measure image recognition accuracy. A new policy starts untrained.</p>}
+                    : <p className="driving-note">Replay samples every {Math.max(100, config.runtime.controlIntervalMs)} ms of video. Pedal MAE averages the separate throttle and brake errors. Steering MAE measures steering error. Both use normalized controls and do not measure image recognition accuracy. A new policy starts untrained.</p>}
             </section>
             {inputSource === 'live' && <section className="driving-card driving-shared-output" aria-label="Shared vJoy output">
                 <div className="driving-card-title"><h2>Steering wheel (vJoy)</h2><span>{connected ? 'Connected' : 'Disconnected'}</span></div>
@@ -747,23 +814,29 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             {inputSource === 'live' && <section className="driving-card">
                 <h2>Reward signal</h2>
                 <dl className="driving-rewards">
-                    <div><dt>Acceleration / deceleration</dt><dd>{state.reward?.timing.toFixed(3) ?? '0.000'}</dd>
-                        <p>While driving forward, closing the speed gap to the aggression target earns reward. An unchanged or growing gap incurs a penalty based on the remaining gap. Holding the target speed is neutral.</p>
-                        {state.reward && <p>Last scored at aggression {state.reward.speedComparison.aggression}: speed {state.reward.speedComparison.measured.toFixed(1)} / reference {state.reward.speedComparison.reference.toFixed(1)} / target {state.reward.speedComparison.target.toFixed(1)} km/h; speed gap closed {state.reward.speedComparison.speedGoalProgress.toFixed(2)} km/h (negative means moving away); measured acceleration {state.reward.speedComparison.measuredAcceleration.toFixed(2)} m/s² (negative means deceleration).</p>}
+                    <div><dt>Acceleration / deceleration</dt><dd>{state.reward?.timing ?? 0}</dd>
+                        <p>The penalty grows with the size of the speed gap and the time spent away from the target. Reaching the target sooner reduces the cost.</p>
+                        {state.reward && <p>Last scored at aggression {state.reward.speedComparison.aggression}. Measured speed {state.reward.speedComparison.measured.toFixed(1)} km/h, reference {state.reward.speedComparison.reference.toFixed(1)} km/h, target {state.reward.speedComparison.target.toFixed(1)} km/h. Accumulated gap {state.reward.speedComparison.speedGapTime.toFixed(2)} (km/h)·s. Measured acceleration {state.reward.speedComparison.measuredAcceleration.toFixed(2)} m/s².</p>}
                     </div>
-                    <div><dt>Normalized position progress</dt><dd>{state.reward?.progress.toFixed(3) ?? '0.000'}</dd></div>
-                    <div><dt>Steering-change penalty</dt><dd>{state.reward?.steeringChange.toFixed(4) ?? '0.0000'}</dd>
+                    <div><dt>Normalized position progress</dt><dd>{state.reward?.progress ?? 0}</dd></div>
+                    <div><dt>Steering-change penalty</dt><dd>{state.reward?.steeringChange ?? 0}</dd>
                         <p>Penalizes changes between steering commands, including neighboring plan steps. Holding a steering angle has no penalty.</p>
                     </div>
-                    <div><dt>On-track reward</dt><dd>{state.reward?.onTrack.toFixed(3) ?? '0.000'}</dd>
+                    <div><dt>Throttle-change penalty</dt><dd>{state.reward?.throttleChange ?? 0}</dd>
+                        <p>Faster changes in throttle position cost more.</p>
+                    </div>
+                    <div><dt>Brake-change penalty</dt><dd>{state.reward?.brakeChange ?? 0}</dd>
+                        <p>Faster changes in brake position cost more.</p>
+                    </div>
+                    <div><dt>On-track reward</dt><dd>{state.reward?.onTrack ?? 0}</dd>
                         <p>Earns 1 point per second while moving forward on a confirmed track surface.</p>
                     </div>
-                    <div><dt>Off-track penalty</dt><dd>{state.reward?.offTrack.toFixed(3) ?? '0.000'}</dd>
+                    <div><dt>Off-track penalty</dt><dd>{state.reward?.offTrack ?? 0}</dd>
                         <p aria-label="Off-track detection">{!state.reward ? 'Waiting for a scored transition.'
                             : state.reward.offTrackDetected === null ? 'Off-track detection unavailable: missing telemetry or matching track boundaries.'
                             : state.reward.offTrackDetected ? 'Off track' : 'On track'}</p>
                     </div>
-                    <div><dt>Impact penalty</dt><dd>{state.reward?.impact.toFixed(3) ?? '0.000'}</dd>
+                    <div><dt>Impact penalty</dt><dd>{state.reward?.impact ?? 0}</dd>
                         <p aria-label="Impact estimate">{!state.reward ? 'Waiting for two fresh motion samples.'
                             : !state.reward.impactEstimate.available ? 'Impact estimate unavailable: no reliable 20–500 ms telemetry interval.'
                             : `${state.reward.impactEstimate.detected ? 'Possible impact' : 'No impact detected'} · Confidence ${(state.reward.impactEstimate.confidence * 100).toFixed(0)}% · Estimated severity ${(state.reward.impactEstimate.severity * 100).toFixed(0)}/100 · Excess Δv ${state.reward.impactEstimate.deltaV.toFixed(2)} m/s`}</p>

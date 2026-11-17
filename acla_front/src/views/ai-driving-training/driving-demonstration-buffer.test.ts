@@ -10,23 +10,23 @@ const telemetry = (measuredAt: number): DrivingTelemetrySample => ({ measuredAt,
     context: { game: 'acc', car: 'GT3', map: 'monza' }, normalizedPosition: 0.2, speed: 100,
     localVelocity: [0, 30, 0], gForce: [0, 0, 1], yawRate: 0, gear: 3, rpm: 5000, controls: action(0.3) });
 
-it('collects all 31 timestamps before exposing one grouped demonstration, independent of training', () => {
+it('collects all 51 timestamps before exposing one grouped demonstration, independent of training', () => {
     const buffer = new DrivingDemonstrationBuffer();
     const features = input();
     buffer.addObservation(features, 1000);
     features.features[0] = 2;
-    for (let step = 0; step <= 30; step++) {
-        const current = action(step / 30);
+    for (let step = 0; step <= 50; step++) {
+        const current = action(step / 50);
         buffer.recordAction(current, shifts, 1000 + step * 100);
         current.throttle = 0; // Collection owns a snapshot.
         buffer.advance(1000 + step * 100);
         expect(buffer.hasReady).toBe(false);
     }
-    buffer.advance(4050);
+    buffer.advance(6050);
     const sample = buffer.take()!;
     expect(sample.input.features).toEqual([1]);
-    expect(sample.targets).toEqual(Array.from({ length: 31 }, (_, step) => ({ step,
-        action: { ...action(step / 30), shiftUp: false, shiftDown: false }, shifts })));
+    expect(sample.targets).toEqual(Array.from({ length: 51 }, (_, step) => ({ step,
+        action: { ...action(step / 50), shiftUp: false, shiftDown: false }, shifts })));
     expect(buffer.hasReady).toBe(false);
 });
 
@@ -76,22 +76,22 @@ it('masks only shift supervision when multiple presses cannot fit one categorica
 
 it('records telemetry and controls while waiting for a delayed camera, without duplicating telemetry timestamps', () => {
     const buffer = new DrivingDemonstrationBuffer();
-    for (let at = 1000; at <= 4000; at += 100) {
+    for (let at = 1000; at <= 6000; at += 100) {
         const live = telemetry(at);
         buffer.recordTelemetry(live);
         buffer.recordTelemetry(live);
         live.controls.throttle = 1;
         live.localVelocity[1] = 0;
-        buffer.recordAction(action((at - 1000) / 3000), shifts, at);
+        buffer.recordAction(action((at - 1000) / 5000), shifts, at);
         buffer.advance(at);
         if (at === 2400) buffer.addObservation(input(), 1000);
     }
-    buffer.advance(4050);
+    buffer.advance(6050);
     const sample = buffer.take()!;
-    expect(sample.targets).toHaveLength(31);
-    expect(sample.telemetry).toHaveLength(31);
+    expect(sample.targets).toHaveLength(51);
+    expect(sample.telemetry).toHaveLength(51);
     expect(sample.telemetry[0]).toEqual(telemetry(1000));
-    expect(sample.telemetry[30].measuredAt).toBe(4000);
+    expect(sample.telemetry[50].measuredAt).toBe(6000);
 });
 
 it('finishes partial futures at a boundary and reset prevents cross-episode targets', () => {

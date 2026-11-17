@@ -2,14 +2,15 @@ const fs = require('fs/promises');
 const path = require('path');
 const { randomUUID } = require('crypto');
 
-const MAX_MODEL_BYTES = 32 * 1024 * 1024;
+// SAC checkpoints include a target encoder and both online/target critics.
+const MAX_MODEL_BYTES = 96 * 1024 * 1024;
 
 function validateDocument(json) {
   if (typeof json !== 'string' || Buffer.byteLength(json, 'utf8') > MAX_MODEL_BYTES) {
     throw new Error('The model file is too large.');
   }
   const document = JSON.parse(json);
-  if (!document || document.format !== 'kestrel-self-driving-model' || document.algorithm !== 'online-actor-critic'
+  if (!document || document.format !== 'kestrel-self-driving-model' || document.algorithm !== 'soft-actor-critic'
     || !document.configuration || typeof document.configuration !== 'object'
     || !(document.model === null || (document.model && typeof document.model === 'object'))) {
     throw new Error('Invalid self-driving model file.');

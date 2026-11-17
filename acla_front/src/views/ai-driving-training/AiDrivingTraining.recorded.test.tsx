@@ -1,6 +1,6 @@
 import { mockDrivingGpu } from './driving-gpu-test-model';
 import React from 'react';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import AiDrivingTraining from './AiDrivingTraining';
 import { emptyTrainingDocument } from './driving-policy';
 import { cloneConfig } from './driving-model-config';
@@ -84,6 +84,44 @@ it('locks source and model changes during replay, stops and saves on cancellatio
     expect(JSON.parse(savedJson).model.steps).toBe(2);
     expect(screen.getByLabelText('AI observation input source')).toBeEnabled();
     expect(window.virtualController!.apply).not.toHaveBeenCalled();
+});
+
+it.each(['Train from recording', 'Evaluate recording'])('keeps the consumed frame visible during %s between replay updates', async (action) => {
+    mockFrames[0].session.rows.forEach((row, index) => { row.sample = { ...row.sample, Physics_speed_kmh: 108 + index * 10 }; });
+    await loadRecording();
+    if (action === 'Evaluate recording') {
+        fireEvent.click(screen.getByRole('button', { name: 'Train from recording' })); await flush();
+    }
+    mockWaitForCancel = true;
+    fireEvent.click(screen.getByRole('button', { name: action })); await flush();
+    const inputs = within(screen.getByLabelText('AI observation inputs'));
+    const speed = () => inputs.getByText('Speed', { selector: 'dt' }).nextElementSibling;
+    expect(screen.getByRole('button', { name: 'Stop replay' })).toBeEnabled();
+    expect(speed()).toHaveTextContent('128.0 km/h');
+    for (let tick = 0; tick < 3; tick++) {
+        act(() => { jest.advanceTimersByTime(250); }); await flush();
+        expect(speed()).toHaveTextContent('128.0 km/h');
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Stop replay' })); await flush();
+});
+
+it.each(['Train from recording', 'Evaluate recording'])('keeps skipped sample errors visible during %s between replay updates', async (action) => {
+    await loadRecording();
+    if (action === 'Evaluate recording') {
+        fireEvent.click(screen.getByRole('button', { name: 'Train from recording' })); await flush();
+    }
+    const lastRow = mockFrames[0].session.rows[2];
+    lastRow.sample = { ...lastRow.sample, Graphics_status: 1 };
+    mockWaitForCancel = true;
+    fireEvent.click(screen.getByRole('button', { name: action })); await flush();
+    const inputs = within(screen.getByLabelText('AI observation inputs'));
+    const error = 'This recorded telemetry sample is not marked as running (Graphics_status = 2).';
+    expect(inputs.getByText(error)).toBeInTheDocument();
+    expect(inputs.getByText('Speed', { selector: 'dt' }).nextElementSibling).toHaveTextContent('—');
+    act(() => { jest.advanceTimersByTime(750); }); await flush();
+    expect(inputs.getByText(error)).toBeInTheDocument();
+    expect(inputs.queryByText('All model inputs ready')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop replay' })); await flush();
 });
 
 it('reports unavailable recording references and supports retry', async () => {

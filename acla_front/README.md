@@ -368,34 +368,35 @@ are retained for pending actions; changing the selected lap or map requires a fr
 The selected lap must contain raw XYZ coordinates, `expert_optimal_speed` (km/h),
 `expert_optimal_throttle` and `expert_optimal_brake` (both between 0 and 1).
 Aggression, reference speed and target speed are included in observations and memory.
-The acceleration/deceleration reward credits measured speed changes toward the goal
-on every fresh forward-driving transition, including held pedals. It uses one fixed
-goal at the destination position for both speed readings:
-`gapClosed = abs(previousSpeed - targetSpeed) - abs(currentSpeed - targetSpeed)`.
-Closing the gap immediately earns positive reward, even far from the goal. When the
-gap stays unchanged or grows, the remaining speed error produces a penalty. This
-includes holding a speed above or below the target and overshooting to an equally
-distant speed. Holding exactly the target speed stays neutral. Overshooting while
-still reducing the gap earns credit only for the net reduction. Throttle and brake
-inputs do not affect this signal.
-The correction rate uses elapsed telemetry time, not camera processing time:
-`speedCorrection = gapClosed > 0 ? gapClosed : -abs(currentSpeed - targetSpeed)`;
-`correction = clamp(speedCorrection / (3.6 × telemetrySeconds × accelerationTolerance), -1, 1)`.
-With default weights, the acceleration/deceleration reward is
-`100 × forwardProgress × correction`.
-`accelerationTolerance` defaults to 3 m/s². The legacy `speedTolerance` setting remains
-in the saved model format for compatibility but no longer affects reward.
-Forward progress is capped at 0.02 per observation; stationary or reverse driving
-earns no timing bonus. Both ends of a transition use the aggression that produced
-the action, even if the slider changes before scoring. There is no separate raw-speed
-or pedal-matching reward. The previous speed-window and pedal-change-gated reward
-are removed. Reference error is not a policy or history input, and distance from the
-reference line does not affect rewards. Line-following and approach rewards and
-penalties have been removed, along with their configuration settings. Create a new
-model and retrain; earlier reference-offset and pedal-event aggression checkpoints are rejected without migration.
+The acceleration/deceleration term charges for the size of the speed gap and how long
+it lasts. At each end of a transition it compares measured speed with the target at
+that lap position, using the aggression that produced the action. The reward
+integrates the absolute gap over elapsed telemetry time, assuming the gap changes
+linearly between samples. If speed crosses the target, both sides contribute to the
+cost. Reaching the target sooner reduces accumulated cost. Leaving sooner, drifting
+away faster over the same interval, or holding a larger gap increases the cost.
+Following the target profile gives this term a score of zero. The cost also applies
+when the car is stopped or moving backward.
+
+The speed term is `−timingWeight × integratedGap / speedTolerance`. With the defaults
+of 1 and 20 km/h, a 20 km/h gap held for one second costs 1 point. The integrated gap
+is reported under **Reward signal** in (km/h)·s.
+
+**Throttle-change penalty** and **Brake-change penalty** each use the squared change
+in pedal position, scaled by `100 ms / elapsedMs`. The default weights
+`throttleChangeWeight` and `brakeChangeWeight` are both 0.05. A full-range change over
+100 ms costs 0.05 points. A slower change costs less, and holding the pedal costs zero.
+AI training scores acknowledged commands between observations, including changes when a
+plan is replaced. Manual driving uses the pedal positions and timestamps in telemetry.
+Both penalties appear under **Reward signal**.
+
+Compatible SAC checkpoints from the previous reward scheme load with the new pedal
+weights. Loading divides the old timing weight by 100 to match the new scale and
+drops the obsolete acceleration tolerance.
 
 The normalized-position progress reward uses the signed lap-position change, corrected
-for start/finish crossings, divided by elapsed telemetry seconds. With
+for start/finish crossings, divided by elapsed telemetry seconds. Progress is capped
+at 0.02 per observation for this reward. With
 `rate = abs(positionChange / telemetrySeconds)`, it adds
 `0.25 × progressWeight × cappedSignedProgress × rate / (rate + 0.01)`.
 Faster forward progress earns more and negative progress incurs a penalty. Whenever
@@ -451,7 +452,8 @@ progress earn no on-track reward. It appears separately under **Reward signal** 
 scales with telemetry time so additional samples do not earn extra credit.
 
 The total reward combines acceleration/deceleration timing, normalized-position progress,
-on-track reward, off-track and impact penalties, clamped to the configured total limit. Yaw rate
+on-track reward, and the off-track, impact, steering, throttle and brake penalties. The configured
+total limit caps the result at ±10 by default. Yaw rate
 remains a policy input but does not incur an instability penalty. The removed reward
 settings `yawWindowMs`, `yawDeadband` and `yawPenalty` are no longer accepted in model
 JSON. New policies are untrained;
@@ -494,8 +496,7 @@ The format and algorithm names identify supported operations; there is no numeri
 
 Training and evaluation reload and validate JSON from the selected file every time
 they start. Choose a file before starting training. Observations, memory,
-inference, learning and the UI use the saved configuration. Changing the defaults
-only affects newly created models. Files preserve configuration and weights together;
+inference, learning and the UI use the saved configuration. Files preserve configuration and weights together;
 configuration-only files can also be opened and saved before training. Writes are
 serialized and replace the file only after the complete new contents have been written.
 The app remembers the selected path while it is running; after restarting, use

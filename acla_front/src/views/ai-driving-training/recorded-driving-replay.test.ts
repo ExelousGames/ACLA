@@ -104,13 +104,22 @@ it('evaluates fixed weights with running mean absolute action errors and release
     await replay.consume({ observation: frame(1100, { controls: { throttle: 0, brake: 0.5, steering: -0.4 } }) });
     await replay.consume({ observation: frame(1200) });
     expect(replay.progress.samples).toBe(2);
-    expect(replay.progress.pedalError).toBeCloseTo(0.6);
+    expect(replay.progress.pedalError).toBeCloseTo(0.3);
     expect(replay.progress.steeringError).toBeCloseTo(0.4);
     expect(fake.decideAsync.mock.calls.map(([, explore]) => explore)).toEqual([false, false]);
     expect(fake.releaseDecision).toHaveBeenCalledTimes(2);
     expect(fake.trainBatchAsync).not.toHaveBeenCalled();
     expect(fake.learnDemonstrationAsync).not.toHaveBeenCalled();
     expect(fake.learnPlannedActionsAsync).not.toHaveBeenCalled();
+});
+
+it('counts throttle and brake errors even when their signed difference matches', async () => {
+    const { fake, replay, frame } = setup(false);
+    fake.decideAsync.mockResolvedValueOnce({ plan: [{ action: { throttle: 0.8, brake: 0.3, steering: 0 } }] } as PolicyDecision);
+    await replay.consume({ observation: frame(1000, { controls: { throttle: 0.5, brake: 0, steering: 0 } }) });
+    await replay.consume({ observation: frame(1100) });
+    expect(replay.progress.pedalError).toBeCloseTo(0.3);
+    expect(replay.progress.steeringError).toBe(0);
 });
 
 it('releases an inference that completes after cancellation without publishing metrics', async () => {

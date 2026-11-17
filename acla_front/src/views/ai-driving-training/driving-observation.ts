@@ -13,6 +13,7 @@ import { drivingCenterlineInput } from './driving-centerline';
 
 export interface DrivingAction { throttle: number; brake: number; steering: number; shiftUp?: boolean; shiftDown?: boolean }
 export const NEUTRAL: DrivingAction = { throttle: 0, brake: 0, steering: 0 };
+export const PEDAL_CHANGE_REFERENCE_MS = 100;
 export const clamp = (value: number, low = -1, high = 1) => Math.max(low, Math.min(high, value));
 export interface DrivingObservation {
     capturedAt: number;
@@ -48,6 +49,8 @@ export type ObservationResult = ({
     telemetry?: DrivingTelemetrySample;
     /** Camera interruptions may leave an otherwise valid demonstration running. */
     cameraUnavailable?: boolean;
+    /** Startup may retry a delayed telemetry/camera delivery after loading model weights. */
+    waitingForFreshInputs?: boolean;
 };
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 
@@ -92,10 +95,12 @@ function readCameraObservation(live: LiveTelemetrySnapshot, vision: TrackVisionD
     referenceLap: TopLapReferenceEntry | null, aggression: number, now: number, config: typeof DEFAULT_DRIVING_CONFIG,
     circuitMap: CircuitMapDto | null): ObservationResult {
     const o = config.observation;
-    if (live.telemetryStatus !== ACC_STATUS.ACC_LIVE || !finite(live.receivedAt)
-        || now - live.receivedAt > config.runtime.telemetryMaxAgeMs || now < live.receivedAt) return { error: 'Waiting for fresh, running live telemetry.' };
+    if (live.telemetryStatus !== ACC_STATUS.ACC_LIVE) return { error: 'Waiting for fresh, running live telemetry.' };
+    if (!finite(live.receivedAt) || now - live.receivedAt > config.runtime.telemetryMaxAgeMs || now < live.receivedAt) {
+        return { error: 'Waiting for fresh, running live telemetry.', waitingForFreshInputs: true };
+    }
     if (!vision || !finite(vision.capturedAt) || now - vision.capturedAt > config.runtime.visionMaxAgeMs || now < vision.capturedAt) {
-        return { error: 'Start Track Vision capture in Live Session. A fresh image is required.', cameraUnavailable: true };
+        return { error: 'Start Track Vision capture in Live Session. A fresh image is required.', cameraUnavailable: true, waitingForFreshInputs: true };
     }
     const paired = vision.telemetry;
     if (!paired || paired.telemetryStatus !== ACC_STATUS.ACC_LIVE || !finite(paired.receivedAt)
@@ -103,7 +108,7 @@ function readCameraObservation(live: LiveTelemetrySnapshot, vision: TrackVisionD
         || paired.sessionGeneration !== live.sessionGeneration || paired.streamGeneration !== live.streamGeneration
         || paired.game !== live.game || paired.currentTelemetry.Static_track !== live.currentTelemetry.Static_track
         || paired.currentTelemetry.Static_car_model !== live.currentTelemetry.Static_car_model) {
-        return { error: 'Waiting for Track Vision and telemetry from the same live session.', cameraUnavailable: true };
+        return { error: 'Waiting for Track Vision and telemetry from the same live session.', cameraUnavailable: true, waitingForFreshInputs: true };
     }
     const sample = paired.currentTelemetry;
     const game = paired.game, car = sample.Static_car_model, map = sample.Static_track;
@@ -169,19 +174,20 @@ function readCameraObservation(live: LiveTelemetrySnapshot, vision: TrackVisionD
 }
 
 export interface DrivingReward {
-    timing: number; progress: number; impact: number; onTrack: number; offTrack: number; steeringChange: number; total: number;
+    timing: number; progress: number; impact: number; onTrack: number; offTrack: number;
+    steeringChange: number; throttleChange: number; brakeChange: number; total: number;
     offTrackDetected: boolean | null;
     impactEstimate: DrivingImpact;
     speedComparison: ReferenceSpeedTargets & { measured: number; aggression: number;
-        /** Speed error removed by the driver's speed change, against one fixed target, in km/h. */
-        speedGoalProgress: number;
+        /** Integrated absolute speed gap in (km/h)·s. */
+        speedGapTime: number;
         /** Change in speed over this transition, in m/s². */
         measuredAcceleration: number; referenceAcceleration: number; targetAcceleration: number };
 }
 
 export function drivingReward(previous: DrivingObservation, current: DrivingObservation,
     config = DEFAULT_DRIVING_CONFIG, telemetryImpact?: DrivingImpact,
-    steeringChangeSquared = (current.controls.steering - previous.controls.steering) ** 2): DrivingReward {
+    controlChanges?: Pick<DrivingAction, 'steering' | 'throttle' | 'brake'>): DrivingReward {
     const r = config.reward;
     const dt = (current.capturedAt - previous.capturedAt) / 1000;
     if (dt <= 0 || dt > config.runtime.maxTransitionSeconds || previous.session !== current.session) throw new Error('Training transition crossed a session boundary or data gap.');
@@ -192,7 +198,8 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     if (positionChange > 0.5) positionChange -= 1;
     if (Math.abs(positionChange) > config.runtime.maxPositionJump) throw new Error('Lap position jumped. Reposition the car and start a new episode.');
     if (previous.reference !== current.reference) throw new Error('Live Map reference changed. Start a new episode.');
-    const forwardProgress = current.speed > 0 && current.gear >= 0 ? clamp(positionChange, 0, r.progressLimit) : 0;
+    const movingForward = current.speed > 0 && current.gear >= 0 && positionChange > 0;
+    const forwardProgress = movingForward ? Math.min(positionChange, r.progressLimit) : 0;
     const progressPerSecond = Math.abs(positionChange / measuredSeconds);
     // Half strength at 0.01 lap/second; faster progress approaches 0.25 * progressWeight per lap.
     // Weight by signed distance so extra samples do not earn extra reward at the same rate.
@@ -207,17 +214,14 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     const measuredAcceleration = (current.speed - previous.speed) / (3.6 * measuredSeconds);
     const referenceAcceleration = (speeds.reference - start.reference) / (3.6 * measuredSeconds);
     const targetAcceleration = (speeds.target - start.target) / (3.6 * measuredSeconds);
-    // Compare both measured speeds with the same destination goal. A changing reference
-    // or simply being close to it cannot earn credit without a useful speed change.
-    // Absolute errors also charge for overshooting, instead of rewarding all acceleration.
-    const remainingSpeedError = Math.abs(current.speed - speeds.target);
-    const speedGoalProgress = Math.abs(previous.speed - speeds.target) - remainingSpeedError;
-    // Failing to close an outstanding gap is a penalty; holding the target stays neutral.
-    const speedCorrection = speedGoalProgress <= 0 && remainingSpeedError > 0 ? -remainingSpeedError : speedGoalProgress;
-    const correction = clamp(speedCorrection / (3.6 * measuredSeconds * r.accelerationTolerance));
-    // Score the direction of the speed change immediately, even far from the goal.
-    const timing = forwardProgress > 0
-        ? r.timingWeight * forwardProgress * correction : 0;
+    const startError = previous.speed - start.target, endError = current.speed - speeds.target;
+    const startGap = Math.abs(startError), endGap = Math.abs(endError);
+    // Integrate the linearly interpolated error. A target crossing splits the area into two triangles.
+    const averageGap = startError * endError < 0
+        ? (startGap ** 2 + endGap ** 2) / (2 * (startGap + endGap))
+        : (startGap + endGap) / 2;
+    const speedGapTime = averageGap * measuredSeconds;
+    const timing = speedGapTime > 0 && r.timingWeight > 0 ? -r.timingWeight * speedGapTime / r.speedTolerance : 0;
     const impactSample = (observation: DrivingObservation): ImpactSample => ({ measuredAt: observation.measuredAt,
         velocity: [observation.localVelocity[0], observation.localVelocity[observation.context.game === 'iracing' ? 2 : 1]],
         steering: observation.controls.steering, brake: observation.controls.brake });
@@ -226,11 +230,21 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     const offTrack = current.offTrack === true ? -OFF_TRACK_PENALTY_PER_SECOND * measuredSeconds : 0;
     // Reward confirmed on-track driving without paying the policy to park or reverse.
     const onTrack = current.offTrack === false && forwardProgress > 0 ? ON_TRACK_REWARD_PER_SECOND * measuredSeconds : 0;
-    // AI supplies replacement jumps and neighboring-plan changes between images.
-    // Human driving uses measured steering changes. Holding any angle costs zero.
-    const steeringChange = r.steeringChangeWeight > 0 && steeringChangeSquared > 0 ? -r.steeringChangeWeight * steeringChangeSquared : 0;
-    return { timing, progress, impact, impactEstimate, onTrack, offTrack, steeringChange, offTrackDetected: current.offTrack,
-        speedComparison: { ...speeds, measured: current.speed, aggression: previous.aggression, speedGoalProgress,
+    // Human driving uses measured changes. AI supplies accumulated command changes between images.
+    const pedalScale = PEDAL_CHANGE_REFERENCE_MS / (measuredSeconds * 1000);
+    const changes = controlChanges ?? {
+        steering: (current.controls.steering - previous.controls.steering) ** 2,
+        throttle: (current.controls.throttle - previous.controls.throttle) ** 2 * pedalScale,
+        brake: (current.controls.brake - previous.controls.brake) ** 2 * pedalScale,
+    };
+    const penalty = (weight: number, change: number) => weight > 0 && change > 0 ? -weight * change : 0;
+    const steeringChange = penalty(r.steeringChangeWeight, changes.steering);
+    const throttleChange = penalty(r.throttleChangeWeight, changes.throttle);
+    const brakeChange = penalty(r.brakeChangeWeight, changes.brake);
+    return { timing, progress, impact, impactEstimate, onTrack, offTrack, steeringChange, throttleChange, brakeChange,
+        offTrackDetected: current.offTrack,
+        speedComparison: { ...speeds, measured: current.speed, aggression: previous.aggression, speedGapTime,
             measuredAcceleration, referenceAcceleration, targetAcceleration },
-        total: clamp(timing + progress + impact + onTrack + offTrack + steeringChange, -r.totalLimit, r.totalLimit) };
+        total: clamp(timing + progress + impact + onTrack + offTrack + steeringChange + throttleChange + brakeChange,
+            -r.totalLimit, r.totalLimit) };
 }

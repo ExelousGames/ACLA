@@ -127,35 +127,43 @@ it('rejects incompatible images and retires resources after invalid activations'
 
 const targets = [{ step: 0, action: { throttle: 0.7, brake: 0.1, steering: -0.3 }, shifts: { up: true, down: false } }];
 const transition = { reward: 1, elapsedSeconds: 0.2, terminal: false,
-    actions: [{ step: 0, weight: 0.25, latent: [0.1, -0.2], shift: 0, shifts: { up: true, down: true } },
-        { step: 2, weight: 0.75, latent: [0.3, -0.4], shift: 1, shifts: { up: true, down: false } }] };
+    nextShifts: { up: false, down: true },
+    actions: [{ step: 0, weight: 0.25, action: { throttle: 0.1, brake: 0.2, steering: -0.2 }, shift: 0, shifts: { up: true, down: true } },
+        { step: 2, weight: 0.75, action: { throttle: 0.3, brake: 0.4, steering: -0.4, shiftUp: true }, shift: 1, shifts: { up: true, down: false } }] };
 
-it('uploads sparse execution credits at their plan slots and clears unexecuted slots', async () => {
+it('uploads actual executed controls and current/next shift masks for sparse SAC credits', async () => {
     const { model, input, device } = await setup();
     const { pass } = await model.forward(input());
     device.queue.writeBuffer.mockClear();
     model.learnTransition(pass, input(), { ...transition, terminal: true });
-    const data = device.queue.writeBuffer.mock.calls[0][2] as Float32Array;
-    expect(Array.from(data.slice(0, 3))).toEqual(Array.from(new Float32Array([1, 0.2, 1])));
-    expect(Array.from(data.slice(3, 10))).toEqual(Array.from(new Float32Array([0.25, 0.1, -0.2, 0, 1, 1, 0.25])));
-    expect(Array.from(data.slice(10, 17))).toEqual([0, 0, 0, 0, 0, 0, 0]);
-    expect(Array.from(data.slice(17, 24))).toEqual(Array.from(new Float32Array([0.75, 0.3, -0.4, 1, 1, 0, 0.75])));
-    expect(Array.from(data.slice(24)).every((value) => value === 0)).toBe(true);
+    const data = device.queue.writeBuffer.mock.calls.map(([, , values]) => values)
+        .filter((values): values is Float32Array => values instanceof Float32Array && values.length === 21);
+    expect(data).toHaveLength(2);
+    expect(Array.from(data[0].slice(0, 15))).toEqual(Array.from(new Float32Array(
+        [1, 0.2, 1, 0, 0.25, 0.25, 0.25, 1, 1, 0, 1, 0.1, 0.2, -0.2, 0])));
+    expect(Array.from(data[1].slice(0, 15))).toEqual(Array.from(new Float32Array(
+        [1, 0.2, 1, 0, 0.75, 0.75, 0.75, 1, 1, 0, 1, 0.3, 0.4, -0.4, 1])));
+    expect(data.every((values) => Array.from(values.slice(15)).every(Number.isFinite))).toBe(true);
     model.release(pass);
 });
 
-it('accumulates repeated interpolation credits while keeping categorical weight and masks separate', async () => {
+it('retains distinct interpolation actions instead of replacing them with a plan endpoint', async () => {
     const { model, input, device } = await setup();
     const { pass } = await model.forward(input());
-    const analog = { step: 1, weight: 0.25, shiftWeight: 0, latent: [0.3, -0.4], shift: 0, shifts: { up: false, down: false } };
+    const analog = { step: 1, weight: 0.25, shiftWeight: 0, action: { throttle: 0.3, brake: 0.4, steering: -0.4, shiftUp: true },
+        shift: 0, shifts: { up: false, down: false } };
     device.queue.writeBuffer.mockClear();
     model.learnTransition(pass, input(), { ...transition, terminal: true, actions: [analog,
-        { ...analog, weight: 0.5, shiftWeight: 0.5, shift: 1, shifts: { up: true, down: true } }, analog] });
-    const data = device.queue.writeBuffer.mock.calls[0][2] as Float32Array;
-    expect(Array.from(data.slice(10, 17))).toEqual(Array.from(new Float32Array([1, 0.3, -0.4, 1, 1, 1, 0.5])));
-    model.learnTransition(pass, input(), { ...transition, terminal: true, actions: [analog] });
-    const next = device.queue.writeBuffer.mock.calls.filter(([, , values]) => values instanceof Float32Array)[1][2] as Float32Array;
-    expect(Array.from(next.slice(10, 17))).toEqual(Array.from(new Float32Array([0.25, 0.3, -0.4, 0, 0, 0, 0])));
+        { ...analog, action: { throttle: 0.8, brake: 0, steering: 0.2, shiftUp: true }, weight: 0.5, shiftWeight: 0.5, shift: 1, shifts: { up: true, down: true } }, analog] });
+    const data = device.queue.writeBuffer.mock.calls.map(([, , values]) => values)
+        .filter((values): values is Float32Array => values instanceof Float32Array && values.length === 21);
+    expect(data).toHaveLength(3);
+    expect(data.map((values) => values[3])).toEqual([0, 0, 0]);
+    expect(data.map((values) => values[5])).toEqual([0, 0.5, 0]);
+    expect(data.map((values) => Array.from(values.slice(7, 9)))).toEqual([[1, 1], [1, 1], [1, 1]]);
+    expect(data.map((values) => values[14])).toEqual([1, 1, 1]);
+    expect(Array.from(data[1].slice(11, 15))).toEqual(Array.from(new Float32Array([0.8, 0, 0.2, 1])));
+    expect(Array.from(data[0].slice(11, 15))).toEqual(Array.from(data[2].slice(11, 15)));
     model.release(pass);
 });
 
@@ -247,7 +255,7 @@ it('bounds idle forward workspaces after a burst of retained decisions', async (
     const passes: GpuPolicyPass[] = [];
     for (let i = 0; i < 5; i++) passes.push((await model.forward(input())).pass);
     passes.forEach((pass) => model.release(pass));
-    expect(buffers().filter((buffer) => !buffer.destroy.mock.calls.length && passes.some((pass) => pass.features === buffer))).toHaveLength(2);
+    expect(buffers().filter((buffer) => !buffer.destroy.mock.calls.length && passes.some((pass) => pass.features === buffer))).toHaveLength(3);
     const before = allocations()[0];
     for (let i = 0; i < 3; i++) model.release((await model.forward(input())).pass);
     expect(allocations()[0]).toBe(before);

@@ -6,6 +6,7 @@ import { DrivingPolicy } from './driving-policy';
 export interface RecordedReplayProgress {
     samples: number;
     skipped: number;
+    /** Mean absolute error across the independent throttle and brake axes. */
     pedalError: number;
     steeringError: number;
     lastError?: string;
@@ -73,8 +74,8 @@ export class RecordedDrivingReplay {
                 if (!active()) return;
                 const predicted = decision.plan[0].action;
                 const count = this.progress.samples + 1;
-                this.progress.pedalError += (Math.abs((predicted.throttle - predicted.brake)
-                    - (action.throttle - action.brake)) - this.progress.pedalError) / count;
+                const pedalError = (Math.abs(predicted.throttle - action.throttle) + Math.abs(predicted.brake - action.brake)) / 2;
+                this.progress.pedalError += (pedalError - this.progress.pedalError) / count;
                 this.progress.steeringError += (Math.abs(predicted.steering - action.steering) - this.progress.steeringError) / count;
             } finally { this.policy.releaseDecision(decision); }
         }

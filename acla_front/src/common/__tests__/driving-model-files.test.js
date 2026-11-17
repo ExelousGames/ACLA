@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const { registerDrivingModelFiles } = require('../../../electron/driving-model-files');
 
-const document = (steps = 0) => JSON.stringify({ format: 'kestrel-self-driving-model', algorithm: 'online-actor-critic',
+const document = (steps = 0) => JSON.stringify({ format: 'kestrel-self-driving-model', algorithm: 'soft-actor-critic',
     configuration: { aggression: 50 }, model: { steps, lstmWeights: [[0.1]], outputWeights: [[0.2]] } });
 let directory;
 beforeEach(async () => { directory = await fs.mkdtemp(path.join(os.tmpdir(), 'acla-driving-files-test-')); });
@@ -99,7 +99,7 @@ it('leaves the last complete file intact after a failed replacement and permits 
     expect(await run.call('read', run.filePath)).toBe(document(100));
 });
 
-it.each(['{broken', '{}', JSON.stringify({ version: 13, weights: [1] }), ' '.repeat(32 * 1024 * 1024 + 1)])(
+it.each(['{broken', '{}', JSON.stringify({ version: 13, weights: [1] }), ' '.repeat(96 * 1024 * 1024 + 1)])(
     'rejects invalid or oversized writes without damaging a saved model %#', async (json) => {
         const run = setup();
         await run.call('choose', 'new');
@@ -114,7 +114,7 @@ it('reports missing, corrupt and oversized files without selecting them as the a
     await expect(run.call('read', run.filePath)).rejects.toThrow();
     await fs.writeFile(run.filePath, '{broken');
     await expect(run.call('read', run.filePath)).rejects.toThrow();
-    await fs.truncate(run.filePath, 32 * 1024 * 1024 + 1);
+    await fs.truncate(run.filePath, 96 * 1024 * 1024 + 1);
     await expect(run.call('read', run.filePath)).rejects.toThrow(/too large/);
     expect(await run.call('current')).toBeNull();
 });

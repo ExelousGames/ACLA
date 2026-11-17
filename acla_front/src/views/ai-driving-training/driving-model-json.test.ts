@@ -12,6 +12,54 @@ import { circuitMapFixture, trainingFixture } from './training-fixtures';
 beforeEach(() => { mockDrivingGpu(); });
 afterEach(() => { jest.restoreAllMocks(); });
 
+const frequencyKeys = ['throttleExplorationUpdateHz', 'brakeExplorationUpdateHz', 'steeringExplorationUpdateHz', 'gearExplorationUpdateHz'];
+
+it.each([false, true])('rejects old actor-critic documents instead of migrating weights (trained=%s)', (trained) => {
+    const config = cloneConfig();
+    config.network.hiddenUnits = config.network.cameraProjectionUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    const { observation } = trainingFixture();
+    const document: any = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
+        : emptyTrainingDocument(config);
+    document.algorithm = 'online-actor-critic';
+    expect(() => readTrainingDocument(document)).toThrow(/incompatible/);
+});
+
+it.each([
+    (c: any) => { delete c.model.sac; },
+    (c: any) => { c.model.sac.logStds[0] = NaN; },
+    (c: any) => { c.model.sac.logStds[0] = -8; },
+    (c: any) => { c.model.sac.logStds.pop(); },
+    (c: any) => { c.model.sac.criticWeights.pop(); },
+    (c: any) => { c.model.sac.targetCriticWeights[0].pop(); },
+    (c: any) => { delete c.model.sac.targetEncoder; },
+    (c: any) => { c.model.sac.targetEncoder.lstmWeights[0][0] = Infinity; },
+    (c: any) => { delete c.model.sac.targetEncoder.cameraNormWeights; },
+])('requires complete valid SAC online and target weights %#', (change) => {
+    const config = cloneConfig();
+    config.network.hiddenUnits = config.network.cameraProjectionUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    const { observation } = trainingFixture();
+    const document = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
+    change(document);
+    expect(() => readTrainingDocument(document)).toThrow(/checkpoint/);
+});
+
+it.each([
+    (c: any) => { c.learning.entropyTemperature = 0; },
+    (c: any) => { c.learning.targetTau = 0; },
+    (c: any) => { c.learning.targetTau = 1.1; },
+    (c: any) => { c.learning.replayCapacity = 0; },
+    (c: any) => { c.learning.replayBatchSize = 1.5; },
+    (c: any) => { c.learning.replayBatchSize = c.learning.replayCapacity + 1; },
+    (c: any) => { c.learning.criticGradientLimit = 0; },
+    (c: any) => { c.learning.advantageLimit = 5; },
+])('rejects unsupported or invalid SAC learning settings %#', (change) => {
+    const config = cloneConfig();
+    change(config);
+    expect(() => validateDrivingConfig(config)).toThrow(/configuration/);
+});
+
 it('keeps a widescreen spatial grid and projects it to 256 visual LSTM inputs', () => {
     const config = cloneConfig();
     expect(() => validateDrivingConfig(config)).not.toThrow();
@@ -48,7 +96,7 @@ it('starts fresh normalization parameters and round-trips their learned values',
     restored.dispose();
 });
 
-it('keeps legacy checkpoints unnormalized and leaves the source baseline untouched', () => {
+it('rejects legacy checkpoints missing normalization settings without changing the source', () => {
     const config = cloneConfig();
     config.network.cameraLayerNorm = false;
     config.network.lstmLayerNorm = false;
@@ -62,14 +110,8 @@ it('keeps legacy checkpoints unnormalized and leaves the source baseline untouch
     delete legacy.configuration.network.layerNormEpsilon;
     delete legacy.configuration.learning.gradientNormLimit;
     const before = JSON.stringify(legacy);
-    const restored = readTrainingDocument(legacy);
-    expect(restored.configuration.network).toMatchObject({ cameraLayerNorm: false, lstmLayerNorm: false });
-    expect(restored.configuration.learning.gradientNormLimit).toBe(1);
-    expect(restored.model).toEqual(legacy.model);
-    expect(restored.model).not.toHaveProperty('cameraNormWeights');
-    expect(restored.model).not.toHaveProperty('lstmNormWeights');
+    expect(() => readTrainingDocument(legacy)).toThrow(/configuration/);
     expect(JSON.stringify(legacy)).toBe(before);
-    expect(readTrainingDocument(restored)).toEqual(restored);
 });
 
 it.each([
@@ -130,7 +172,7 @@ it('rebuilds the whole observation, memory, network and plan from a non-default 
     const restored = DrivingPolicy.restore(JSON.parse(json));
     expect(restored.matches(observation)).toBe(true);
     expect(restored.checkpoint().model.lstmWeights).toHaveLength(4 * 7);
-    expect(restored.checkpoint().model.outputWeights).toHaveLength(16);
+    expect(restored.checkpoint().model.outputWeights).toHaveLength(19);
     expect(restored.planTimes).toEqual([0, 0.3, 1.2]);
     expect(restored.checkpoint()).toEqual(JSON.parse(json));
     expect(restored.checkpoint()).not.toHaveProperty('version');
@@ -198,7 +240,15 @@ it('supports a configuration-only JSON and isolates exported values from the run
     expect(policy.checkpoint().model.lstmWeights[0][0]).not.toBe(4);
 });
 
-it.each([false, true])('adds the sequence setting to existing model files without changing weights (trained=%s)', (trained) => {
+it('starts fresh models with five-second plans and three-second consequence windows', () => {
+    const document = emptyTrainingDocument();
+    expect(document.configuration.actions.planTimesSeconds).toEqual(Array.from({ length: 51 }, (_, index) => index / 10));
+    expect(document.configuration.actions.planAgreementTolerance).toBe(0.05);
+    expect(document.configuration.learning.sequenceSeconds).toBe(3);
+    expect(() => validateDrivingConfig(document.configuration)).not.toThrow();
+});
+
+it.each([false, true])('requires explicit consequence and agreement settings without migrating old models (trained=%s)', (trained) => {
     const { observation } = trainingFixture(), config = cloneConfig();
     config.learning.sequenceSeconds = 5;
     const current = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
@@ -207,12 +257,17 @@ it.each([false, true])('adds the sequence setting to existing model files withou
     const legacy = JSON.parse(JSON.stringify(current));
     delete legacy.configuration.learning.sequenceSeconds;
     const before = JSON.stringify(legacy);
-    const restored = readTrainingDocument(legacy);
-    expect(restored.configuration.learning.sequenceSeconds).toBe(4);
-    expect(restored.model).toEqual(current.model);
-    expect(JSON.stringify(legacy)).toBe(before);
-    delete legacy.configuration.learning.discount;
     expect(() => readTrainingDocument(legacy)).toThrow(/configuration/);
+    expect(JSON.stringify(legacy)).toBe(before);
+    legacy.configuration.learning.sequenceSeconds = 3;
+    delete legacy.configuration.actions.planAgreementTolerance;
+    expect(() => readTrainingDocument(legacy)).toThrow(/configuration/);
+});
+
+it.each([-1, 1.01, Infinity, NaN, '0.05', null])('rejects an invalid plan agreement tolerance %s', (tolerance) => {
+    const config: any = cloneConfig();
+    config.actions.planAgreementTolerance = tolerance;
+    expect(() => validateDrivingConfig(config)).toThrow(/configuration/);
 });
 
 it.each([0, -1, 30.1, Infinity, NaN, '4', null])('rejects an invalid sequence duration %s', (seconds) => {
@@ -221,7 +276,7 @@ it.each([0, -1, 30.1, Infinity, NaN, '4', null])('rejects an invalid sequence du
     expect(() => validateDrivingConfig(config)).toThrow(/configuration/);
 });
 
-it.each([false, true])('reduces legacy default exploration without changing saved weights (trained=%s)', (trained) => {
+it.each([false, true])('rejects shared exploration from older models without migration (trained=%s)', (trained) => {
     const { observation } = trainingFixture(), config = cloneConfig();
     config.network.hiddenUnits = 3;
     config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
@@ -229,27 +284,84 @@ it.each([false, true])('reduces legacy default exploration without changing save
     const legacy: any = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
         : emptyTrainingDocument(config);
     legacy.configuration.learning.explorationSigma = 0.25;
-    delete legacy.configuration.learning.shiftTemperature;
+    delete legacy.configuration.learning.throttleExplorationSigma;
+    delete legacy.configuration.learning.brakeExplorationSigma;
+    delete legacy.configuration.learning.steeringExplorationSigma;
+    frequencyKeys.forEach((key) => { delete legacy.configuration.learning[key]; });
     const before = JSON.stringify(legacy);
-    const restored = readTrainingDocument(legacy);
-    expect(restored.configuration.learning.explorationSigma).toBe(0.05);
-    expect(restored.configuration.learning.shiftTemperature).toBe(0.25);
-    expect(restored.model).toEqual(legacy.model);
+    expect(() => readTrainingDocument(legacy)).toThrow(/configuration/);
+    if (trained) expect(() => DrivingPolicy.restore(legacy)).toThrow(/configuration/);
     expect(JSON.stringify(legacy)).toBe(before);
-    expect(readTrainingDocument(restored)).toEqual(restored);
+    delete legacy.configuration.learning.shiftTemperature;
+    expect(() => readTrainingDocument(legacy)).toThrow(/configuration/);
 });
 
-it('preserves custom exploration and only upgrades the old default once', () => {
-    const legacy: any = emptyTrainingDocument();
-    legacy.configuration.learning.explorationSigma = 0.12;
-    delete legacy.configuration.learning.shiftTemperature;
-    expect(readTrainingDocument(legacy).configuration.learning.explorationSigma).toBe(0.12);
+it('preserves explicit exploration settings and rejects missing settings', () => {
     const current: any = emptyTrainingDocument();
-    current.configuration.learning.explorationSigma = 0.25;
+    current.configuration.learning.throttleExplorationSigma = 0.15;
+    current.configuration.learning.brakeExplorationSigma = 0.25;
+    current.configuration.learning.steeringExplorationSigma = 0.35;
     current.configuration.learning.shiftTemperature = 0.5;
+    current.configuration.learning.throttleExplorationUpdateHz = 2.5;
+    current.configuration.learning.brakeExplorationUpdateHz = 1;
+    current.configuration.learning.steeringExplorationUpdateHz = 0.5;
+    current.configuration.learning.gearExplorationUpdateHz = 5;
     expect(readTrainingDocument(current)).toEqual(current);
-    delete legacy.configuration.learning.explorationSigma;
-    expect(() => readTrainingDocument(legacy)).toThrow(/configuration/);
+    for (const key of ['throttleExplorationSigma', 'brakeExplorationSigma', 'steeringExplorationSigma', 'shiftTemperature']) {
+        const missing = JSON.parse(JSON.stringify(current));
+        delete missing.configuration.learning[key];
+        expect(() => readTrainingDocument(missing)).toThrow(/configuration/);
+        missing.configuration.learning.explorationSigma = 0.12;
+        expect(() => readTrainingDocument(missing)).toThrow(/configuration/);
+    }
+    for (const key of frequencyKeys) {
+        const missing = JSON.parse(JSON.stringify(current));
+        delete missing.configuration.learning[key];
+        expect(() => readTrainingDocument(missing)).toThrow(/configuration/);
+        missing.configuration.learning.explorationUpdateHz = 2;
+        expect(() => readTrainingDocument(missing)).toThrow(/configuration/);
+    }
+    current.configuration.learning.explorationUpdateHz = 2;
+    expect(() => readTrainingDocument(current)).toThrow(/configuration/);
+});
+
+it.each(['throttleExplorationSigma', 'brakeExplorationSigma', 'steeringExplorationSigma', 'explorationSigma'])
+('rejects invalid exploration values for %s', (key) => {
+    for (const value of [0, -1, Number.MIN_VALUE, 1e6 + 1, Infinity, NaN, '0.25', null]) {
+        const document: any = emptyTrainingDocument();
+        if (key === 'explorationSigma') {
+            delete document.configuration.learning.throttleExplorationSigma;
+            delete document.configuration.learning.brakeExplorationSigma;
+            delete document.configuration.learning.steeringExplorationSigma;
+        }
+        document.configuration.learning[key] = value;
+        expect(() => readTrainingDocument(document)).toThrow(/configuration/);
+    }
+});
+
+it.each([false, true])('rejects old shared exploration frequencies instead of filling defaults (trained=%s)', (trained) => {
+    const { observation } = trainingFixture(), config = cloneConfig();
+    config.network.hiddenUnits = config.network.cameraProjectionUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    const document: any = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
+        : emptyTrainingDocument(config);
+    frequencyKeys.forEach((key) => { delete document.configuration.learning[key]; });
+    for (const frequency of [undefined, 0.1, 2.5, 10]) {
+        if (frequency !== undefined) document.configuration.learning.explorationUpdateHz = frequency;
+        const before = JSON.stringify(document);
+        expect(() => readTrainingDocument(document)).toThrow(/configuration/);
+        if (trained) expect(() => DrivingPolicy.restore(document)).toThrow(/configuration/);
+        expect(JSON.stringify(document)).toBe(before);
+    }
+});
+
+it.each([...frequencyKeys, 'explorationUpdateHz'])('rejects invalid exploration frequencies for %s', (key) => {
+    for (const frequency of [0, -1, 0.01, 10.1, Infinity, NaN, '2', null, undefined]) {
+        const document: any = emptyTrainingDocument();
+        if (key === 'explorationUpdateHz') frequencyKeys.forEach((field) => { delete document.configuration.learning[field]; });
+        document.configuration.learning[key] = frequency;
+        expect(() => readTrainingDocument(document)).toThrow(/configuration/);
+    }
 });
 
 it.each([0, -1, 0.0001, 1.1, Infinity, NaN, '0.25', null])('rejects an invalid shift temperature %s', (temperature) => {
@@ -269,7 +381,7 @@ it('rejects old pedal-target models even though the number of inputs is unchange
     expect(() => readTrainingDocument(oldReward)).toThrow(/unsupported/);
 });
 
-it.each([false, true])('upgrades steering penalties into the reward configuration without changing weights (trained=%s)', (trained) => {
+it.each([false, true])('rejects legacy steering penalty settings without changing weights (trained=%s)', (trained) => {
     const { observation } = trainingFixture(), config = cloneConfig();
     config.network.hiddenUnits = 2;
     config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
@@ -278,19 +390,14 @@ it.each([false, true])('upgrades steering penalties into the reward configuratio
         : emptyTrainingDocument(config);
     delete legacy.configuration.reward.steeringChangeWeight;
     const before = JSON.stringify(legacy);
-    const restored = readTrainingDocument(legacy);
-    expect(restored.configuration.reward.steeringChangeWeight).toBe(0.05);
-    expect(restored.configuration.learning).not.toHaveProperty('steeringSmoothnessWeight');
-    expect(restored.model).toEqual(legacy.model);
+    expect(() => readTrainingDocument(legacy)).toThrow(/configuration/);
     expect(JSON.stringify(legacy)).toBe(before);
     for (const weight of [0, 0.1]) {
-        restored.configuration.reward.steeringChangeWeight = weight;
-        expect(readTrainingDocument(restored)).toEqual(restored);
+        const current = emptyTrainingDocument();
+        current.configuration.reward.steeringChangeWeight = weight;
+        expect(readTrainingDocument(current)).toEqual(current);
         legacy.configuration.learning.steeringSmoothnessWeight = weight;
-        const upgraded = readTrainingDocument(legacy);
-        expect(upgraded.configuration.reward.steeringChangeWeight).toBe(weight);
-        expect(upgraded.configuration.learning).not.toHaveProperty('steeringSmoothnessWeight');
-        expect(upgraded.model).toEqual(legacy.model);
+        expect(() => readTrainingDocument(legacy)).toThrow(/configuration/);
         expect(legacy.configuration.learning.steeringSmoothnessWeight).toBe(weight);
     }
 });
@@ -301,15 +408,66 @@ it.each([-1, 1.01, Infinity, NaN, '0.05', null])('rejects an invalid steering-ch
     expect(() => validateDrivingConfig(config)).toThrow(/configuration/);
 });
 
-it('uses a neutral combined pedal output in new models and rejects separate-pedal model layouts', () => {
+it.each([false, true])('updates previous speed reward settings without changing checkpoint weights (trained=%s)', (trained) => {
+    const { observation } = trainingFixture(), config = cloneConfig();
+    config.network.hiddenUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    config.network.cameraProjectionUnits = 2;
+    const legacy: any = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
+        : emptyTrainingDocument(config);
+    delete legacy.configuration.reward.throttleChangeWeight;
+    delete legacy.configuration.reward.brakeChangeWeight;
+    legacy.configuration.reward.accelerationTolerance = 3;
+    legacy.configuration.reward.timingWeight = 175;
+    const before = JSON.stringify(legacy);
+    const migrated = readTrainingDocument(legacy);
+    expect(migrated.model).toEqual(legacy.model);
+    expect(migrated.configuration.reward).toEqual({ ...config.reward, timingWeight: 1.75 });
+    expect(readTrainingDocument(migrated)).toEqual(migrated);
+    expect(JSON.stringify(legacy)).toBe(before);
+});
+
+it.each(['throttleChangeWeight', 'brakeChangeWeight'] as const)('requires a valid %s in new checkpoints', (key) => {
     const document = emptyTrainingDocument();
-    expect(document.configuration.actions.outputs).toEqual(['throttle-brake-tanh', 'steering-tanh', 'hold-logit', 'up-logit', 'down-logit']);
-    expect(document.configuration.network.initialActionBias).toEqual([0, 0, 1, 0, 0]);
-    document.configuration.actions.outputs = ['throttle-sigmoid', 'brake-sigmoid', 'steering-tanh', 'hold-logit', 'up-logit', 'down-logit'];
-    document.configuration.network.initialActionBias = [-2, -3, 0, 1, 0, 0];
+    for (const weight of [-1, 1.01, Infinity, NaN]) {
+        document.configuration.reward[key] = weight;
+        expect(() => readTrainingDocument(document)).toThrow(/configuration/);
+    }
+    delete (document.configuration.reward as Partial<typeof document.configuration.reward>)[key];
+    expect(() => readTrainingDocument(document)).toThrow(/configuration/);
+});
+
+it('starts new models with separate neutral throttle and brake outputs', () => {
+    const document = emptyTrainingDocument();
+    expect(document.configuration.actions.outputs).toEqual(['throttle-tanh', 'brake-tanh', 'steering-tanh', 'hold-logit', 'up-logit', 'down-logit']);
+    expect(document.configuration.network.initialActionBias).toEqual([0, 0, 0, 1, 0, 0]);
+    expect(readTrainingDocument(document)).toEqual(document);
+});
+
+it.each([false, true])('rejects combined-pedal model layouts without migration (trained=%s)', (trained) => {
+    const { observation } = trainingFixture(), config = cloneConfig();
+    config.network.hiddenUnits = 3;
+    config.network.cameraProjectionUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    const document = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
+        : emptyTrainingDocument(config);
+    document.configuration.actions.outputs = ['throttle-brake-tanh', 'steering-tanh', 'hold-logit', 'up-logit', 'down-logit'];
+    document.configuration.network.initialActionBias = [0, 0, 1, 0, 0];
+    if (document.model) document.model.outputWeights.splice(config.actions.planTimesSeconds.length * 5 + 1);
     const original = JSON.stringify(document);
     expect(() => readTrainingDocument(document)).toThrow(/configuration/);
     expect(JSON.stringify(document)).toBe(original);
+});
+
+it.each([false, true])('rejects legacy shift cooldown settings (trained=%s)', (trained) => {
+    const { observation } = trainingFixture(), config = cloneConfig();
+    config.network.hiddenUnits = 3;
+    config.network.cameraProjectionUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    const document = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
+        : emptyTrainingDocument(config);
+    Object.assign(document.configuration.actions, { shiftCooldownMs: 300 });
+    expect(() => readTrainingDocument(document)).toThrow(/configuration/);
 });
 
 it('requires the Live Phrases reward encoding and rejects earlier aggression calculations without migration', () => {
@@ -383,11 +541,11 @@ it.each([
     (c: any) => { c.memory.windowMs = 30000; c.memory.intervalMs = 299; },
     (c: any) => { c.actions.planTimesSeconds = [0, 1, 0.5]; },
     (c: any) => { c.actions.outputs.reverse(); },
-    (c: any) => { c.learning.explorationSigma = 0; },
+    (c: any) => { c.learning.throttleExplorationSigma = 0; },
     (c: any) => { c.reward.speedTolerance = 0; },
-    (c: any) => { c.reward.accelerationTolerance = 0; },
+    (c: any) => { c.reward.accelerationTolerance = 3; },
     (c: any) => { c.reward.progressWeight = -1; },
-    (c: any) => { c.learning.explorationSigma = Number.MIN_VALUE; },
+    (c: any) => { c.learning.steeringExplorationSigma = Number.MIN_VALUE; },
     (c: any) => { c.learning.actorRate = NaN; },
     (c: any) => { c.aggression = 101; },
     (c: any) => { c.extra = true; },
@@ -416,7 +574,7 @@ it('initializes weights within a small JSON weight limit', () => {
     expect(() => DrivingPolicy.restore(policy.checkpoint())).not.toThrow();
 });
 
-it('runs the control loop with saved memory dimensions and pulse duration while removing legacy cooldowns', async () => {
+it('runs the control loop with saved memory dimensions and pulse duration', async () => {
     jest.useFakeTimers();
     const config = cloneConfig();
     config.memory.windowMs = 400;
@@ -426,8 +584,7 @@ it('runs the control loop with saved memory dimensions and pulse duration while 
     let now = 1000;
     let observation = trainingFixture(now).observation;
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
-    Object.assign(checkpoint.configuration.actions, { shiftCooldownMs: 300 });
-    checkpoint.model.outputWeights.slice(2, 5).forEach((row, i) => { row.fill(0); row[config.network.hiddenUnits] = i === 1 ? 4 : 0; });
+    checkpoint.model.outputWeights.slice(3, 6).forEach((row, i) => { row.fill(0); row[config.network.hiddenUnits] = i === 1 ? 4 : 0; });
     const policy = DrivingPolicy.restore(checkpoint);
     expect(policy.configuration.actions).not.toHaveProperty('shiftCooldownMs');
     expect(policy.checkpoint().configuration.actions).not.toHaveProperty('shiftCooldownMs');

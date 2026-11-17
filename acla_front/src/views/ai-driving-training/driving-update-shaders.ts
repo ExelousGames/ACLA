@@ -60,7 +60,7 @@ fn main(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) lo
         gradientGlobalNorm: reduction + `
 @group(0) @binding(0) var<storage, read> partials: array<f32>;
 @group(0) @binding(1) var<storage, read> count: array<u32>;
-// Summed gradient norm, clip scale, proposed update norm, base rate, sample count, finite flag.
+// Mean gradient norm, clip/averaging scale, proposed update norm, base rate, sample count, finite flag.
 @group(0) @binding(2) var<storage, read_write> stats: array<f32>;
 @compute @workgroup_size(64)
 fn main(@builtin(local_invocation_index) local: u32) {
@@ -75,11 +75,11 @@ fn main(@builtin(local_invocation_index) local: u32) {
         if (scale > 0.0) { let value = partials[i] / scale; squares += value * value; }
     }
     let samples = f32(max(1u, count[0]));
-    let norm = scale * sqrt(total(squares, local));
+    let norm = scale * sqrt(total(squares, local)) / samples;
     let valid = bad == 0.0 && finite(norm);
     let clip = min(1.0, ${config.learning.gradientNormLimit.toExponential()}f / max(norm, 1e-30));
     if (local == 0u) {
-        stats[0] = norm; stats[1] = select(0.0, clip, valid);
+        stats[0] = norm; stats[1] = select(0.0, clip / samples, valid);
         stats[2] = select(0.0, norm * clip * ${drivingLearningRate(config).toExponential()}f, valid);
         stats[3] = ${drivingLearningRate(config).toExponential()}f;
         stats[4] = samples; stats[5] = select(0.0, 1.0, valid);

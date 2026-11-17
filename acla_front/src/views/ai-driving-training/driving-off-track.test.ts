@@ -118,7 +118,7 @@ it.each([0.1, 0.2, 0.5, 1])('charges 5 reward per second at %s-second telemetry 
         const reward = drivingReward(before, { ...before, capturedAt: 2000, measuredAt: 1000 + seconds * 1000 });
         expect(reward.offTrack).toBeCloseTo(-5 * seconds);
         expect(reward.onTrack).toBe(0);
-        expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact + reward.offTrack);
+        expect(reward.total).toBeCloseTo(Math.max(-10, reward.timing + reward.progress + reward.impact + reward.offTrack));
         sum += reward.offTrack;
     }
     expect(sum).toBeCloseTo(-5);
@@ -126,7 +126,8 @@ it.each([0.1, 0.2, 0.5, 1])('charges 5 reward per second at %s-second telemetry 
 
 it.each([0.1, 0.2, 0.5, 1])('earns 1 on-track reward per second at %s-second telemetry intervals', (seconds) => {
     const { observation } = trainingFixture();
-    let before = { ...observation, offTrack: false };
+    // Hold the target on a constant-speed section to isolate the on-track reward.
+    let before = { ...observation, offTrack: false, normalizedPosition: 0.4, speed: 80 };
     let sum = 0;
     for (let i = 0; i < Math.round(1 / seconds); i++) {
         const after = { ...before, capturedAt: before.capturedAt + seconds * 500,

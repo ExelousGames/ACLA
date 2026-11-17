@@ -14,6 +14,7 @@ export function mockDrivingGpu() {
             ...(state.lstmNormWeights && { lstmNormWeights: state.lstmNormWeights }),
             lstmWeights: state.lstmWeights,
             outputWeights: state.outputWeights,
+            sac: state.sac,
         };
         let pendingChanges: number | undefined;
         const changed = () => {
@@ -24,7 +25,7 @@ export function mockDrivingGpu() {
             inspectCamera: jest.fn(async () => ({ layers: drivingCameraLayers(config).map(({ width, height, channels }, index) =>
                 ({ index, width, height, channels, values: new Float32Array(width * height * channels) })) })),
             forward: jest.fn(async () => ({ pass: { released: false } as GpuPolicyPass,
-                outputs: weights.outputWeights.map((row) => row[config.network.hiddenUnits]) })),
+                outputs: weights.outputWeights.map((row) => row[config.network.hiddenUnits]), logStds: weights.sac.logStds.slice() })),
             learnTransition: jest.fn(() => { if (config.learning.actorRate || config.learning.criticRate) changed(); }),
             learnTargets: jest.fn(() => { if (config.learning.demonstrationRate) changed(); }),
             replay: jest.fn(() => ({ released: false } as GpuPolicyPass)),

@@ -5,45 +5,28 @@ export type DrivingModelConfig = typeof defaults;
 export const DEFAULT_DRIVING_CONFIG: DrivingModelConfig = defaults;
 export const cloneConfig = (config = DEFAULT_DRIVING_CONFIG): DrivingModelConfig => JSON.parse(JSON.stringify(config));
 
-/** Upgrade runtime settings while retaining the computation declared by legacy models. */
-export function upgradeDrivingConfig(value: unknown): unknown {
-    let config = value as DrivingModelConfig | undefined;
-    if (config?.network && !Object.prototype.hasOwnProperty.call(config.network, 'cameraLayerNorm')
-        && !Object.prototype.hasOwnProperty.call(config.network, 'lstmLayerNorm')
-        && !Object.prototype.hasOwnProperty.call(config.network, 'layerNormEpsilon')) {
-        // Existing weights remain an unnormalized baseline. Only new models enable LayerNorm.
-        config = { ...config, network: { ...config.network, cameraLayerNorm: false, lstmLayerNorm: false,
-            layerNormEpsilon: defaults.network.layerNormEpsilon } };
+/** Match the throttle, brake and steering output order. */
+export const drivingExplorationSigmas = (config: DrivingModelConfig): [number, number, number] =>
+    [config.learning.throttleExplorationSigma, config.learning.brakeExplorationSigma, config.learning.steeringExplorationSigma];
+
+/** Match the throttle, brake, steering and categorical gear sampling order. */
+export const drivingExplorationFrequencies = (config: DrivingModelConfig): [number, number, number, number] =>
+    [config.learning.throttleExplorationUpdateHz, config.learning.brakeExplorationUpdateHz,
+        config.learning.steeringExplorationUpdateHz, config.learning.gearExplorationUpdateHz];
+
+export function readDrivingConfig(value: unknown): DrivingModelConfig {
+    // Speed and pedal rewards changed without changing the SAC model's input or weight layout.
+    const reward = (value as { reward?: Record<string, unknown> } | null)?.reward;
+    if (reward && typeof reward === 'object' && !('throttleChangeWeight' in reward) && !('brakeChangeWeight' in reward)) {
+        const { accelerationTolerance, timingWeight, ...settings } = reward;
+        if (typeof accelerationTolerance === 'number' && accelerationTolerance > 0 && accelerationTolerance <= 1e6
+            && typeof timingWeight === 'number' && timingWeight >= 0 && timingWeight <= 1e6) {
+            value = { ...value as object, reward: { ...settings, timingWeight: timingWeight / 100,
+                throttleChangeWeight: defaults.reward.throttleChangeWeight, brakeChangeWeight: defaults.reward.brakeChangeWeight } };
+        }
     }
-    if (config?.learning && !Object.prototype.hasOwnProperty.call(config.learning, 'sequenceSeconds')) {
-        config = { ...config, learning: { ...config.learning, sequenceSeconds: 4 } };
-    }
-    if (config?.learning && !Object.prototype.hasOwnProperty.call(config.learning, 'gradientNormLimit')) {
-        config = { ...config, learning: { ...config.learning, gradientNormLimit: defaults.learning.gradientNormLimit } };
-    }
-    if (config?.learning && !Object.prototype.hasOwnProperty.call(config.learning, 'shiftTemperature')) {
-        // Upgrade the old exploration default once; retain explicitly tuned noise and all learned weights.
-        config = { ...config, learning: { ...config.learning,
-            explorationSigma: config.learning.explorationSigma === 0.25 ? defaults.learning.explorationSigma : config.learning.explorationSigma,
-            shiftTemperature: defaults.learning.shiftTemperature } };
-    }
-    if (config?.actions && Object.prototype.hasOwnProperty.call(config.actions, 'shiftCooldownMs')) {
-        const actions = { ...config.actions };
-        delete (actions as typeof actions & { shiftCooldownMs?: unknown }).shiftCooldownMs;
-        config = { ...config, actions };
-    }
-    const legacyLearning = config?.learning as (DrivingModelConfig['learning'] & { steeringSmoothnessWeight?: number }) | undefined;
-    if (config?.reward && !Object.prototype.hasOwnProperty.call(config.reward, 'steeringChangeWeight')) {
-        config = { ...config, reward: { ...config.reward, steeringChangeWeight:
-            legacyLearning && Object.prototype.hasOwnProperty.call(legacyLearning, 'steeringSmoothnessWeight')
-                ? legacyLearning.steeringSmoothnessWeight! : defaults.reward.steeringChangeWeight } };
-    }
-    if (config?.learning && Object.prototype.hasOwnProperty.call(config.learning, 'steeringSmoothnessWeight')) {
-        const learning = { ...legacyLearning! };
-        delete learning.steeringSmoothnessWeight;
-        config = { ...config, learning };
-    }
-    return config;
+    validateDrivingConfig(value);
+    return value;
 }
 
 /** Include the oldest partial bin when the window is not an interval multiple. */
@@ -111,7 +94,7 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
                 if (actual.length !== expected.length) return invalid();
                 actual.forEach((layer, i) => shape(layer, expected[i], `${path}.${i}`));
             } else if (path === 'actions.planTimesSeconds') {
-                if (actual.length > 32 || actual[0] !== 0 || actual.some((n, i) => typeof n !== 'number'
+                if (actual.length > 64 || actual[0] !== 0 || actual.some((n, i) => typeof n !== 'number'
                     || !Number.isFinite(n) || n < 0 || n > 30 || (i > 0 && n <= actual[i - 1]))) invalid();
             } else if (path === 'network.initialActionBias') {
                 if (actual.length !== expected.length || actual.some((n) => typeof n !== 'number' || !Number.isFinite(n))) invalid();
@@ -142,12 +125,16 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
         || !o.features.includes('camera') || !o.features.includes('centerline')
         || o.centerlineStepsPerSide !== defaults.observation.centerlineStepsPerSide
         || ![o.velocityScale, o.speedScale, o.gearScale, o.rpmScale, o.yawRateScale, o.gForceScale, o.centerlineScale,
-            l.explorationSigma, l.discountIntervalSeconds, l.weightLimit, l.advantageLimit, l.policyGradientLimit,
+            l.discountIntervalSeconds, l.weightLimit, l.criticGradientLimit, l.policyGradientLimit,
             l.demonstrationGradientLimit, l.gradientNormLimit, c.reward.totalLimit,
-            c.reward.speedTolerance, c.reward.accelerationTolerance].every((n) => n > 0)
-        || c.aggression > 100 || l.discount > 1 || l.explorationSigma < 1e-6 || l.actionEpsilon < 1e-9 || l.actionEpsilon >= 0.5
+            c.reward.speedTolerance].every((n) => n > 0)
+        || c.aggression > 100 || l.discount > 1 || drivingExplorationSigmas(c).some((sigma) => sigma < 1e-6)
+        || l.entropyTemperature <= 0 || l.targetTau <= 0 || l.targetTau > 1
+        || !integer(l.replayCapacity, 1, 2048) || !integer(l.replayBatchSize, 1, 64) || l.replayBatchSize > l.replayCapacity
+        || l.actionEpsilon < 1e-9 || l.actionEpsilon >= 0.5
         || l.shiftTemperature < 0.001 || l.shiftTemperature > 1
-        || c.reward.steeringChangeWeight > 1
+        || drivingExplorationFrequencies(c).some((frequency) => frequency < 0.1 || frequency > 10)
+        || [c.reward.steeringChangeWeight, c.reward.throttleChangeWeight, c.reward.brakeChangeWeight].some((weight) => weight > 1)
         || l.sequenceSeconds <= 0 || l.sequenceSeconds > 30
         || !integer(c.memory.intervalMs, 1, 30000) || !integer(c.memory.windowMs, 1, 30000)
         || c.memory.intervalMs > c.memory.windowMs || !integer(drivingMemorySlots(c), 1, 100)
@@ -155,6 +142,7 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
         || c.network.initialActionBias.some((n) => Math.abs(n) > l.weightLimit)
         || c.network.initialOutputWeightScale > l.weightLimit
         || !integer(c.actions.shiftPulseMs, 1, 1000)
+        || c.actions.planAgreementTolerance > 1
         || !integer(c.runtime.saveEverySteps, 1, 1000000)
         || ![c.runtime.telemetryMaxAgeMs, c.runtime.visionMaxAgeMs, c.runtime.maxTransitionSeconds,
             c.runtime.controlIntervalMs, c.runtime.manualControlIntervalMs].every((n) => n > 0)
