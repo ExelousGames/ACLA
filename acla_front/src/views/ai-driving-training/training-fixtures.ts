@@ -1,8 +1,8 @@
 import type { TrackVisionDetection } from 'views/live-session/track-vision/track-vision-types';
 import { reconstructScene } from 'views/live-session/track-vision/reconstructed-scene';
-import { POLICY_CAMERA_HEIGHT, POLICY_CAMERA_INPUTS, POLICY_CAMERA_WIDTH } from 'views/live-session/track-vision/policy-camera';
+import { POLICY_CAMERA_HEIGHT, POLICY_CAMERA_INPUTS, POLICY_CAMERA_WIDTH } from 'views/live-session/live-session-recording/policy-camera';
 import { createLiveTelemetryStore } from 'views/live-session/live-telemetry-store';
-import { readDrivingObservation } from './driving-observation';
+import { readDrivingObservation, type DrivingCameraFrame } from './driving-observation';
 import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 
@@ -50,7 +50,7 @@ export function trainingFixture(now = 1000, aggression = 50, referenceLap = refe
         Physics_gear: 4, Physics_rpm: 6000,
     } });
     const live = { ...store.getSnapshot(), receivedAt: now, currentTelemetry: { ...store.getSnapshot().currentTelemetry } };
-    const vision: TrackVisionDetection = { capturedAt: now, width: 4, height: 4, telemetry: { ...live },
+    const vision: TrackVisionDetection & DrivingCameraFrame = { capturedAt: now, width: 4, height: 4, telemetry: { ...live },
         camera: { width: POLICY_CAMERA_WIDTH, height: POLICY_CAMERA_HEIGHT, rgb: new Uint8Array(POLICY_CAMERA_INPUTS).fill(128) },
         position: { coordinateFrame: 'car_local', referenceDelta: [2, 0, 0], normalizedPosition: 0.25, references: { reference: { x: 3, y: 0, z: 0 } }, inferenceMs: 1, referenceLap },
         detections: { segment: { task: 'segment', width: 4, height: 4, classNames: ['road', 'car'], inferenceMs: 1,

@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { captureGameScreen, ScreenCaptureSource } from '../track-vision/screen-capture';
+import { captureGameScreen, ScreenCaptureSource } from './screen-capture';
 
 type CaptureState = 'idle' | 'starting' | 'active';
 type SessionScreenCapture = {
@@ -17,8 +17,12 @@ type SessionScreenCapture = {
 const ScreenCaptureContext = createContext<SessionScreenCapture | null>(null);
 export const useSessionScreenCapture = () => useContext(ScreenCaptureContext);
 
-export function SessionScreenCaptureProvider({ children }: { children: React.ReactNode }) {
-    const streamRef = useRef<MediaStream | null>(null);
+export function SessionScreenCaptureProvider({ children, captureStreamRef }: {
+    children: React.ReactNode;
+    captureStreamRef?: React.RefObject<MediaStream | null>;
+}) {
+    const localStreamRef = useRef<MediaStream | null>(null);
+    const streamRef = captureStreamRef ?? localStreamRef;
     const captureVersion = useRef(0);
     const sourcesVersion = useRef(0);
     const starting = useRef(false);
@@ -33,7 +37,7 @@ export function SessionScreenCaptureProvider({ children }: { children: React.Rea
         starting.current = false;
         streamRef.current?.getTracks().forEach((track) => { track.onended = null; track.stop(); });
         streamRef.current = null;
-    }, []);
+    }, [streamRef]);
 
     const stop = useCallback(() => {
         release();
@@ -85,7 +89,7 @@ export function SessionScreenCaptureProvider({ children }: { children: React.Rea
                 ? 'Screen sharing was cancelled or denied. Share again and select your game window.'
                 : reason instanceof Error ? reason.message : 'Screen capture failed.');
         }
-    }, [sourceId, stop]);
+    }, [sourceId, stop, streamRef]);
 
     const value = useMemo(() => ({ stream, state, sources, sourceId, error, selectSource, refreshSources, start, stop }),
         [stream, state, sources, sourceId, error, refreshSources, start, stop]);

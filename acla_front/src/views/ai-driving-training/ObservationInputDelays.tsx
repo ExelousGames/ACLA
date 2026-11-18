@@ -1,5 +1,4 @@
 import React from 'react';
-import { VISION_TIMING_STAGES, VisionTimingSnapshot } from 'views/live-session/track-vision/vision-timing';
 import { DRIVING_MODEL_TIMING_STAGES, DrivingModelTimingSnapshot } from './driving-model-timing';
 
 export interface ObservationDelaySnapshot {
@@ -7,15 +6,13 @@ export interface ObservationDelaySnapshot {
     telemetryReceivedAt?: number;
     capturedAt?: number;
     pairedTelemetryReceivedAt?: number;
-    publishedTiming?: VisionTimingSnapshot;
-    latestTiming?: VisionTimingSnapshot | null;
+    captureMs?: number;
+    publishedAt?: number;
+    captureIntervalMs?: number;
     observationMs: number;
     observationReady: boolean;
     modelTiming?: DrivingModelTimingSnapshot;
 }
-
-const DISPLAY_TIMING_STAGES = VISION_TIMING_STAGES.map((stage, index) => ({ ...stage, index }))
-    .filter(({ id }) => !['segment', 'segmentReadback', 'depth', 'depthReadback', 'track', 'scene', 'birdsEye'].includes(id));
 
 const milliseconds = (value?: number) => value !== undefined && Number.isFinite(value) && value >= 0
     ? `${Math.round(value)} ms` : 'Unavailable';
@@ -32,9 +29,7 @@ export default function ObservationInputDelays({ snapshot, telemetryMaxAgeMs, vi
     snapshot?: ObservationDelaySnapshot; telemetryMaxAgeMs: number; visionMaxAgeMs: number;
 }) {
     const now = snapshot?.checkedAt ?? Date.now();
-    const timing = snapshot?.latestTiming;
     const model = snapshot?.modelTiming;
-    const stageIndex = VISION_TIMING_STAGES.findIndex(({ id }) => id === timing?.currentStage);
     return <section className="driving-card driving-input-delays" aria-label="Input profiling">
         <h2>Input profiling</h2>
         <p>Telemetry freshness, input processing and driving model timings for diagnosing delays.</p>
@@ -45,24 +40,12 @@ export default function ObservationInputDelays({ snapshot, telemetryMaxAgeMs, vi
                 limit={telemetryMaxAgeMs} />
             <dt>Paired telemetry age now</dt><dd>{milliseconds(age(now, snapshot?.pairedTelemetryReceivedAt))}</dd>
             <dt>Image age for AI</dt><Freshness value={age(now, snapshot?.capturedAt)} limit={visionMaxAgeMs} />
-            <dt>Published frame processing</dt><dd>{milliseconds(snapshot?.publishedTiming?.totalMs)}</dd>
-            <dt>Time since frame published</dt><dd>{milliseconds(age(now, snapshot?.publishedTiming?.finishedAt))}</dd>
-            <dt>Capture interval</dt><dd>{milliseconds(timing?.captureIntervalMs)}</dd>
+            <dt>Screen frame copy and RGB conversion</dt><dd>{milliseconds(snapshot?.captureMs)}</dd>
+            <dt>Time since frame published</dt><dd>{milliseconds(age(now, snapshot?.publishedAt))}</dd>
+            <dt>Capture interval</dt><dd>{milliseconds(snapshot?.captureIntervalMs)}</dd>
             <dt>Observation validation / assembly</dt><dd>{milliseconds(snapshot?.observationMs)}
                 {snapshot && !snapshot.observationReady && ' · Inputs invalid'}</dd>
         </dl>
-        <table className="driving-delay-stages">
-            <caption>Latest capture processing</caption>
-            <thead><tr><th scope="col">Stage</th><th scope="col">Delay</th></tr></thead>
-            <tbody>{DISPLAY_TIMING_STAGES.map(({ id, label, index }) => <tr key={id}>
-                <th scope="row">{label}</th>
-                <td>{timing?.currentStage === id ? 'Running'
-                    : timing?.stages[id] !== undefined ? milliseconds(timing.stages[id])
-                        : !timing ? 'Unavailable' : timing.state === 'processing' && index > stageIndex ? 'Pending' : 'Not run'}</td>
-            </tr>)}</tbody>
-            <tfoot><tr><th scope="row">Total frame processing</th><td>{timing?.state === 'processing' ? 'Running'
-                : `${milliseconds(timing?.totalMs)}${timing ? ` · ${timing.state === 'complete' ? 'Complete' : 'Incomplete'}` : ''}`}</td></tr></tfoot>
-        </table>
         <table className="driving-delay-stages">
             <caption>Driving model processing</caption>
             <thead><tr><th scope="col">Stage</th><th scope="col">Delay</th></tr></thead>
@@ -92,8 +75,7 @@ export default function ObservationInputDelays({ snapshot, telemetryMaxAgeMs, vi
             Replay count counts delayed plan samples submitted this cycle. History length counts populated history bins
             in the current input, excluding the current observation.
             The latest cycle remains visible while stopped or waiting for fresh inputs.</p>
-        <p className="driving-note">Updates every 250 ms, including when inputs are invalid. Stage times include queue waits;
-            the frame total includes all shared Track Vision processing, including stages not listed here.
+        <p className="driving-note">Updates every 250 ms, including when inputs are invalid. Driving model stage times include queue waits.
             Game/car, speed, velocity, yaw, gear/RPM and controls share the paired telemetry timestamp.
             Simulator rendering and transport before the app receives telemetry or copies the screen are not measured.</p>
     </section>;

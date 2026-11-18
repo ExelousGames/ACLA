@@ -8,7 +8,6 @@ import { GpuInferenceError, TrackVisionModel } from './track-vision-model';
 import { TrackPositionModel } from './track-position-model';
 import { MODEL_INPUT_RESOLUTIONS, POSITION_MODEL_NAMES, PositionModelVersion } from './vision-config';
 import { CameraCalibration, DETECTION_TASKS, TrackVisionDetection, TrackVisionFrame } from './track-vision-types';
-import { capturePolicyCameraImage } from './policy-camera';
 import { reconstructTrack } from './track-reconstruction';
 import { validCalibration } from './camera-projection';
 import { readTrackVisionSettings, saveTrackVisionSettings } from './track-vision-settings';
@@ -31,7 +30,6 @@ import './LiveTrackVision.css';
 export interface TrackVisionHandle extends NamedOperationComponentHandle {
     getLatestDetection(): TrackVisionDetection | null;
     /** Camera and position can be consumed without segmentation, depth or scene output. */
-    getLatestDrivingDetection(): TrackVisionDetection | null;
     getTimingSnapshot(): VisionTimingSnapshot | null;
     subscribeDetection(listener: () => void): () => void;
     /** Request CPU depth for the current capture and while the consumer keeps polling. */
@@ -71,7 +69,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const modelVersion = useRef(0);
     const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const latest = useRef<TrackVisionDetection | null>(null);
-    const latestDriving = useRef<TrackVisionDetection | null>(null);
     const frameTimer = useRef<VisionFrameTimer | null>(null);
     const cpuDepthUntil = useRef(0);
     const trackHistory = useRef(new TrackHistory());
@@ -172,7 +169,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
         }
     }, [detectors.segment, displayLabel]);
 
-    const publish = useCallback((result: TrackVisionFrame | null, timing?: VisionFrameTimer, drivingFrame = result) => {
+    const publish = useCallback((result: TrackVisionFrame | null, timing?: VisionFrameTimer) => {
         disposeGpuFrame(latest.current, result);
         if (result) result = { ...result, filterConfidence: options.current.filterConfidence,
             motion: motion.current && result.motion?.generation === motionGeneration.current ? result.motion : undefined };
@@ -188,11 +185,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
             if (result) result = { ...result, timing: timing.snapshot() };
         }
         latest.current = result ? { ...result, reconstruction, reconstructedScene, birdsEyeScene, geometry } : null;
-        latestDriving.current = drivingFrame ? {
-            capturedAt: drivingFrame.capturedAt, width: drivingFrame.width, height: drivingFrame.height,
-            camera: drivingFrame.camera, telemetry: drivingFrame.telemetry, position: drivingFrame.position,
-            timing: timing?.snapshot() ?? drivingFrame.timing, detections: {}, reconstruction: null, geometry: null,
-        } : null;
         setPreviewResult(latest.current);
         if (!result) setDepthPointer(null);
         listeners.current.forEach((listener) => listener());
@@ -200,7 +192,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const resetPositionHistory = useCallback(() => {
         positionGeneration.current++;
         models.current.position?.resetHistory();
-        latestDriving.current = null;
         if (latest.current?.position) publish({ ...latest.current, position: undefined });
     }, [publish]);
     useEffect(() => liveTelemetryStore.subscribeEvents((event) => {
@@ -243,7 +234,6 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
     const handle = useMemo<TrackVisionHandle>(() => ({
         getComponentName: () => name,
         getLatestDetection: () => latest.current,
-        getLatestDrivingDetection: () => latestDriving.current,
         getTimingSnapshot: () => frameTimer.current?.snapshot() ?? null,
         requestDepthValues: async () => {
             cpuDepthUntil.current = Date.now() + 1000;
@@ -394,10 +384,8 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                             const frameConfidence = options.current.confidence;
                             const frameTasks = DETECTION_TASKS.filter(({ id }) => id === 'segment'
                                 ? options.current.segmentEnabled : options.current.depthEnabled);
-                            timing.start('camera');
                             const result: TrackVisionFrame = { capturedAt: Date.now(), motion: motion.current,
                                 telemetry: liveTelemetryStore.getSnapshot(),
-                                camera: capturePolicyCameraImage(frame),
                                 width: frame.width, height: frame.height, detections: {} };
                             unpublished = result;
                             timing.capturedAt = result.capturedAt;
@@ -525,7 +513,7 @@ const LiveTrackVision = forwardRef<TrackVisionHandle, { name: string }>(({ name 
                             }
                             result.calibration = cameraCalibration.current;
                             const complete = frameTasks.every(({ id }) => Boolean(result.detections[id]));
-                            publish(complete ? result : null, timing, result);
+                            publish(complete ? result : null, timing);
                             if (complete) unpublished = null;
                             setHasFrame(true);
                             setStatus(complete ? frameTasks.map(({ id, label }) => `${label} · ${Math.round(result.detections[id]!.inferenceMs)} ms`).join(' / ') || 'Screen shared. Segmentation and depth are disabled.'

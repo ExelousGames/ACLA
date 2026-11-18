@@ -9,14 +9,15 @@ export interface PolicyCameraImage {
     rgb: Uint8Array;
 }
 
-export function capturePolicyCameraImage(source: HTMLCanvasElement): PolicyCameraImage {
-    const canvas = document.createElement('canvas');
-    canvas.width = POLICY_CAMERA_WIDTH;
-    canvas.height = POLICY_CAMERA_HEIGHT;
-    const context = canvas.getContext('2d');
+export function capturePolicyCameraImage(source: HTMLCanvasElement | HTMLVideoElement,
+    canvas = document.createElement('canvas')): PolicyCameraImage {
+    if (canvas.width !== POLICY_CAMERA_WIDTH) canvas.width = POLICY_CAMERA_WIDTH;
+    if (canvas.height !== POLICY_CAMERA_HEIGHT) canvas.height = POLICY_CAMERA_HEIGHT;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
     if (!context) throw new Error('Camera pixels are unavailable for driving observations.');
-    const scale = Math.min(canvas.width / source.width, canvas.height / source.height);
-    const width = source.width * scale, height = source.height * scale;
+    const [sourceWidth, sourceHeight] = 'videoWidth' in source ? [source.videoWidth, source.videoHeight] : [source.width, source.height];
+    const scale = Math.min(canvas.width / sourceWidth, canvas.height / sourceHeight);
+    const width = sourceWidth * scale, height = sourceHeight * scale;
     context.fillStyle = '#000';
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.drawImage(source, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);

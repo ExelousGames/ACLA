@@ -1,5 +1,5 @@
 import defaults from './driving-model-defaults.json';
-import { POLICY_CAMERA_HEIGHT, POLICY_CAMERA_WIDTH } from 'views/live-session/track-vision/policy-camera';
+import { POLICY_CAMERA_HEIGHT, POLICY_CAMERA_WIDTH } from 'views/live-session/live-session-recording/policy-camera';
 
 export type DrivingModelConfig = typeof defaults;
 export const DEFAULT_DRIVING_CONFIG: DrivingModelConfig = defaults;

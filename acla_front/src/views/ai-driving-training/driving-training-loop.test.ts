@@ -12,7 +12,7 @@ import { cloneConfig } from './driving-model-config';
 import { DrivingImpactMonitor } from './driving-impact-monitor';
 
 // Keep these control/ownership tests on a short update cadence. The production
-// collection window and one-step replay targets are covered in driving-rollout.test.ts.
+// collection window and multi-step replay targets are covered in driving-rollout.test.ts.
 jest.mock('./driving-model-defaults.json', () => {
     const config = jest.requireActual('./driving-model-defaults.json');
     return { ...config, learning: { ...config.learning, sequenceSeconds: 0.001 },

@@ -1,6 +1,6 @@
 import { DrivingObservation } from './driving-observation';
 import { DEFAULT_DRIVING_CONFIG, drivingFeatureSizes, drivingMemorySlots } from './driving-model-config';
-import type { PolicyCameraImage } from 'views/live-session/track-vision/policy-camera';
+import type { PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
 
 export interface DrivingPolicyInput {
     features: number[];

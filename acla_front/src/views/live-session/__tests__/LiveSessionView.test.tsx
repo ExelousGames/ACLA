@@ -35,9 +35,12 @@ jest.mock('../LiveTelemetryWorkspace', () => () => <div>Live workspace</div>);
 jest.mock('views/live-session/LiveSessionDetectionManager', () => () => (
     <div data-testid="live-session-detection-manager" />
 ));
-jest.mock('views/live-session/live-session-recording/liveAnalysisSessionRecording', () => ({ recorderHostId }: { recorderHostId?: string }) => (
-    <div data-testid="live-analysis-session-recording" data-host={recorderHostId} />
-));
+jest.mock('views/live-session/live-session-recording/liveAnalysisSessionRecording', () => {
+    const { SessionScreenCaptureControls } = jest.requireActual('../live-session-recording/SessionScreenCapture');
+    return ({ recorderHostId }: { recorderHostId?: string }) => (
+        <div data-testid="live-analysis-session-recording" data-host={recorderHostId}><SessionScreenCaptureControls /></div>
+    );
+});
 
 import { useDesktopGame } from 'contexts/DesktopGameContext';
 import { LiveSessionContent } from '../LiveSessionView';
@@ -205,6 +208,36 @@ describe('LiveSessionView', () => {
         liveTelemetryStore.resetSession();
         mockedUseDesktopGame.mockReset();
         componentDirectory = null;
+    });
+
+    it('exposes the recording bar stream through the live session and clears it when capture ends', async () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
+        const track = { stop: jest.fn(), onended: null as (() => void) | null };
+        const stream = { getTracks: () => [track], getVideoTracks: () => [track] };
+        Object.defineProperty(navigator, 'mediaDevices', { configurable: true,
+            value: { getDisplayMedia: jest.fn().mockResolvedValue(stream) } });
+        window.screenCapture = {
+            listSources: jest.fn().mockResolvedValue([{ id: 'window:42', name: 'Simulator' }]),
+            selectSource: jest.fn().mockResolvedValue(undefined),
+        };
+        try {
+            const view = renderRegisteredView(createRuntime('acc'));
+            expect(view.getScreenCaptureStream()).toBeNull();
+            fireEvent.click(screen.getByRole('button', { name: 'Refresh sources' }));
+            await screen.findByRole('option', { name: 'Simulator' });
+            fireEvent.change(screen.getByRole('combobox', { name: 'Game window or screen' }), { target: { value: 'window:42' } });
+            fireEvent.click(screen.getByRole('button', { name: 'Share game screen' }));
+            await screen.findByRole('button', { name: 'Stop capture' });
+            expect(view.getScreenCaptureStream()).toBe(stream);
+            act(() => { track.onended!(); });
+            expect(view.getScreenCaptureStream()).toBeNull();
+            expect(track.stop).toHaveBeenCalledTimes(1);
+        } finally {
+            delete window.screenCapture;
+            if (originalMediaDevices) Object.defineProperty(navigator, 'mediaDevices', originalMediaDevices);
+            else Reflect.deleteProperty(navigator, 'mediaDevices');
+        }
     });
 
     it('reports the Event Log prerequisite before missing telemetry and reads a late-mounted log before selecting an opponent', async () => {

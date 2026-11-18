@@ -54,7 +54,6 @@ const deferred = <T,>() => {
 let track: { stop: jest.Mock; onended: (() => void) | null };
 let stream: MediaStream;
 let getDisplayMedia: jest.Mock;
-let cameraLevel: number;
 let depthModel: { detect: jest.Mock; dispose: jest.Mock; executionProvider: string; name: string; classNames: string[]; inputSize: number };
 let positionModel: { detect: jest.Mock; dispose: jest.Mock; resetHistory: jest.Mock; name: string; inputSize: number; requiresOrientation?: boolean };
 let model: { detect: jest.Mock; dispose: jest.Mock; executionProvider: 'webgpu'; name: string; classNames: string[]; inputSize: number };
@@ -177,7 +176,6 @@ beforeEach(() => {
     jest.useFakeTimers();
     window.localStorage.clear();
     liveTelemetryStore.resetSession();
-    cameraLevel = 64;
     track = { stop: jest.fn(), onended: null };
     stream = { getTracks: () => [track], getVideoTracks: () => [track] } as unknown as MediaStream;
     getDisplayMedia = jest.fn().mockResolvedValue(stream);
@@ -188,7 +186,7 @@ beforeEach(() => {
     jest.spyOn(HTMLVideoElement.prototype, 'videoHeight', 'get').mockReturnValue(720);
     const contexts = new WeakMap<HTMLCanvasElement, CanvasRenderingContext2D>();
     jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement): any {
-        if (!contexts.has(this)) contexts.set(this, { canvas: this, drawImage: jest.fn(), clearRect: jest.fn(), save: jest.fn(), restore: jest.fn(), fillRect: jest.fn(), fillText: jest.fn(), measureText: jest.fn(() => ({ width: 80 })), getImageData: jest.fn((_x, _y, width, height) => ({ data: new Uint8ClampedArray(width * height * 4).fill(cameraLevel) })), createImageData: jest.fn((width, height) => ({ data: new Uint8ClampedArray(width * height * 4) })), putImageData: jest.fn() } as any);
+        if (!contexts.has(this)) contexts.set(this, { canvas: this, drawImage: jest.fn(), clearRect: jest.fn(), save: jest.fn(), restore: jest.fn(), fillRect: jest.fn(), fillText: jest.fn(), measureText: jest.fn(() => ({ width: 80 })), getImageData: jest.fn((_x, _y, width, height) => ({ data: new Uint8ClampedArray(width * height * 4).fill(64) })), createImageData: jest.fn((width, height) => ({ data: new Uint8ClampedArray(width * height * 4) })), putImageData: jest.fn() } as any);
         return contexts.get(this)!;
     });
     model = { name: 'track-segments', classNames: ['track', 'curb'], detect: jest.fn().mockResolvedValue(detection), dispose: jest.fn().mockResolvedValue(undefined), executionProvider: 'webgpu', inputSize: 768 };
@@ -206,28 +204,19 @@ beforeEach(() => {
 
 afterEach(() => { jest.restoreAllMocks(); jest.clearAllTimers(); jest.useRealTimers(); delete window.screenCapture; });
 
-it('publishes camera pixels paired before asynchronous inference and preserves earlier images', async () => {
+it('keeps the previous detection until asynchronous inference completes', async () => {
     const ref = React.createRef<TrackVisionHandle>();
     render(<LiveTrackVision ref={ref} name="vision" />);
     await startCapture();
     const first = ref.current!.getLatestDetection()!;
-    expect(first.camera!.rgb.length).toBe(384 * 216 * 3);
-    expect(first.camera!.rgb.every((value) => value === 64)).toBe(true);
     const pending = deferred<typeof detection>();
     model.detect.mockReturnValueOnce(pending.promise);
-    cameraLevel = 128;
     await act(async () => { jest.advanceTimersByTime(200); });
     expect(ref.current!.getLatestDetection()).toBe(first);
-    cameraLevel = 255;
     await act(async () => { pending.resolve(detection); });
     const second = ref.current!.getLatestDetection()!;
     expect(second.capturedAt).toBeGreaterThan(first.capturedAt);
     expect(second.timing?.captureIntervalMs).toBe(second.capturedAt - first.capturedAt);
-    expect(second.camera!.rgb.length).toBe(384 * 216 * 3);
-    expect(second.camera!.rgb.every((value) => value === 128)).toBe(true);
-    expect(first.camera!.rgb.length).toBe(384 * 216 * 3);
-    expect(first.camera!.rgb.every((value) => value === 64)).toBe(true);
-    expect(second.camera!.rgb).not.toBe(first.camera!.rgb);
 });
 
 it('shares from the recording controls before Track Vision opens and keeps capture alive when the panel closes', async () => {
@@ -1844,7 +1833,6 @@ describe('separate segmentation and position models', () => {
         fireEvent.change(selector, { target: { value: 'v2' } });
         await flush();
         expect(ref.current!.getLatestDetection()).toBeNull();
-        expect(ref.current!.getLatestDrivingDetection()).toBeNull();
         expect(positionModel.dispose).toHaveBeenCalledTimes(1);
         expect(TrackPositionModel.load).toHaveBeenCalledTimes(1);
         await act(async () => { disposal.resolve(); });
@@ -1852,7 +1840,6 @@ describe('separate segmentation and position models', () => {
         expect(screen.getByText('position_model_v2 · 768 × 768')).toBeInTheDocument();
         await act(async () => { jest.advanceTimersByTime(200); });
         expect(ref.current!.getLatestDetection()?.position?.referenceDelta).toEqual([4, 5, 6]);
-        expect(ref.current!.getLatestDrivingDetection()?.position?.referenceDelta).toEqual([4, 5, 6]);
         expect(getDisplayMedia).toHaveBeenCalledTimes(1);
         expect(track.stop).not.toHaveBeenCalled();
         expect(model.dispose).not.toHaveBeenCalled();
@@ -1888,7 +1875,6 @@ describe('separate segmentation and position models', () => {
         await flush();
         await act(async () => { pending.resolve(prediction); });
         expect(ref.current!.getLatestDetection()).toBeNull();
-        expect(ref.current!.getLatestDrivingDetection()).toBeNull();
         await act(async () => { jest.advanceTimersByTime(200); });
         expect(ref.current!.getLatestDetection()?.position?.referenceDelta).toEqual([4, 5, 6]);
         expect(track.stop).not.toHaveBeenCalled();
@@ -1942,8 +1928,6 @@ describe('separate segmentation and position models', () => {
         expect(TrackVisionModel.loadBuiltin).not.toHaveBeenCalled();
         expect(ref.current!.getLatestDetection()?.detections).toEqual({});
         expect(ref.current!.getLatestDetection()?.position).toMatchObject(prediction);
-        expect(ref.current!.getLatestDrivingDetection()?.camera).toBeDefined();
-        expect(ref.current!.getLatestDrivingDetection()?.position).toMatchObject(prediction);
         expect(screen.getByRole('status')).toHaveTextContent('Screen shared. Segmentation and depth are disabled.');
         selectStep("Bird's-eye view");
         expect(screen.getByLabelText('Reference lap position marker')).toBeVisible();
@@ -1952,20 +1936,16 @@ describe('separate segmentation and position models', () => {
         expect(track.stop).not.toHaveBeenCalled();
     });
 
-    it.each(['segment', 'depth'])('publishes driving camera and position when %s inference fails', async (task) => {
+    it.each(['segment', 'depth'])('keeps the capture and position inference running when %s inference fails', async (task) => {
         (task === 'segment' ? model : depthModel).detect.mockRejectedValueOnce(new Error('Model unavailable'));
         const ref = React.createRef<TrackVisionHandle>();
         render(<LiveTrackVision ref={ref} name="vision" />);
         await flush(); telemetry(); await startCapture();
         expect(ref.current!.getLatestDetection()).toBeNull();
-        const driving = ref.current!.getLatestDrivingDetection()!;
-        expect(driving.position).toMatchObject(prediction);
-        expect(driving.camera).toMatchObject({ width: 384, height: 216 });
-        expect(driving.camera!.rgb.length).toBe(384 * 216 * 3);
-        expect(driving.detections).toEqual({});
-        expect(driving.reconstruction).toBeNull();
+        expect(positionModel.detect).toHaveBeenCalledTimes(1);
+        expect(track.stop).not.toHaveBeenCalled();
         fireEvent.click(screen.getByRole('button', { name: 'Stop capture' }));
-        expect(ref.current!.getLatestDrivingDetection()).toBeNull();
+        expect(track.stop).toHaveBeenCalledTimes(1);
     });
 
     it('reports async stage delays while position is pending and preserves original publication timings', async () => {

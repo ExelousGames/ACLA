@@ -10,7 +10,7 @@ const interval = (startedAt: number, endedAt: number, reward = 1) => ({
     samples: [{ decision: { input: { features: [startedAt] } } as PolicyDecision, credits: [], rewardShare: 1 }],
 });
 
-it('retains one-step transitions across rolling three-second learning delays', () => {
+it('uses later rewards within each rolling three-second window', () => {
     const buffer = new DrivingConsequenceBuffer(3);
     const samples = Array.from({ length: 4 }, (_, i) => interval(i * 1000, (i + 1) * 1000, i === 3 ? -7 : 1));
     samples.slice(0, 2).forEach((sample) => buffer.add(sample, input));
@@ -28,10 +28,10 @@ it('retains one-step transitions across rolling three-second learning delays', (
     ]);
     const learning = { ...cloneConfig().learning, discount: 0.5, discountIntervalSeconds: 1 };
     expect(drivingSequenceTargets(first.sequence, learning)).toEqual([
-        expect.objectContaining({ decision: samples[0].samples[0].decision, elapsedSeconds: 1, reward: 1 }),
+        expect.objectContaining({ decision: samples[0].samples[0].decision, elapsedSeconds: 3, reward: 1.75 }),
     ]);
     expect(drivingSequenceTargets(second.sequence, learning)).toEqual([
-        expect.objectContaining({ decision: samples[1].samples[0].decision, elapsedSeconds: 1, reward: 1 }),
+        expect.objectContaining({ decision: samples[1].samples[0].decision, elapsedSeconds: 3, reward: -0.25 }),
     ]);
     expect(first.sequence).toHaveLength(3);
     expect(buffer.hasReady).toBe(false);
@@ -53,21 +53,22 @@ it('uses the last observed endpoint within the horizon when telemetry crosses it
     expect(second.sequence.flatMap(({ samples }) => samples)).toHaveLength(1);
 });
 
-it('retains the adjacent successor when the learning horizon ends much later', () => {
+it('bootstraps from the horizon endpoint and keeps the original input', () => {
     const buffer = new DrivingConsequenceBuffer(3);
     const start = { features: [0], cameras: [] }, successor = { features: [1], cameras: [] };
     const horizon = { features: [3], cameras: [] };
     const origin = { ...interval(0, 1000, 2), input: start, next: successor, nextShifts: { up: true, down: false } };
     buffer.add(origin, successor);
     buffer.add(interval(1000, 2000, -5), input);
-    buffer.add(interval(2000, 3000, -9), horizon);
+    buffer.add({ ...interval(2000, 3000, -9), next: horizon, nextShifts: { up: false, down: true } }, horizon);
     const batch = buffer.take()!;
     expect(batch.input).toBe(horizon);
-    const [target] = drivingSequenceTargets(batch.sequence, cloneConfig().learning);
+    const learning = { ...cloneConfig().learning, discount: 0.5, discountIntervalSeconds: 1 };
+    const [target] = drivingSequenceTargets(batch.sequence, learning);
     expect(target.input).toBe(start);
-    expect(target.next).toBe(successor);
-    expect(target.nextShifts).toEqual({ up: true, down: false });
-    expect(target).toMatchObject({ reward: 2, elapsedSeconds: 1, terminal: false });
+    expect(target.next).toBe(horizon);
+    expect(target.nextShifts).toEqual({ up: false, down: true });
+    expect(target).toMatchObject({ reward: -2.75, elapsedSeconds: 3, terminal: false });
 });
 
 it('keeps a late acknowledged command eligible for consequences three seconds after that command', () => {
@@ -85,8 +86,8 @@ it('keeps a late acknowledged command eligible for consequences three seconds af
     const learning = { ...cloneConfig().learning, discount: 0.5, discountIntervalSeconds: 1 };
     const target = drivingSequenceTargets(second.sequence, learning);
     expect(target).toHaveLength(1);
-    expect(target[0].elapsedSeconds).toBe(1);
-    expect(target[0].reward).toBe(10);
+    expect(target[0].elapsedSeconds).toBe(3.9);
+    expect(target[0].reward).toBe(9);
     expect(first.sequence[0].samples).toEqual([early]);
 });
 
@@ -100,7 +101,7 @@ it('groups separate commands from one observed interval when they share a real b
     const batch = buffer.take()!;
     expect(batch.sequence[0].samples).toEqual(actions);
     expect(batch.sequence[batch.sequence.length - 1].endedAt).toBe(3000);
-    expect(drivingSequenceTargets(batch.sequence, cloneConfig().learning).map(({ elapsedSeconds }) => elapsedSeconds)).toEqual([1, 1, 1]);
+    expect(drivingSequenceTargets(batch.sequence, cloneConfig().learning).map(({ elapsedSeconds }) => elapsedSeconds)).toEqual([3, 3, 3]);
     expect(buffer.take()).toBeUndefined();
 });
 

@@ -4,7 +4,7 @@ import { cloneConfig, DEFAULT_DRIVING_CONFIG, DRIVING_ANALOG_AXES, DrivingModelC
 import { DrivingExploration } from './driving-exploration';
 import { DrivingGpuModel, GpuPolicyPass } from './driving-gpu-model';
 import { DrivingRolloutInterval, drivingSequenceTargets } from './driving-rollout';
-import type { PolicyCameraImage } from 'views/live-session/track-vision/policy-camera';
+import type { PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
 import type { DrivingCameraInspection } from './driving-camera-inspection';
 
 /** Categorical order: hold gear, shift up, shift down. */
@@ -293,15 +293,19 @@ export class DrivingPolicy {
         return { input: decision.input, originInput, next, reward, elapsedSeconds, actions, terminal, nextShifts: { ...nextShifts } };
     }
 
-    /** Bounded off-policy replay stores CPU observations and executed controls,
-     * never behavior activations, logits or likelihoods. Delay affects scheduling only. */
+    /** Bounded off-policy replay stores multi-step returns with CPU observations
+     * and executed controls, without retaining behavior activations. */
     async learnSequenceAsync(sequence: DrivingRolloutInterval[], next: DrivingPolicyInput, active = () => true): Promise<void> {
         const gpu = this.requireGpu(), steps = this.steps;
-        const targets = drivingSequenceTargets(sequence, this.configuration.learning);
+        const targets = drivingSequenceTargets(sequence, this.configuration.learning, next);
         if (!targets.length || !active()) return;
-        const incoming = targets.map((target) => this.transition({ input: target.input, plan: target.decision.plan },
-            target.reward, target.next ?? next, target.elapsedSeconds, target.credits, target.terminal,
-            target.nextShifts ?? { up: true, down: true }, target.decision.input)).filter((target) => target.actions.length);
+        const incoming = targets.flatMap((target) => {
+            const endpoint = target.next ?? (target.terminal ? target.input : undefined);
+            if (!endpoint) return [];
+            return this.transition({ input: target.input, plan: target.decision.plan },
+                target.reward, endpoint, target.elapsedSeconds, target.credits, target.terminal,
+                target.nextShifts ?? { up: true, down: true }, target.decision.input);
+        }).filter((target) => target.actions.length);
         const replay = [...this.replayBuffer, ...incoming].slice(-this.configuration.learning.replayCapacity);
         const indices = replay.map((_, index) => index);
         const batch: ReplayTransition[] = [];

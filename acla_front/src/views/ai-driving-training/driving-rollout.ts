@@ -14,17 +14,30 @@ export interface DrivingRolloutInterval {
     samples: { decision: PolicyDecision; credits: PlanStepCredit[]; rewardShare: number; startedAt?: number }[];
 }
 
-/** Delayed scheduling does not extend the SAC transition: each target retains
- * its adjacent observations and immediate reward. Future behavior-policy rewards
- * are learned through the critic's one-step bootstrap, never mixed into this target. */
-export function drivingSequenceTargets(sequence: DrivingRolloutInterval[], _learning: DrivingModelConfig['learning']) {
-    return sequence.flatMap((interval) => interval.samples.map(({ decision, credits }) => ({
-        decision, credits, input: interval.input ?? decision.input, next: interval.next,
-        nextShifts: interval.nextShifts, terminal: interval.terminal ?? false,
-        // Every command is a proxy for this same complete observed transition.
-        // Splitting its Bellman reward while retaining its full elapsed discount
-        // would change the learned value merely by acknowledging controls more often.
-        reward: interval.reward,
-        elapsedSeconds: (interval.endedAt - interval.startedAt) / 1000,
-    })));
+/** Sum the contiguous observed rewards for each action. The SAC critic adds
+ * its entropy-regularized bootstrap at the end of the window. */
+export function drivingSequenceTargets(sequence: DrivingRolloutInterval[], learning: DrivingModelConfig['learning'],
+    finalInput?: DrivingPolicyInput) {
+    const returns: { reward: number; end: DrivingRolloutInterval }[] = new Array(sequence.length);
+    for (let index = sequence.length - 1; index >= 0; index--) {
+        const interval = sequence[index];
+        const following = !interval.terminal && interval.endedAt === sequence[index + 1]?.startedAt
+            ? returns[index + 1] : undefined;
+        const elapsedSeconds = (interval.endedAt - interval.startedAt) / 1000;
+        const discount = Math.pow(learning.discount, elapsedSeconds / learning.discountIntervalSeconds);
+        returns[index] = { reward: interval.reward + discount * (following?.reward ?? 0), end: following?.end ?? interval };
+    }
+
+    const last = sequence[sequence.length - 1];
+    return sequence.flatMap((interval, index) => {
+        const { reward, end } = returns[index];
+        const next = end.next ?? (end === last ? finalInput : undefined);
+        // Commands in the same observed interval share its full return. Splitting
+        // it would make the learned value depend on controller polling frequency.
+        return interval.samples.map(({ decision, credits }) => ({
+            decision, credits, input: interval.input ?? decision.input, next,
+            nextShifts: end.nextShifts, terminal: end.terminal ?? false,
+            reward, elapsedSeconds: (end.endedAt - interval.startedAt) / 1000,
+        }));
+    });
 }

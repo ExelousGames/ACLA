@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useOptionalOperationComponentRefDirectory } from 'contexts/OperationComponentRefContext';
+import { OPERATION_COMPONENT_NAMES, useOptionalOperationComponentRefDirectory } from 'contexts/OperationComponentRefContext';
 import { getVisualizationComponentName } from 'views/session-shared/visualization/visualization-component-names';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
-import type { TrackVisionHandle } from 'views/live-session/track-vision/LiveTrackVision';
+import type { LiveSessionHandle } from 'views/live-session/LiveSessionView';
+import { SessionScreenFrameReader } from 'views/live-session/live-session-recording/session-screen-frame';
 import type { LiveTrajectoryMapHandle } from 'views/live-session/LiveTrajectoryMap';
 import { NEUTRAL, ObservationResult, readDrivingObservation, readDrivingTelemetry } from './driving-observation';
 import { DrivingPolicy, DrivingTrainingDocument, emptyTrainingDocument } from './driving-policy';
@@ -94,6 +95,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const [testAction, setTestAction] = useState<ControllerAction>(NEUTRAL);
     const [inputSource, setInputSource] = useState<'live' | 'recorded'>('live');
     const inputSourceRef = useRef(inputSource);
+    const [screenFrames] = useState(() => new SessionScreenFrameReader());
     const recordedViewer = useRef<RecordedFrameViewerHandle>(null);
     const recordedFrame = useRef<RecordedDrivingFrame | null>(null);
     const recordedReferences = useRef<{ sessionId: string; data?: RecordedDrivingReferences; error?: string } | null>(null);
@@ -154,17 +156,16 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             aggressionRef.current, configuration.current, map, frame.offsetSeconds);
     };
     const readLive = (): ObservationResult & { delays?: ObservationDelaySnapshot } => {
-        const vision = directoryRef.current?.findComponentRef<TrackVisionHandle>(getVisualizationComponentName('track-vision'))?.current;
+        const session = directoryRef.current?.findComponentRef<LiveSessionHandle>(OPERATION_COMPONENT_NAMES.LIVE_SESSION)?.current;
         const map = directoryRef.current?.findComponentRef<LiveTrajectoryMapHandle>(getVisualizationComponentName('live-trajectory-map'))?.current;
+        const frame = screenFrames.read(session?.getScreenCaptureStream() ?? null);
         const live = liveTelemetryStore.getSnapshot();
-        const detection = vision?.getLatestDrivingDetection
-            ? vision.getLatestDrivingDetection() : vision?.getLatestDetection() ?? null;
         const checkedAt = Date.now(), started = performance.now();
-        const result = readDrivingObservation(live, detection,
+        const result = readDrivingObservation(live, frame,
             map?.getReferenceLap() ?? null, aggressionRef.current, checkedAt, configuration.current, map?.getCircuitMap?.() ?? null);
         return { ...result, delays: { checkedAt, telemetryReceivedAt: live.receivedAt,
-            capturedAt: detection?.capturedAt, pairedTelemetryReceivedAt: detection?.telemetry?.receivedAt,
-            publishedTiming: detection?.timing, latestTiming: vision?.getTimingSnapshot?.(),
+            capturedAt: frame?.capturedAt, pairedTelemetryReceivedAt: frame?.telemetry.receivedAt,
+            captureMs: frame?.processingMs, publishedAt: frame?.publishedAt, captureIntervalMs: frame?.captureIntervalMs,
             observationMs: performance.now() - started, observationReady: Boolean(result.observation),
             modelTiming: loop.current?.getModelTimingSnapshot() } };
     };
@@ -326,6 +327,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         return () => {
             cancelled = true;
             replayAbort.current?.abort();
+            screenFrames.stop();
             unsubscribeImpact();
             mounted.current = false;
             // This ref is a cancellation counter, not a DOM node.
@@ -470,6 +472,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const changeInputSource = (source: 'live' | 'recorded') => {
         if (running || replayAbort.current || viewerBusy || initializingGpu || testTimer.current) return;
         inputSourceRef.current = source;
+        if (source === 'recorded') screenFrames.stop();
         setInputSource(source); setError(''); setReplayStatus(''); setInputs(read());
     };
     const changeSource = (source: ControlSource) => {
@@ -574,7 +577,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 <option value="live">Live Session</option>
                 <option value="recorded">Recorded session from local folder</option>
             </select>
-            <p>{inputSource === 'live' ? 'Use live telemetry and Track Vision camera frames.'
+            <p>{inputSource === 'live' ? 'Use live telemetry and frames from the shared game screen.'
                 : 'Choose the recorded video and telemetry JSONL. Replay trains from demonstrations or evaluates a fixed model without driving the simulator.'}</p>
         </section>
         <div className="driving-status" role="status"><span data-active={running || replaying} />{inputSource === 'live'
@@ -613,7 +616,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     : 'Recorded training learns signed pedal intent, steering values plus single gear changes from aligned telemetry. Evaluation compares the fixed model with recorded controls. Gaps reset observation history.'}</p>
                 <p>CNN–LSTM soft actor–critic · {config.network.hiddenUnits} recurrent units · continuous throttle/brake and steering, plus learned hold gear, shift up and shift down. Throttle/brake ranges from −1 (full brake) through 0 (both released) to 1 (full throttle).</p>
                 <p>{config.memory.windowMs / 1000}-second observation history covers {fullObservationHistory ? 'all AI observation inputs' : 'the observation inputs selected in this saved model'} during training and evaluation, sampled in {config.memory.intervalMs} ms bins. Memory starts fresh after stopping, changing drivers or interrupted inputs.</p>
-                {inputSource === 'live' && <p>Actions and outcomes are recorded continuously during training and inference. After a delay of up to {config.learning.sequenceSeconds} seconds, SAC learns from recorded transitions and estimates their longer-term rewards while the current plan continues executing and new inference checks it.</p>}
+                {inputSource === 'live' && <p>During training, SAC uses up to {config.learning.sequenceSeconds} seconds of recorded rewards to learn how earlier controls affect later outcomes. The current plan keeps running as the model learns.</p>}
                 <p>One action plan predicts {config.actions.planTimesSeconds.length} control steps from 0 to {planEnd} seconds. The AI smoothly blends the signed pedal command and steering between steps while computing; gear shifts occur at their scheduled steps. The remaining plan continues when fresh inference agrees, and is replaced when it disagrees or expires. Reward trains the steps contributing to each executed control command; human driving teaches future steps from demonstrated actions.</p>
                 <p className="driving-note">Each model JSON contains its inputs, memory, network, training settings and weights. Training and evaluation load that JSON each time they start.</p>
                 {inputSource === 'live' && <p className="driving-note">Use the same model across games, cars and maps. After switching, stop and restart training or evaluation with fresh live inputs and a matching Live Map reference lap. Learned weights are preserved.</p>}
@@ -770,7 +773,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             </section>}
             <section className="driving-card driving-live-inputs" aria-label="AI observation inputs">
                 <h2>AI observation inputs</h2>
-                <p>{inputSource === 'live' ? 'Start live telemetry, load a circuit map with a centerline in Live Map, add Track Vision, then start screen capture in Live Session.'
+                <p>{inputSource === 'live' ? 'Start live telemetry, load a circuit map with a centerline in Live Map, then select Share game screen in the Live Session recording bar.'
                     : 'Video frames pair with the most recent telemetry sample at or before their timestamp. Training uses saved reference laps and circuit maps matching the recording.'}</p>
                 {inputSource === 'recorded' && <button disabled={!recordedSession || replaying || viewerBusy || initializingGpu}
                     onClick={() => setReferenceAttempt((attempt) => attempt + 1)}>Reload recorded references</button>}

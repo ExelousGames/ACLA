@@ -1,6 +1,5 @@
 export const VISION_TIMING_STAGES = [
     { id: 'capture', label: 'Screen frame copy' },
-    { id: 'camera', label: 'Camera RGB preparation' },
     { id: 'references', label: 'Map / reference lookup' },
     { id: 'segment', label: 'Segmentation GPU submission' },
     { id: 'depth', label: 'Depth GPU submission' },

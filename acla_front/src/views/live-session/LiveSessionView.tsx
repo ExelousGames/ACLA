@@ -140,6 +140,7 @@ export interface LiveSessionHandle extends ObservableOperationComponentHandle<Li
     getRecordingState(): RecordingState;
     getCurrentTelemetry(): Record<string, any>;
     subscribeTelemetry(listener: LiveTelemetryEventListener): () => void;
+    getScreenCaptureStream(): MediaStream | null;
     getTrackVisionDetection(): TrackVisionDetection | null;
     subscribeTrackVision(listener: () => void): () => void;
     getLiveCircuitMap(): CircuitMapDto | null;
@@ -337,6 +338,7 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
     const trackVisionListenersRef = useRef(new Set<() => void>());
     const circuitMapListenersRef = useRef(new Set<() => void>());
     const componentRef = useRef<LiveSessionHandle | null>(null);
+    const captureStreamRef = useRef<MediaStream | null>(null);
     const trackVision = componentRefs?.findComponentRef<TrackVisionHandle>(
         getVisualizationComponentName('track-vision'),
     )?.current ?? null;
@@ -415,6 +417,7 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
             getCurrentTelemetry: () => liveTelemetryStore.getSnapshot().currentTelemetry,
             // Only new frames: a retained frame must not be treated as fresh on mount.
             subscribeTelemetry: (listener) => liveTelemetryStore.subscribeEvents(listener),
+            getScreenCaptureStream: () => captureStreamRef.current,
             getTrackVisionDetection: () => trackVisionRef.current?.getLatestDetection() ?? null,
             subscribeTrackVision: (listener) => {
                 trackVisionListenersRef.current.add(listener);
@@ -564,7 +567,7 @@ export const LiveSessionContent = ({ name }: { name: string }) => {
     const { sessionGame } = liveSession;
 
     return (
-        <SessionScreenCaptureProvider key={sessionGame ?? 'no-session'}>
+        <SessionScreenCaptureProvider key={sessionGame ?? 'no-session'} captureStreamRef={captureStreamRef}>
             <section className="live-session-view" aria-label="Live Session">
                 <LiveSessionDetectionManager />
                 <LiveAnalysisSessionRecording recorderHostId={LIVE_SESSION_RECORDER_HOST_ID} />

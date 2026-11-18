@@ -9,13 +9,14 @@ import { DrivingGpuModel } from './driving-gpu-model';
 import { DrivingTrainingLoop } from './driving-training-loop';
 import { cloneConfig } from './driving-model-config';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
-import type { VisionTimingSnapshot } from 'views/live-session/track-vision/vision-timing';
+import { SessionScreenFrameReader } from 'views/live-session/live-session-recording/session-screen-frame';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 
 let mockInput: ObservationResult;
 const mockRead = jest.fn();
 const mockFindComponentRef = jest.fn();
 jest.mock('contexts/OperationComponentRefContext', () => ({
+    OPERATION_COMPONENT_NAMES: { LIVE_SESSION: 'live-session' },
     useOptionalOperationComponentRefDirectory: () => ({ findComponentRef: mockFindComponentRef }),
 }));
 jest.mock('./driving-observation', () => ({
@@ -27,6 +28,8 @@ jest.mock('./driving-observation', () => ({
 const getDefinition = (label: string) => screen.getAllByRole('definition')[
     screen.getAllByRole('term').findIndex((term) => term.textContent === label)];
 const flush = async () => { await act(async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); }); };
+const screenFrame = ({ vision }: ReturnType<typeof trainingFixture>) => ({ capturedAt: vision.capturedAt,
+    camera: vision.camera!, telemetry: vision.telemetry!, processingMs: 5, publishedAt: vision.capturedAt + 5 });
 const MODEL_PATH = 'C:/models/driving.json';
 const files = new Map<string, string>();
 let selectedFile: string | null;
@@ -94,12 +97,12 @@ it('passes the Live Map centerline and boundaries to observations and displays t
     const referenceLap = referenceLapFixture();
     let fixture = trainingFixture(Date.now(), 50, referenceLap);
     const map = { getReferenceLap: () => referenceLap, getCircuitMap: () => circuitMap };
-    const vision = { getLatestDrivingDetection: () => fixture.vision };
-    mockFindComponentRef.mockImplementation((name) => ({ current: name.endsWith('track-vision') ? vision : map }));
+    jest.spyOn(SessionScreenFrameReader.prototype, 'read').mockImplementation(() => screenFrame(fixture));
+    mockFindComponentRef.mockImplementation((name) => name === 'visualization:live-trajectory-map' ? { current: map } : null);
     jest.spyOn(liveTelemetryStore, 'getSnapshot').mockImplementation(() => fixture.live);
     mockRead.mockImplementation((...args) => jest.requireActual('./driving-observation').readDrivingObservation(...args));
     await renderTraining();
-    expect(mockRead).toHaveBeenLastCalledWith(fixture.live, fixture.vision, referenceLap, 50, expect.any(Number), expect.anything(), circuitMap);
+    expect(mockRead).toHaveBeenLastCalledWith(fixture.live, screenFrame(fixture), referenceLap, 50, expect.any(Number), expect.anything(), circuitMap);
     expect(getDefinition('Centerline')).toHaveTextContent('50 steps behind · 50 steps ahead');
     expect(screen.getByLabelText('Off-track detection')).toHaveTextContent('Waiting for a scored transition.');
     expect(getDefinition('On-track reward').textContent).toBe('0');
@@ -332,8 +335,8 @@ it.each(['Start training', 'Run trained model'])('waits for fresh telemetry afte
     checkpoint.model.steps = 10;
     files.set(MODEL_PATH, JSON.stringify(checkpoint));
     const map = { getReferenceLap: () => fixture.referenceLap, getCircuitMap: () => fixture.circuitMap };
-    const vision = { getLatestDrivingDetection: () => fixture.vision };
-    mockFindComponentRef.mockImplementation((name) => ({ current: name.endsWith('track-vision') ? vision : map }));
+    jest.spyOn(SessionScreenFrameReader.prototype, 'read').mockImplementation(() => screenFrame(fixture));
+    mockFindComponentRef.mockImplementation((name) => name === 'visualization:live-trajectory-map' ? { current: map } : null);
     jest.spyOn(liveTelemetryStore, 'getSnapshot').mockImplementation(() => fixture.live);
     mockRead.mockImplementation((...args) => jest.requireActual('./driving-observation').readDrivingObservation(...args));
     await renderTraining();
@@ -439,19 +442,54 @@ it('displays the complete action plan in one table and clears it on Stop', async
     expect(within(table).getByText('Waiting for AI control and fresh inputs.')).toBeInTheDocument();
 });
 
-it('uses the independent camera/position output without reading segmentation or requesting depth readback', async () => {
+it('uses pixels from the recording stream with Track Vision closed and clears them when sharing stops', async () => {
     const fixture = trainingFixture(Date.now());
-    const driving = { ...fixture.vision, detections: {}, reconstructedScene: null };
-    const requestDepthValues = jest.fn().mockResolvedValue(undefined);
-    const getLatestDetection = jest.fn(() => fixture.vision);
-    mockFindComponentRef.mockImplementation((name) => name === 'visualization:track-vision' ? { current: {
-        getLatestDetection, getLatestDrivingDetection: () => driving, requestDepthValues,
-    } } : null);
+    const track = { readyState: 'live', stop: jest.fn() };
+    const stream = { getVideoTracks: () => [track] };
+    const getScreenCaptureStream = jest.fn((): typeof stream | null => stream);
+    const map = { getReferenceLap: () => fixture.referenceLap, getCircuitMap: () => fixture.circuitMap };
+    mockFindComponentRef.mockImplementation((name) => name === 'live-session' ? { current: { getScreenCaptureStream } }
+        : name === 'visualization:live-trajectory-map' ? { current: map } : null);
+    const telemetry = jest.spyOn(liveTelemetryStore, 'getSnapshot').mockReturnValue(fixture.live);
+    mockRead.mockImplementation((...args) => jest.requireActual('./driving-observation').readDrivingObservation(...args));
+    const video = document.createElement('video');
+    const emitFrame = jest.fn();
+    const cancelFrame = jest.fn();
+    Object.defineProperties(video, {
+        videoWidth: { value: 1440 }, videoHeight: { value: 1080 }, readyState: { value: 2 },
+        play: { value: jest.fn().mockResolvedValue(undefined) }, pause: { value: jest.fn() },
+        requestVideoFrameCallback: { value: emitFrame.mockReturnValue(1) }, cancelVideoFrameCallback: { value: cancelFrame },
+    });
+    const dom: { createElement(tag: string, options?: ElementCreationOptions): HTMLElement } = document;
+    const createElement = dom.createElement.bind(dom);
+    jest.spyOn(dom, 'createElement').mockImplementation((tag, options) => tag === 'video' ? video : createElement(tag, options));
+    const rgba = new Uint8ClampedArray(384 * 216 * 4);
+    rgba.set([12, 34, 56, 255]);
+    const drawImage = jest.fn();
+    jest.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+        drawImage, fillRect: jest.fn(), getImageData: () => ({ data: rgba }),
+    } as any);
     await renderTraining();
+    expect(video.srcObject).toBe(stream);
+    expect(screen.getByText(/A fresh image is required/)).toBeInTheDocument();
     act(() => { jest.advanceTimersByTime(250); });
-    expect(mockRead.mock.calls[mockRead.mock.calls.length - 1][1]).toBe(driving);
-    expect(getLatestDetection).not.toHaveBeenCalled();
-    expect(requestDepthValues).not.toHaveBeenCalled();
+    emitFrame.mock.calls[0][0]();
+    const latest = { ...fixture.live, receivedAt: Date.now(), currentTelemetry: { ...fixture.live.currentTelemetry, Physics_speed_kmh: 150 } };
+    telemetry.mockReturnValue(latest);
+    act(() => { jest.advanceTimersByTime(250); });
+    const frame = mockRead.mock.calls[mockRead.mock.calls.length - 1][1];
+    expect(drawImage).toHaveBeenCalledWith(video, 48, 0, 288, 216);
+    rgba.fill(0);
+    expect(Array.from(frame.camera.rgb.slice(0, 3))).toEqual([12, 34, 56]);
+    expect(frame.telemetry).toBe(fixture.live);
+    expect(getDefinition('Speed')).toHaveTextContent('108.0 km/h');
+    expect(mockFindComponentRef).not.toHaveBeenCalledWith('visualization:track-vision');
+    getScreenCaptureStream.mockReturnValue(null);
+    act(() => { jest.advanceTimersByTime(250); });
+    expect(screen.getByText(/A fresh image is required/)).toBeInTheDocument();
+    expect(cancelFrame).toHaveBeenCalledWith(1);
+    expect(video.srcObject).toBeNull();
+    expect(track.stop).not.toHaveBeenCalled();
 });
 
 it('shows direct observation inputs without summary metadata', async () => {
@@ -468,10 +506,10 @@ it('shows direct observation inputs without summary metadata', async () => {
         expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
     expect(screen.queryByText(/segmentation|depth|mask readback/i)).not.toBeInTheDocument();
-    mockInput = { error: 'Track Vision camera pixels must be 384 × 216 RGB.' };
+    mockInput = { error: 'Screen capture camera pixels must be 384 × 216 RGB.' };
     act(() => { jest.advanceTimersByTime(250); });
     expect(getDefinition('Camera image')).toHaveTextContent('384 × 216 RGB · Waiting');
-    expect(screen.getByText('Track Vision camera pixels must be 384 × 216 RGB.')).toBeInTheDocument();
+    expect(screen.getByText('Screen capture camera pixels must be 384 × 216 RGB.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start training' })).toBeDisabled();
 });
 
@@ -530,56 +568,33 @@ it('keeps all input delays visible across stale frames and recovery using the sa
     files.set(MODEL_PATH, JSON.stringify(document));
     let fixture = trainingFixture(Date.now() - 900);
     jest.spyOn(liveTelemetryStore, 'getSnapshot').mockImplementation(() => ({ ...fixture.live, receivedAt: Date.now() - 40 }));
-    const timing: VisionTimingSnapshot = { capturedAt: fixture.vision.capturedAt, stages: {
-        capture: 2, camera: 3, references: 4, segment: 145, depth: 64, depthReadback: 30, segmentReadback: 13,
-        position: 600, preview: 2, track: 10, scene: 12, birdsEye: 8,
-    }, currentStage: null, totalMs: 893, finishedAt: Date.now() - 20, state: 'complete' };
-    fixture.vision.timing = timing;
-    let latestTiming = timing;
-    let detection: typeof fixture.vision | null = fixture.vision;
-    const vision = { getLatestDrivingDetection: () => detection, getTimingSnapshot: () => latestTiming };
-    mockFindComponentRef.mockImplementation((name) => name.endsWith('track-vision') ? { current: vision } : null);
+    const reader = jest.spyOn(SessionScreenFrameReader.prototype, 'read').mockReturnValue({ ...screenFrame(fixture), captureIntervalMs: 67 });
     mockInput = { observation: fixture.observation };
     await renderTraining();
     expect(getDefinition('Live telemetry age')).toHaveTextContent('40 ms / 300 ms limit · Fresh');
     expect(getDefinition('Image age for AI')).toHaveTextContent('900 ms / 1000 ms limit · Fresh');
     expect(getDefinition('Telemetry age at image capture')).toHaveTextContent('0 ms / 300 ms limit · Fresh');
-    const table = screen.getByRole('table', { name: 'Latest capture processing' });
-    expect(screen.queryByText(/segmentation|depth|mask readback/i)).not.toBeInTheDocument();
-    expect(within(table).getByRole('row', { name: 'Position model 600 ms' })).toBeInTheDocument();
-    expect(within(table).getByRole('row', { name: 'Total frame processing 893 ms · Complete' })).toBeInTheDocument();
-    expect(getDefinition('Published frame processing')).toHaveTextContent('893 ms');
-    expect(getDefinition('Time since frame published')).toHaveTextContent('20 ms');
-    expect(screen.queryByRole('table', { name: 'Published frame timing breakdown' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/segmentation|depth|mask readback|position model/i)).not.toBeInTheDocument();
+    expect(getDefinition('Screen frame copy and RGB conversion')).toHaveTextContent('5 ms');
+    expect(getDefinition('Capture interval')).toHaveTextContent('67 ms');
+    expect(getDefinition('Time since frame published')).toHaveTextContent('895 ms');
 
-    latestTiming = { ...timing, stages: { segment: 145, depth: 64, segmentReadback: 99 }, state: 'processing',
-        currentStage: 'position', stageElapsedMs: 700, totalMs: 1008, finishedAt: undefined };
-    mockInput = { error: 'Start Track Vision capture in Live Session. A fresh image is required.' };
+    mockInput = { error: 'Share the game screen from the Live Session recording bar. A fresh image is required.' };
     act(() => { jest.advanceTimersByTime(250); });
     expect(getDefinition('Image age for AI')).toHaveTextContent('1150 ms / 1000 ms limit · Stale');
     expect(getDefinition('Image age for AI')).toHaveAttribute('data-stale', 'true');
     expect(getDefinition('Paired telemetry age now')).toHaveTextContent('1150 ms');
-    expect(getDefinition('Time since frame published')).toHaveTextContent('270 ms');
-    expect(within(table).getByRole('row', { name: 'Position model Running' })).toBeInTheDocument();
-    expect(within(table).getByRole('row', { name: 'Total frame processing Running' })).toBeInTheDocument();
+    expect(getDefinition('Time since frame published')).toHaveTextContent('1145 ms');
     expect(getDefinition('Observation validation / assembly')).toHaveTextContent('Inputs invalid');
     expect(screen.queryByText(/segmentation|depth|mask readback/i)).not.toBeInTheDocument();
 
-    for (const currentStage of ['segment', 'segmentReadback', 'depth', 'depthReadback'] as const) {
-        latestTiming = { ...latestTiming, currentStage, stages: {} };
-        act(() => { jest.advanceTimersByTime(250); });
-        expect(screen.queryByText(/segmentation|depth|mask readback/i)).not.toBeInTheDocument();
-        expect(screen.queryByText(/Currently processing:/)).not.toBeInTheDocument();
-        expect(within(table).getByRole('row', { name: 'Position model Pending' })).toBeInTheDocument();
-    }
-
     fixture = trainingFixture(Date.now());
-    detection = fixture.vision;
+    reader.mockReturnValue(screenFrame(fixture));
     mockInput = { observation: fixture.observation };
     act(() => { jest.advanceTimersByTime(250); });
     expect(getDefinition('Image age for AI')).toHaveTextContent('250 ms / 1000 ms limit · Fresh');
     expect(getDefinition('Image age for AI')).toHaveAttribute('data-stale', 'false');
-    detection = null;
+    reader.mockReturnValue(null);
     act(() => { jest.advanceTimersByTime(250); });
     expect(getDefinition('Image age for AI')).toHaveTextContent('Unavailable');
     expect(getDefinition('Time since frame published')).toHaveTextContent('Unavailable');
@@ -1229,13 +1244,12 @@ it.each(['null', '"100"', '-1', '101', 'invalid'])('uses reference aggression wh
     expect(screen.getByRole('slider', { name: 'Driving aggression' })).toHaveValue('50');
 });
 
-it.each([true, false])('uses Live Map’s speed targets without position output and applies slider changes during training=%s', async (train) => {
+it.each([true, false])('uses Live Map’s speed targets and applies slider changes during training=%s', async (train) => {
     const referenceLap = referenceLapFixture();
     let fixture = trainingFixture(Date.now(), 50, referenceLap);
-    delete fixture.vision.position;
     const map = { getReferenceLap: () => referenceLap };
-    const vision = { getLatestDetection: () => fixture.vision };
-    mockFindComponentRef.mockImplementation((name) => ({ current: name.endsWith('track-vision') ? vision : map }));
+    jest.spyOn(SessionScreenFrameReader.prototype, 'read').mockImplementation(() => screenFrame(fixture));
+    mockFindComponentRef.mockImplementation((name) => name === 'visualization:live-trajectory-map' ? { current: map } : null);
     mockRead.mockImplementation((_live, detected, lap, aggression) =>
         jest.requireActual('./driving-observation').readDrivingObservation(fixture.live, detected, lap, aggression, Date.now(), undefined, fixture.circuitMap));
     const config = cloneConfig();
@@ -1257,7 +1271,7 @@ it.each([true, false])('uses Live Map’s speed targets without position output 
     // The loop samples the changed setting; the panel then displays that sample.
     act(() => { jest.advanceTimersByTime(20); }); await flush();
     act(() => { jest.advanceTimersByTime(230); }); await flush();
-    expect(mockRead).toHaveBeenLastCalledWith(expect.anything(), fixture.vision, referenceLap, 100, expect.any(Number), expect.objectContaining({ aggression: 100 }), null);
+    expect(mockRead).toHaveBeenLastCalledWith(expect.anything(), screenFrame(fixture), referenceLap, 100, expect.any(Number), expect.objectContaining({ aggression: 100 }), null);
     expect(screen.queryByRole('table', { name: 'Live pedals · current aggression' })).not.toBeInTheDocument();
     expect(getDefinition('Reference speed')).toHaveTextContent('100.0 km/h');
     expect(getDefinition('Aggression target speed')).toHaveTextContent('150.0 km/h');
@@ -1271,7 +1285,6 @@ it.each([true, false])('uses Live Map’s speed targets without position output 
     expect(screen.queryByText('Drive toward the reference line')).not.toBeInTheDocument();
     fixture = trainingFixture(Date.now(), 50, referenceLap);
     fixture.live.currentTelemetry.Graphics_normalized_car_position = 0.252;
-    delete fixture.vision.position;
     act(() => { jest.advanceTimersByTime(100); }); await flush();
     expect(screen.getByText(/Last scored at aggression 0/)).toBeInTheDocument();
     expect(Number(getDefinition('Acceleration / deceleration').textContent)).toBeLessThan(0);
@@ -1282,7 +1295,6 @@ it.each([true, false])('uses Live Map’s speed targets without position output 
     act(() => { jest.advanceTimersByTime(100); }); await flush();
     fixture = trainingFixture(Date.now(), 50, referenceLap);
     fixture.live.currentTelemetry.Graphics_normalized_car_position = 0.252;
-    delete fixture.vision.position;
     fixture.live.currentTelemetry.Physics_speed_kmh = 0.5;
     act(() => { jest.advanceTimersByTime(100); }); await flush();
     expect(Number(getDefinition('Normalized position progress').textContent)).toBeLessThan(0);

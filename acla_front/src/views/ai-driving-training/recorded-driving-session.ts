@@ -5,7 +5,7 @@ import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import type { LiveTelemetrySnapshot } from 'views/live-session/live-telemetry-store';
 import type { StandardTelemetrySample } from 'views/live-session/live-session-types';
-import type { PolicyCameraImage } from 'views/live-session/track-vision/policy-camera';
+import type { PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
 import { DEFAULT_DRIVING_CONFIG, type DrivingModelConfig } from './driving-model-config';
 import { readDrivingObservation, type ObservationResult } from './driving-observation';
 
@@ -108,9 +108,8 @@ export function readRecordedDrivingObservation(session: RecordedDrivingSession, 
         sampleIndex: row.index, committedSampleCount: session.rows.length,
         telemetryStatus: ACC_STATUS.ACC_LIVE, sessionGeneration: row.segment, streamGeneration: 0,
     };
-    const result = readDrivingObservation(snapshot, { capturedAt, camera, telemetry: snapshot,
-        width: camera.width, height: camera.height, detections: {}, reconstruction: null, geometry: null },
-    referenceLap, aggression, capturedAt, config, circuitMap);
+    const result = readDrivingObservation(snapshot, { capturedAt, camera, telemetry: snapshot },
+        referenceLap, aggression, capturedAt, config, circuitMap);
     if (!result.observation) return { error: result.error.replace(/Live Map/g, 'Reference map').replace(/in Live Session/g, 'for this recording') };
     return { ...result, observation: { ...result.observation,
         session: JSON.stringify([session.id, row.segment, session.game, sample.Static_car_model, sample.Static_track]) } };

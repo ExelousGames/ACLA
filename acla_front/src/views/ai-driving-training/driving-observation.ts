@@ -1,11 +1,10 @@
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import type { LiveTelemetrySnapshot } from 'views/live-session/live-telemetry-store';
-import type { TrackVisionDetection } from 'views/live-session/track-vision/track-vision-types';
 import { DEFAULT_DRIVING_CONFIG, drivingFeatureEncoding } from './driving-model-config';
 import type { TopLapReferenceEntry } from 'services/topLapReferenceService';
 import { selectLiveMapReference } from 'views/live-session/live-map-reference';
 import { DrivingReference, inspectDrivingReference, normalizedAggression, ReferenceSpeedTargets, referenceSpeedTargets } from './driving-reference';
-import type { PolicyCameraImage } from 'views/live-session/track-vision/policy-camera';
+import type { PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
 import { detectDrivingImpact, DrivingImpact, ImpactSample, IMPACT_PENALTY_WEIGHT } from './driving-impact';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { detectDrivingOffTrack, OFF_TRACK_PENALTY_PER_SECOND, ON_TRACK_REWARD_PER_SECOND } from './driving-off-track';
@@ -76,6 +75,11 @@ export interface DrivingObservation {
 }
 export type DrivingTelemetrySample = Pick<DrivingObservation, 'measuredAt' | 'session' | 'context' | 'normalizedPosition'
     | 'speed' | 'localVelocity' | 'gForce' | 'yawRate' | 'gear' | 'rpm' | 'controls'> & { sampleIndex?: number };
+export interface DrivingCameraFrame {
+    capturedAt: number;
+    telemetry?: LiveTelemetrySnapshot;
+    camera?: PolicyCameraImage;
+}
 export type ObservationResult = ({
     observation: DrivingObservation; error?: never;
 } | { error: string; observation?: never }) & {
@@ -95,11 +99,11 @@ function category(value: string, bits: number): number[] {
     return Array.from({ length: bits }, (_, i) => (hash >>> i) & 1);
 }
 
-export function readDrivingObservation(live: LiveTelemetrySnapshot, vision: TrackVisionDetection | null,
+export function readDrivingObservation(live: LiveTelemetrySnapshot, frame: DrivingCameraFrame | null,
     referenceLap: TopLapReferenceEntry | null, aggression = DEFAULT_DRIVING_CONFIG.aggression, now = Date.now(), config = DEFAULT_DRIVING_CONFIG,
     circuitMap: CircuitMapDto | null = null): ObservationResult {
     const telemetry = readDrivingTelemetry(live, now, config);
-    return { ...readCameraObservation(live, vision, referenceLap, aggression, now, config, circuitMap),
+    return { ...readCameraObservation(live, frame, referenceLap, aggression, now, config, circuitMap),
         ...(telemetry && { telemetry }) };
 }
 
@@ -125,7 +129,7 @@ export function readDrivingTelemetry(live: LiveTelemetrySnapshot, now = Date.now
         controls: { throttle: throttle!, brake: brake!, steering: steering! } };
 }
 
-function readCameraObservation(live: LiveTelemetrySnapshot, vision: TrackVisionDetection | null,
+function readCameraObservation(live: LiveTelemetrySnapshot, frame: DrivingCameraFrame | null,
     referenceLap: TopLapReferenceEntry | null, aggression: number, now: number, config: typeof DEFAULT_DRIVING_CONFIG,
     circuitMap: CircuitMapDto | null): ObservationResult {
     const o = config.observation;
@@ -133,16 +137,16 @@ function readCameraObservation(live: LiveTelemetrySnapshot, vision: TrackVisionD
     if (!finite(live.receivedAt) || now - live.receivedAt > config.runtime.telemetryMaxAgeMs || now < live.receivedAt) {
         return { error: 'Waiting for fresh, running live telemetry.', waitingForFreshInputs: true };
     }
-    if (!vision || !finite(vision.capturedAt) || now - vision.capturedAt > config.runtime.visionMaxAgeMs || now < vision.capturedAt) {
-        return { error: 'Start Track Vision capture in Live Session. A fresh image is required.', cameraUnavailable: true, waitingForFreshInputs: true };
+    if (!frame || !finite(frame.capturedAt) || now - frame.capturedAt > config.runtime.visionMaxAgeMs || now < frame.capturedAt) {
+        return { error: 'Share the game screen from the Live Session recording bar. A fresh image is required.', cameraUnavailable: true, waitingForFreshInputs: true };
     }
-    const paired = vision.telemetry;
+    const paired = frame.telemetry;
     if (!paired || paired.telemetryStatus !== ACC_STATUS.ACC_LIVE || !finite(paired.receivedAt)
-        || vision.capturedAt - paired.receivedAt > config.runtime.telemetryMaxAgeMs || vision.capturedAt < paired.receivedAt
+        || frame.capturedAt - paired.receivedAt > config.runtime.telemetryMaxAgeMs || frame.capturedAt < paired.receivedAt
         || paired.sessionGeneration !== live.sessionGeneration || paired.streamGeneration !== live.streamGeneration
         || paired.game !== live.game || paired.currentTelemetry.Static_track !== live.currentTelemetry.Static_track
         || paired.currentTelemetry.Static_car_model !== live.currentTelemetry.Static_car_model) {
-        return { error: 'Waiting for Track Vision and telemetry from the same live session.', cameraUnavailable: true, waitingForFreshInputs: true };
+        return { error: 'Waiting for screen capture and telemetry from the same live session.', cameraUnavailable: true, waitingForFreshInputs: true };
     }
     const sample = paired.currentTelemetry;
     const game = paired.game, car = sample.Static_car_model, map = sample.Static_track;
@@ -171,10 +175,10 @@ function readCameraObservation(live: LiveTelemetrySnapshot, vision: TrackVisionD
     const reference = prepared.reference;
     if (!finite(aggression) || aggression < 0 || aggression > 100) return { error: 'Driving aggression must be between 0 and 100.' };
     const speedTargets = referenceSpeedTargets(reference, position!, aggression);
-    const camera = vision.camera;
+    const camera = frame.camera;
     if (!camera || camera.width !== o.cameraWidth || camera.height !== o.cameraHeight
         || !(camera.rgb instanceof Uint8Array) || camera.rgb.length !== camera.width * camera.height * 3) {
-        return { error: `Track Vision camera pixels must be ${o.cameraWidth} × ${o.cameraHeight} RGB. Restart screen capture in Live Session.`, cameraUnavailable: true };
+        return { error: `Screen capture camera pixels must be ${o.cameraWidth} × ${o.cameraHeight} RGB.`, cameraUnavailable: true };
     }
     const centerline = drivingCenterlineInput(circuitMap, game, map, position!, config);
     if (!centerline) return { error: 'Live Map needs a valid centerline for the current game and circuit. Load a matching circuit map in Live Session.' };
@@ -191,7 +195,7 @@ function readCameraObservation(live: LiveTelemetrySnapshot, vision: TrackVisionD
         targetSpeed: [clamp(speedTargets.target / o.speedScale, 0, 1)],
     };
     return { observation: {
-        capturedAt: vision.capturedAt,
+        capturedAt: frame.capturedAt,
         measuredAt: paired.receivedAt,
         session: JSON.stringify([paired.sessionGeneration, paired.streamGeneration, game, car, map]),
         context: { game, car, map },

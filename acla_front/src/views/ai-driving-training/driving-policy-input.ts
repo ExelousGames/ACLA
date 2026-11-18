@@ -1,6 +1,6 @@
 import { drivingMemoryInputs, drivingMemorySlotInputs, DrivingPolicyInput } from './driving-memory';
 import { DrivingModelConfig, drivingCameraInputs, drivingFeatureSizes, drivingMemorySlots, drivingObservationInputs, drivingPolicyInputs } from './driving-model-config';
-import type { PolicyCameraImage } from 'views/live-session/track-vision/policy-camera';
+import type { PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
 
 /** Assemble present observations oldest first, in one shared feature layout.
  * Missing history bins are skipped; features omitted from history are zeroed. */

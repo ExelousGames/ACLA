@@ -1,6 +1,6 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
-import { capturePolicyCameraImage, PolicyCameraImage } from 'views/live-session/track-vision/policy-camera';
+import { capturePolicyCameraImage, PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
 import type { DrivingModelConfig } from './driving-model-config';
 import type { DrivingPolicy } from './driving-policy';
 import { cameraChannelStats, DrivingCameraInspection } from './driving-camera-inspection';

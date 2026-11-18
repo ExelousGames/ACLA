@@ -6,8 +6,7 @@ export interface DrivingConsequenceBatch {
     input: DrivingPolicyInput;
 }
 
-/** Delay each acknowledged action's learning by its rolling consequence horizon.
- * Retain adjacent transition states while later intervals mature the queue. */
+/** Collect consecutive rewards over each acknowledged action's rolling consequence horizon. */
 export class DrivingConsequenceBuffer {
     private pending: { interval: DrivingRolloutInterval; input: DrivingPolicyInput }[] = [];
     private ready: DrivingConsequenceBatch[] = [];

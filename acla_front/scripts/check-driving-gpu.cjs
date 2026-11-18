@@ -464,7 +464,7 @@ async function checks(soakIterations) {
         'Interpolation gives no gradient to an unexecuted future gear choice');
     blended.releaseDecision(blendedDecision); blended.dispose();
 
-    // Delayed observations retain adjacent transition endpoints even after their
+    // Multi-step returns use the observed horizon endpoint even after their
     // GPU decisions are released. Interrupted batches cannot commit any weights.
     const sequencePolicy = await create(config), sequenceSeed = await sequencePolicy.checkpointAsync();
     const sequenceInputs = [0, 1, 2, 3].map(frame => makeInput(config, frame));

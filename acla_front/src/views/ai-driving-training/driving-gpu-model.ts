@@ -1,4 +1,4 @@
-import type { PolicyCameraImage } from 'views/live-session/track-vision/policy-camera';
+import type { PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
 import type { DrivingPolicyInput } from './driving-memory';
 import { DRIVING_ANALOG_AXES, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingMemorySlots, drivingPolicyInputs } from './driving-model-config';
 import { drivingLstmShaders } from './driving-lstm-shaders';
