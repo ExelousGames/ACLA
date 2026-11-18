@@ -7,7 +7,7 @@ import { SessionScreenFrameReader } from 'views/live-session/live-session-record
 import type { LiveTrajectoryMapHandle } from 'views/live-session/LiveTrajectoryMap';
 import { NEUTRAL, ObservationResult, readDrivingObservation, readDrivingTelemetry } from './driving-observation';
 import { DrivingPolicy, DrivingTrainingDocument, emptyTrainingDocument } from './driving-policy';
-import { cloneConfig, DEFAULT_DRIVING_CONFIG } from './driving-model-config';
+import { cloneConfig, DEFAULT_DRIVING_CONFIG, MAX_EXPLORATION_GEAR } from './driving-model-config';
 import { discardBrowserModels, drivingModelFiles, loadDrivingModel, saveDrivingModel, trackDrivingModelSave } from './driving-model-storage';
 import { DrivingTrainingLoop, initialTrainingState } from './driving-training-loop';
 import { DrivingControlOutput } from './driving-control-output';
@@ -86,8 +86,10 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const aggressionRef = useRef(aggression);
     const [exploration, setExploration] = useState(() => ({
         pedalExplorationSigma: configuration.current.learning.pedalExplorationSigma,
+        throttleExplorationSpeedLimitKmh: configuration.current.learning.throttleExplorationSpeedLimitKmh,
         steeringExplorationSigma: configuration.current.learning.steeringExplorationSigma,
         shiftTemperature: configuration.current.learning.shiftTemperature,
+        maxExplorationGear: configuration.current.learning.maxExplorationGear,
         pedalExplorationUpdateHz: configuration.current.learning.pedalExplorationUpdateHz,
         steeringExplorationUpdateHz: configuration.current.learning.steeringExplorationUpdateHz,
         gearExplorationUpdateHz: configuration.current.learning.gearExplorationUpdateHz,
@@ -226,8 +228,10 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         aggressionRef.current = configuration.current.aggression;
         setAggression(aggressionRef.current);
         setExploration({ pedalExplorationSigma: configuration.current.learning.pedalExplorationSigma,
+            throttleExplorationSpeedLimitKmh: configuration.current.learning.throttleExplorationSpeedLimitKmh,
             steeringExplorationSigma: configuration.current.learning.steeringExplorationSigma,
             shiftTemperature: configuration.current.learning.shiftTemperature,
+            maxExplorationGear: configuration.current.learning.maxExplorationGear,
             pedalExplorationUpdateHz: configuration.current.learning.pedalExplorationUpdateHz,
             steeringExplorationUpdateHz: configuration.current.learning.steeringExplorationUpdateHz,
             gearExplorationUpdateHz: configuration.current.learning.gearExplorationUpdateHz });
@@ -623,6 +627,16 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 {inputSource === 'live' && <fieldset className="driving-exploration"
                     disabled={!filePath || !documentReady.current || fileBusy || initializingGpu || running || replaying || viewerBusy}>
                     <legend>Training exploration</legend>
+                    <div className="driving-aggression">
+                        <div><label htmlFor="driving-throttle-exploration-speed-limit">Throttle exploration speed limit</label>
+                            <output htmlFor="driving-throttle-exploration-speed-limit">{exploration.throttleExplorationSpeedLimitKmh} km/h</output></div>
+                        <input id="driving-throttle-exploration-speed-limit" type="range" min="0"
+                            max={DEFAULT_DRIVING_CONFIG.learning.throttleExplorationSpeedLimitKmh} step="1"
+                            value={exploration.throttleExplorationSpeedLimitKmh} aria-valuetext={`${exploration.throttleExplorationSpeedLimitKmh} km/h`}
+                            aria-describedby="driving-throttle-exploration-speed-limit-meaning"
+                            onChange={(event) => changeExploration({ ...exploration, throttleExplorationSpeedLimitKmh: Number(event.target.value) })} />
+                        <p id="driving-throttle-exploration-speed-limit-meaning">At or above this speed, exploration adds no extra throttle during training.</p>
+                    </div>
                     {EXPLORATION_CONTROLS.map(({ key, label, control }) => <div className="driving-aggression" key={key}>
                         <div><label htmlFor={`driving-${control}-exploration`}>{label} exploration</label>
                             <output htmlFor={`driving-${control}-exploration`}>{Number(exploration[key].toPrecision(3))}</output></div>
@@ -640,6 +654,17 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                             onChange={(event) => changeExploration({ ...exploration, shiftTemperature: Number(event.target.value) })} />
                         <p id="driving-shift-temperature-meaning">Higher values try a wider mix of gear choices. Lower values favor the model’s preferred gear choice. Default: {DEFAULT_DRIVING_CONFIG.learning.shiftTemperature}.</p>
                     </div>
+                    <div className="driving-output-options">
+                        <label htmlFor="driving-max-exploration-gear">Maximum gear to explore</label>
+                        <select id="driving-max-exploration-gear" value={exploration.maxExplorationGear}
+                            aria-describedby="driving-max-exploration-gear-meaning"
+                            onChange={(event) => changeExploration({ ...exploration, maxExplorationGear: Number(event.target.value) })}>
+                            <option value={0}>Unlimited</option>
+                            {Array.from({ length: MAX_EXPLORATION_GEAR }, (_, i) =>
+                                <option key={i + 1} value={i + 1}>{i + 1}</option>)}
+                        </select>
+                    </div>
+                    <p id="driving-max-exploration-gear-meaning">During live training, AI upshifts stop at the selected gear. Downshifts remain available.</p>
                     {EXPLORATION_FREQUENCIES.map(({ key, label, control }) => <div className="driving-aggression" key={key}>
                         <div><label htmlFor={`driving-${control}-exploration-frequency`}>{label} exploration update frequency</label>
                             <output htmlFor={`driving-${control}-exploration-frequency`}>{exploration[key]} Hz · every {Number((1 / exploration[key]).toPrecision(3))} s</output></div>
@@ -651,8 +676,10 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                             : 'How often exploration weights refresh, blending smoothly between samples. Lower values keep exploration coherent longer while it responds to the driving state.'} Default: {DEFAULT_DRIVING_CONFIG.learning[key]} Hz.</p>
                     </div>)}
                     <button onClick={() => changeExploration({ pedalExplorationSigma: DEFAULT_DRIVING_CONFIG.learning.pedalExplorationSigma,
+                        throttleExplorationSpeedLimitKmh: DEFAULT_DRIVING_CONFIG.learning.throttleExplorationSpeedLimitKmh,
                         steeringExplorationSigma: DEFAULT_DRIVING_CONFIG.learning.steeringExplorationSigma,
                         shiftTemperature: DEFAULT_DRIVING_CONFIG.learning.shiftTemperature,
+                        maxExplorationGear: DEFAULT_DRIVING_CONFIG.learning.maxExplorationGear,
                         pedalExplorationUpdateHz: DEFAULT_DRIVING_CONFIG.learning.pedalExplorationUpdateHz,
                         steeringExplorationUpdateHz: DEFAULT_DRIVING_CONFIG.learning.steeringExplorationUpdateHz,
                         gearExplorationUpdateHz: DEFAULT_DRIVING_CONFIG.learning.gearExplorationUpdateHz })}>Reset exploration</button>

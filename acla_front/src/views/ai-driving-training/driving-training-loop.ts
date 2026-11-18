@@ -73,6 +73,8 @@ export class DrivingTrainingLoop {
     private demonstrations = new DrivingDemonstrationBuffer();
     private modelTiming?: DrivingModelTimer;
     private lastTelemetry?: DrivingTelemetrySample;
+    private measuredSpeedKmh = 0;
+    private measuredGear = 0;
     private blockedMotion = new DrivingBlockedMotionMonitor();
 
     constructor(private output: DrivingControlOutput, private read: () => ObservationResult,
@@ -390,6 +392,10 @@ export class DrivingTrainingLoop {
                 }
                 return;
             }
+            if (observation) {
+                this.measuredSpeedKmh = input.telemetry?.speed ?? observation.speed;
+                this.measuredGear = input.telemetry?.gear ?? observation.gear;
+            }
             // Consequences and history advance on every fresh observation, even
             // while the model is waiting for training or inference to finish.
             if (fresh && observation && policy) this.collectConsequences(policy, observation);
@@ -471,6 +477,11 @@ export class DrivingTrainingLoop {
         } finally { this.modelLease = undefined; }
     }
 
+    private shiftsAtGear(gear: number) {
+        const limit = this.config.learning.maxExplorationGear;
+        return { up: this.state.mode !== 'training' || limit === 0 || gear < limit, down: true };
+    }
+
     private async applyPlan(plan: ExecutedPlan, lease: ControlLease) {
         const elapsed = Math.max(0, (this.now() - plan.startedAt) / 1000);
         let step = 0;
@@ -480,10 +491,16 @@ export class DrivingTrainingLoop {
         const selected = plan.decision.plan[step];
         const next = plan.decision.plan[step + 1];
         const nextWeight = next ? (elapsed - selected.timeSeconds) / (next.timeSeconds - selected.timeSeconds) : 0;
-        const pedal = next ? selected.action.pedal + (next.action.pedal - selected.action.pedal) * nextWeight : selected.action.pedal;
+        let pedal = next ? selected.action.pedal + (next.action.pedal - selected.action.pedal) * nextWeight : selected.action.pedal;
+        if (pedal > 0 && this.state.mode === 'training' && this.measuredSpeedKmh >= this.config.learning.throttleExplorationSpeedLimitKmh) {
+            const preferred = Math.tanh(selected.means[0]);
+            const nextPreferred = next ? Math.tanh(next.means[0]) : preferred;
+            pedal = Math.min(pedal, Math.max(0, preferred + (nextPreferred - preferred) * nextWeight));
+        }
         const steering = next ? selected.action.steering + (next.action.steering - selected.action.steering) * nextWeight : selected.action.steering;
-        // Keep the original categorical choice/mask for credit, but never pulse it twice.
-        const shifts = sameStep ? previous.shifts : selected.shifts;
+        // Recheck planned upshifts against live gear and keep the executed mask for credit.
+        const shifts = sameStep ? previous.shifts
+            : { ...selected.shifts, up: selected.shifts.up && this.shiftsAtGear(this.measuredGear).up };
         const shift = sameStep ? previous.shift : selected.shift === 1 && shifts.up ? 1 : selected.shift === 2 && shifts.down ? 2 : 0;
         if (!sameStep && shift && (this.state.action.shiftUp || this.state.action.shiftDown)) {
             if (!await this.releasePaddles(lease) || plan !== this.activePlan) return false;
@@ -569,9 +586,7 @@ export class DrivingTrainingLoop {
             sample = this.previous ?? sample;
             this.lastInferenceFrame = sample.observation.capturedAt;
             timing.start('inference');
-            const decision = await policy.decideAsync(sample.input, this.state.mode === 'training', {
-                up: true, down: true,
-            });
+            const decision = await policy.decideAsync(sample.input, this.state.mode === 'training', this.shiftsAtGear(this.measuredGear));
             if (!active()) { policy.releaseDecision(decision); return; }
             this.installingPlan = true;
             timing.start('control');
@@ -660,7 +675,7 @@ export class DrivingTrainingLoop {
         const reward = this.scoreReward(previous.observation, observation, controlChanges);
         if (samples.length) this.consequences.add({
             startedAt: previous.observation.measuredAt, endedAt: observation.measuredAt, reward: reward.total,
-            input: previous.input, next: input, nextShifts: { up: true, down: true }, terminal: false,
+            input: previous.input, next: input, nextShifts: this.shiftsAtGear(observation.gear), terminal: false,
             samples: samples.map(({ plan, startedAt, credits, duration: held }) =>
                 ({ decision: plan.decision, startedAt, credits, rewardShare: held / duration })),
         }, input);

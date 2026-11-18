@@ -53,8 +53,10 @@
   "learning": {
     "sequenceSeconds": 3,
     "pedalExplorationSigma": 0.05,
+    "throttleExplorationSpeedLimitKmh": 400,
     "steeringExplorationSigma": 0.05,
     "shiftTemperature": 0.25,
+    "maxExplorationGear": 0,
     "pedalExplorationUpdateHz": 2,
     "steeringExplorationUpdateHz": 2,
     "gearExplorationUpdateHz": 10,

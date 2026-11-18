@@ -433,6 +433,47 @@ it.each(['throttleChangeWeight', 'brakeChangeWeight'] as const)('requires a vali
     expect(() => readTrainingDocument(document)).toThrow(/configuration/);
 });
 
+it.each([false, true])('loads a model saved before the throttle exploration speed limit (trained=%s)', (trained) => {
+    const { observation } = trainingFixture(), config = cloneConfig();
+    config.network.hiddenUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    config.network.cameraProjectionUnits = 2;
+    const checkpoint = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
+        : emptyTrainingDocument(config);
+    const { throttleExplorationSpeedLimitKmh, ...learning } = checkpoint.configuration.learning;
+    const legacy = { ...checkpoint, configuration: { ...checkpoint.configuration, learning } };
+    const restored = readTrainingDocument(legacy);
+    expect(restored.configuration.learning.throttleExplorationSpeedLimitKmh).toBe(throttleExplorationSpeedLimitKmh);
+    expect(restored.model).toEqual(checkpoint.model);
+});
+
+it.each([-1, 120.5, 401, '120', null])('rejects an invalid throttle exploration speed limit %s', (limit) => {
+    const document = emptyTrainingDocument();
+    const learning = { ...document.configuration.learning, throttleExplorationSpeedLimitKmh: limit };
+    expect(() => readTrainingDocument({ ...document, configuration: { ...document.configuration, learning } })).toThrow(/configuration/);
+});
+
+it.each([false, true])('defaults to unlimited when an older model has no exploration gear limit (trained=%s)', (trained) => {
+    const { observation } = trainingFixture(), config = cloneConfig();
+    config.network.hiddenUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    config.network.cameraProjectionUnits = 2;
+    config.learning.throttleExplorationSpeedLimitKmh = 120;
+    const checkpoint = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
+        : emptyTrainingDocument(config);
+    const { maxExplorationGear, ...learning } = checkpoint.configuration.learning;
+    const legacy = { ...checkpoint, configuration: { ...checkpoint.configuration, learning } };
+    const restored = readTrainingDocument(legacy);
+    expect(restored.configuration.learning).toEqual({ ...learning, maxExplorationGear });
+    expect(restored.model).toEqual(checkpoint.model);
+});
+
+it.each([-1, 2.5, 11, '3', null])('rejects an invalid maximum exploration gear %s', (limit) => {
+    const document = emptyTrainingDocument();
+    const learning = { ...document.configuration.learning, maxExplorationGear: limit };
+    expect(() => readTrainingDocument({ ...document, configuration: { ...document.configuration, learning } })).toThrow(/configuration/);
+});
+
 it('starts new models with one neutral signed pedal output', () => {
     const document = emptyTrainingDocument();
     expect(document.configuration.actions.outputs).toEqual(['pedal-tanh', 'steering-tanh', 'hold-logit', 'up-logit', 'down-logit']);

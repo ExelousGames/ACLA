@@ -571,6 +571,64 @@ async function plannedDecision(run: ReturnType<typeof setup>, direction = 1) {
     return decision;
 }
 
+it.each([true, false])('uses current speed to limit extra throttle on an active plan during training (training=%s)', async (train) => {
+    const run = setup(), { observation } = run.fixture;
+    run.policy.configuration.learning.throttleExplorationSpeedLimitKmh = 120;
+    const decision = await plannedDecision(run);
+    decision.plan = decision.plan.map((point, step) => ({ ...point,
+        means: [Math.atanh([0.1, 0.2, -0.1][step] ?? 0.2), point.means[1]] }));
+    decision.plan[3].action.pedal = -0.4;
+    const decide = jest.spyOn(run.policy, 'decideAsync').mockResolvedValueOnce(decision);
+    await run.loop.start(run.policy, train); await flush();
+    expect(run.loop.state.action.throttle).toBeCloseTo(0.2);
+
+    const updateSpeed = async (speed: number, time: number) => {
+        run.input({ observation, telemetry: { ...observation, speed, measuredAt: time } }, time);
+        jest.advanceTimersByTime(20); await flush();
+    };
+    await updateSpeed(120, 1050);
+    expect(run.loop.state.action.throttle).toBeCloseTo(train ? 0.15 : 0.21);
+    expect(run.loop.state.action.steering).toBeCloseTo(0.03);
+    expect(run.controller.apply).toHaveBeenLastCalledWith(run.loop.state.action);
+    await updateSpeed(130, 1200);
+    expect(run.loop.state.action.throttle).toBeCloseTo(train ? 0 : 0.24);
+    expect(run.loop.state.action.brake).toBe(0);
+    await updateSpeed(130, 1300);
+    expect(run.loop.state.action.brake).toBeCloseTo(0.4);
+    await updateSpeed(119, 1400);
+    expect(run.loop.state.action.throttle).toBeCloseTo(0.28);
+    expect(decide).toHaveBeenCalledTimes(1);
+    await run.loop.stop();
+});
+
+it.each([true, false])('checks current gear before executing planned upshifts (training=%s)', async (train) => {
+    const run = setup(), observation = { ...run.fixture.observation, gear: 2 };
+    run.policy.configuration.learning.maxExplorationGear = 3;
+    const decision = await plannedDecision(run);
+    [1, 1, 2, 1].forEach((shift, step) => {
+        const point = decision.plan[step];
+        point.shift = shift as 1 | 2;
+        point.action = { ...point.action, shiftUp: shift === 1, shiftDown: shift === 2 };
+    });
+    const decide = jest.spyOn(run.policy, 'decideAsync').mockResolvedValueOnce(decision);
+    run.input({ observation }, 1000);
+    await run.loop.start(run.policy, train); await flush();
+    expect(run.controller.apply).toHaveBeenLastCalledWith(expect.objectContaining({ shiftUp: true }));
+
+    const updateGear = async (gear: number, time: number) => {
+        run.input({ observation, telemetry: { ...observation, gear, measuredAt: time } }, time);
+        jest.advanceTimersByTime(20); await flush();
+    };
+    await updateGear(3, 1100);
+    expect(run.controller.apply).toHaveBeenLastCalledWith(expect.objectContaining({ shiftUp: !train, shiftDown: false }));
+    await updateGear(4, 1200);
+    expect(run.controller.apply).toHaveBeenLastCalledWith(expect.objectContaining({ shiftUp: false, shiftDown: true }));
+    await updateGear(2, 1300);
+    expect(run.controller.apply).toHaveBeenLastCalledWith(expect.objectContaining({ shiftUp: true, shiftDown: false }));
+    expect(decide).toHaveBeenCalledTimes(1);
+    await run.loop.stop();
+});
+
 it.each([true, false])('keeps an agreeing plan clock and credits its original actions while inference continues (training=%s)', async (train) => {
     const run = setup(), first = await plannedDecision(run), confirmation = await plannedDecision(run);
     confirmation.plan.forEach((point, step) => {

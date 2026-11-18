@@ -6,6 +6,7 @@ export const DEFAULT_DRIVING_CONFIG: DrivingModelConfig = defaults;
 export const cloneConfig = (config = DEFAULT_DRIVING_CONFIG): DrivingModelConfig => JSON.parse(JSON.stringify(config));
 
 export const DRIVING_ANALOG_AXES = 2;
+export const MAX_EXPLORATION_GEAR = 10;
 
 /** Match the signed pedal and steering output order. */
 export const drivingExplorationSigmas = (config: DrivingModelConfig): [number, number] =>
@@ -19,6 +20,13 @@ export function readDrivingConfig(value: unknown): DrivingModelConfig {
     const outputs = (value as Partial<DrivingModelConfig> | null)?.actions?.outputs;
     if (Array.isArray(outputs) && outputs.includes('throttle-tanh')) {
         throw new Error('This checkpoint uses separate throttle and brake outputs. Create a new model file to train the signed pedal policy.');
+    }
+    const learning = (value as { learning?: Record<string, unknown> } | null)?.learning;
+    if (learning && typeof learning === 'object' && !Array.isArray(learning)
+        && (!('throttleExplorationSpeedLimitKmh' in learning) || !('maxExplorationGear' in learning))) {
+        value = { ...value as object, learning: {
+            throttleExplorationSpeedLimitKmh: defaults.learning.throttleExplorationSpeedLimitKmh,
+            maxExplorationGear: defaults.learning.maxExplorationGear, ...learning } };
     }
     // Speed and pedal rewards changed without changing the SAC model's input or weight layout.
     const reward = (value as { reward?: Record<string, unknown> } | null)?.reward;
@@ -138,6 +146,8 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
         || !integer(l.replayCapacity, 1, 2048) || !integer(l.replayBatchSize, 1, 64) || l.replayBatchSize > l.replayCapacity
         || l.actionEpsilon < 1e-9 || l.actionEpsilon >= 0.5
         || l.shiftTemperature < 0.001 || l.shiftTemperature > 1
+        || !integer(l.maxExplorationGear, 0, MAX_EXPLORATION_GEAR)
+        || !integer(l.throttleExplorationSpeedLimitKmh, 0, defaults.learning.throttleExplorationSpeedLimitKmh)
         || drivingExplorationFrequencies(c).some((frequency) => frequency < 0.1 || frequency > 10)
         || [c.reward.steeringChangeWeight, c.reward.throttleChangeWeight, c.reward.brakeChangeWeight].some((weight) => weight > 1)
         || l.sequenceSeconds <= 0 || l.sequenceSeconds > 30

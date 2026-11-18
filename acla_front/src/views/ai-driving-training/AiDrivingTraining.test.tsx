@@ -1112,12 +1112,19 @@ it('saves exploration with an untrained model, restores it on remount and resets
     const labels = ['Throttle/brake exploration', 'Steering exploration'];
     const sliders = labels.map((name) => screen.getByRole('slider', { name }));
     const gears = screen.getByRole('slider', { name: 'Gear exploration' });
+    const speedLimit = () => screen.getByRole('slider', { name: 'Throttle exploration speed limit' });
+    const maxGear = () => screen.getByRole('combobox', { name: 'Maximum gear to explore' });
     const frequencyLabels = ['Throttle/brake', 'Steering', 'Gear'].map((control) => `${control} exploration update frequency`);
     const frequencies = frequencyLabels.map((name) => screen.getByRole('slider', { name }));
     const defaultFrequencies = ['2', '2', '10'];
     frequencies.forEach((slider, i) => expect(slider).toHaveValue(defaultFrequencies[i]));
     sliders.forEach((slider) => expect(slider).toHaveValue('0.05'));
     expect(gears).toHaveValue('0.25');
+    expect(speedLimit()).toHaveValue('400');
+    expect(maxGear()).toHaveDisplayValue('Unlimited');
+    fireEvent.change(maxGear(), { target: { value: '4' } });
+    fireEvent.change(speedLimit(), { target: { value: '120' } });
+    expect(speedLimit()).toHaveAttribute('aria-valuetext', '120 km/h');
     fireEvent.change(sliders[0], { target: { value: '0.15' } });
     expect(sliders[1]).toHaveValue('0.05');
     fireEvent.change(sliders[1], { target: { value: '0.35' } });
@@ -1130,20 +1137,24 @@ it('saves exploration with an untrained model, restores it on remount and resets
     expect(screen.getByText('2.5 Hz · every 0.4 s')).toBeInTheDocument();
     fireEvent.change(gears, { target: { value: '0.6' } }); await flush();
     expect(JSON.parse(files.get(MODEL_PATH)!)).toMatchObject({ model: null,
-        configuration: { learning: { pedalExplorationSigma: 0.15,
-            steeringExplorationSigma: 0.35, shiftTemperature: 0.6, pedalExplorationUpdateHz: 2.5,
+        configuration: { learning: { pedalExplorationSigma: 0.15, throttleExplorationSpeedLimitKmh: 120,
+            steeringExplorationSigma: 0.35, shiftTemperature: 0.6, maxExplorationGear: 4, pedalExplorationUpdateHz: 2.5,
             steeringExplorationUpdateHz: 0.5, gearExplorationUpdateHz: 5 } } });
     view.unmount();
     await renderTraining();
     labels.forEach((name, i) => expect(screen.getByRole('slider', { name })).toHaveValue(['0.15', '0.35'][i]));
     expect(screen.getByRole('slider', { name: 'Gear exploration' })).toHaveValue('0.6');
+    expect(speedLimit()).toHaveValue('120');
+    expect(maxGear()).toHaveValue('4');
     frequencyLabels.forEach((name, i) => expect(screen.getByRole('slider', { name })).toHaveValue(frequencyValues[i]));
     fireEvent.click(screen.getByRole('button', { name: 'Reset exploration' })); await flush();
     labels.forEach((name) => expect(screen.getByRole('slider', { name })).toHaveValue('0.05'));
     expect(screen.getByRole('slider', { name: 'Gear exploration' })).toHaveValue('0.25');
+    expect(speedLimit()).toHaveValue('400');
+    expect(maxGear()).toHaveDisplayValue('Unlimited');
     frequencyLabels.forEach((name, i) => expect(screen.getByRole('slider', { name })).toHaveValue(defaultFrequencies[i]));
-    expect(JSON.parse(files.get(MODEL_PATH)!).configuration.learning).toMatchObject({ pedalExplorationSigma: 0.05,
-        steeringExplorationSigma: 0.05, shiftTemperature: 0.25,
+    expect(JSON.parse(files.get(MODEL_PATH)!).configuration.learning).toMatchObject({ pedalExplorationSigma: 0.05, throttleExplorationSpeedLimitKmh: 400,
+        steeringExplorationSigma: 0.05, shiftTemperature: 0.25, maxExplorationGear: 0,
         pedalExplorationUpdateHz: 2, steeringExplorationUpdateHz: 2, gearExplorationUpdateHz: 10 });
 });
 
@@ -1167,11 +1178,13 @@ it.each([true, false])('loads exploration into the GPU and locks it for the run 
     const sliders = ['Throttle/brake exploration', 'Steering exploration']
         .map((name) => screen.getByRole('slider', { name }));
     const gears = screen.getByRole('slider', { name: 'Gear exploration' });
+    const maxGear = screen.getByRole('combobox', { name: 'Maximum gear to explore' });
     const frequencies = ['Throttle/brake', 'Steering', 'Gear']
         .map((control) => screen.getByRole('slider', { name: `${control} exploration update frequency` }));
     frequencies.forEach((slider, i) => expect(slider).toHaveValue(String(i + 1)));
     sliders.forEach((slider, i) => expect(slider).toHaveValue(['0.12', '0.14'][i]));
     expect(gears).toHaveValue('0.4');
+    fireEvent.change(maxGear, { target: { value: String(observation.gear) } });
     sliders.forEach((slider, i) => fireEvent.change(slider, { target: { value: ['0.2', '0.4'][i] } }));
     frequencies.forEach((slider, i) => fireEvent.change(slider, { target: { value: String(4 - i) } }));
     fireEvent.change(gears, { target: { value: '0.7' } }); await flush();
@@ -1181,6 +1194,7 @@ it.each([true, false])('loads exploration into the GPU and locks it for the run 
     fireEvent.click(screen.getByRole('button', { name: startLabel }));
     sliders.forEach((slider) => expect(slider).toBeDisabled());
     expect(gears).toBeDisabled();
+    expect(maxGear).toBeDisabled();
     frequencies.forEach((slider) => expect(slider).toBeDisabled());
     await flush();
     expect(DrivingGpuModel.create).toHaveBeenLastCalledWith(expect.objectContaining({
@@ -1188,7 +1202,7 @@ it.each([true, false])('loads exploration into the GPU and locks it for the run 
             steeringExplorationSigma: 0.4, shiftTemperature: 0.7, pedalExplorationUpdateHz: 4,
             steeringExplorationUpdateHz: 3, gearExplorationUpdateHz: 2 }),
     }), checkpoint.model);
-    expect(decide).toHaveBeenCalledWith(expect.anything(), train, expect.anything());
+    expect(decide).toHaveBeenCalledWith(expect.anything(), train, { up: !train, down: true });
     sliders.forEach((slider) => expect(slider).toBeDisabled());
     expect(gears).toBeDisabled();
     frequencies.forEach((slider) => expect(slider).toBeDisabled());
@@ -1196,6 +1210,7 @@ it.each([true, false])('loads exploration into the GPU and locks it for the run 
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
     sliders.forEach((slider) => expect(slider).toBeEnabled());
     expect(gears).toBeEnabled();
+    expect(maxGear).toBeEnabled();
     frequencies.forEach((slider) => expect(slider).toBeEnabled());
     fireEvent.change(frequencies[2], { target: { value: '0.5' } });
     fireEvent.change(sliders[0], { target: { value: '0.08' } }); await flush();
