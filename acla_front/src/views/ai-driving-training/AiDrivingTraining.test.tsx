@@ -161,11 +161,9 @@ it('shows each control-change penalty and sends the combined reward to learning'
         const decision = await infer.apply(this, args);
         decision.plan.forEach((point, step) => {
             point.action.steering = step === 1 ? -0.4 : 0.4;
-            point.action.throttle = step === 1 ? 0 : 0.8;
-            point.action.brake = step === 1 ? 0.6 : 0;
-            point.latent[0] = Math.atanh(point.action.throttle);
-            point.latent[1] = Math.atanh(point.action.brake);
-            point.latent[2] = Math.atanh(point.action.steering);
+            point.action.pedal = step === 1 ? -0.6 : 0.8;
+            point.latent[0] = Math.atanh(point.action.pedal);
+            point.latent[1] = Math.atanh(point.action.steering);
         });
         return decision;
     });
@@ -257,6 +255,39 @@ it.each([20, 80])('shows a brief %s km/h impact from live telemetry between slow
     mockInput = { observation: { ...initial, capturedAt: Date.now(), measuredAt: Date.now() } };
     act(() => { jest.advanceTimersByTime(100); publish(); }); await flush();
     expect(Number(getDefinition('Impact penalty').textContent)).toBe(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
+});
+
+it('shows sustained blocked motion in the reward without an impact', async () => {
+    const fixture = trainingFixture(Date.now());
+    act(() => liveTelemetryStore.resetSession());
+    let sequence = 0;
+    const publish = () => {
+        sequence++;
+        liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence,
+            committedSequence: sequence, committedCount: sequence, sample: { ...fixture.live.currentTelemetry,
+                Physics_local_velocity_x: 0, Physics_local_velocity_y: 0, Physics_speed_kmh: 0, Physics_gas: 0.8 } });
+    };
+    act(() => publish());
+    const live = liveTelemetryStore.getSnapshot();
+    const initial = { ...fixture.observation, speed: 0, localVelocity: [0, 0, 0] as [number, number, number],
+        controls: { ...fixture.observation.controls, throttle: 0.8 },
+        session: JSON.stringify([live.sessionGeneration, live.streamGeneration, 'acc', 'GT3', 'monza']) };
+    mockInput = { observation: initial };
+    await renderTraining();
+    expect(getDefinition('Blocked-motion penalty').textContent).toBe('0');
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Start training' })); await flush();
+    for (let i = 0; i <= 10; i++) {
+        act(() => { jest.advanceTimersByTime(100); publish(); }); await flush();
+    }
+    mockInput = { observation: { ...initial, capturedAt: Date.now(), measuredAt: Date.now() } };
+    act(() => { jest.advanceTimersByTime(20); }); await flush();
+    expect(Number(getDefinition('Blocked-motion penalty').textContent)).toBeCloseTo(-0.85);
+    expect(getDefinition('Impact penalty').textContent).toBe('0');
+    const rewardBreakdown = within(screen.getByRole('region', { name: 'Reward signal' })).getAllByRole('definition')
+        .reduce((total, entry) => total + Number(entry.textContent), 0);
+    expect(screen.getByText((text) => Math.abs(Number(text) - rewardBreakdown) < 1e-9, { selector: 'strong' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
 });
 
@@ -451,7 +482,7 @@ it.each([true, false])('displays the live consumer sample without independently 
     config.network.cameraLayers.forEach((layer) => { layer.channels = 2; });
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
     checkpoint.model.steps = 10;
-    checkpoint.model.outputWeights.slice(3, 6).forEach((row, i) => { row.fill(0); row[row.length - 1] = i === 0 ? 4 : 0; });
+    checkpoint.model.outputWeights.slice(2, 5).forEach((row, i) => { row.fill(0); row[row.length - 1] = i === 0 ? 4 : 0; });
     files.set(MODEL_PATH, JSON.stringify(checkpoint));
     mockInput = { observation: { ...observation, speed: 108 } };
     await renderTraining();
@@ -749,7 +780,7 @@ it.each([1, 2])('shows and releases a saved model’s learned shift choice %s', 
     const { observation } = trainingFixture(Date.now());
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
     checkpoint.model.steps = 10;
-    checkpoint.model.outputWeights.slice(3, 6).forEach((row, i) => { row.fill(0); row[row.length - 1] = i === shift ? 4 : 0; });
+    checkpoint.model.outputWeights.slice(2, 5).forEach((row, i) => { row.fill(0); row[row.length - 1] = i === shift ? 4 : 0; });
     files.set(MODEL_PATH, JSON.stringify(checkpoint));
     mockInput = { observation };
     await renderTraining();
@@ -1063,23 +1094,20 @@ it.each(['Stop', 'Escape', 'Disconnect', 'blur', 'pointerCancel', 'lostPointerCa
 
 it('saves exploration with an untrained model, restores it on remount and resets its defaults', async () => {
     const view = await renderTraining();
-    const labels = ['Throttle exploration', 'Brake exploration', 'Steering exploration'];
+    const labels = ['Throttle/brake exploration', 'Steering exploration'];
     const sliders = labels.map((name) => screen.getByRole('slider', { name }));
     const gears = screen.getByRole('slider', { name: 'Gear exploration' });
-    const frequencyLabels = ['Throttle', 'Brake', 'Steering', 'Gear'].map((control) => `${control} exploration update frequency`);
+    const frequencyLabels = ['Throttle/brake', 'Steering', 'Gear'].map((control) => `${control} exploration update frequency`);
     const frequencies = frequencyLabels.map((name) => screen.getByRole('slider', { name }));
-    const defaultFrequencies = ['2', '2', '2', '10'];
+    const defaultFrequencies = ['2', '2', '10'];
     frequencies.forEach((slider, i) => expect(slider).toHaveValue(defaultFrequencies[i]));
     sliders.forEach((slider) => expect(slider).toHaveValue('0.05'));
     expect(gears).toHaveValue('0.25');
     fireEvent.change(sliders[0], { target: { value: '0.15' } });
     expect(sliders[1]).toHaveValue('0.05');
-    expect(sliders[2]).toHaveValue('0.05');
-    fireEvent.change(sliders[1], { target: { value: '0.25' } });
+    fireEvent.change(sliders[1], { target: { value: '0.35' } });
     expect(sliders[0]).toHaveValue('0.15');
-    expect(sliders[2]).toHaveValue('0.05');
-    fireEvent.change(sliders[2], { target: { value: '0.35' } });
-    const frequencyValues = ['2.5', '1', '0.5', '5'];
+    const frequencyValues = ['2.5', '0.5', '5'];
     frequencies.forEach((slider, i) => {
         fireEvent.change(slider, { target: { value: frequencyValues[i] } });
         frequencies.forEach((other, j) => expect(other).toHaveValue(j <= i ? frequencyValues[j] : defaultFrequencies[j]));
@@ -1087,21 +1115,21 @@ it('saves exploration with an untrained model, restores it on remount and resets
     expect(screen.getByText('2.5 Hz · every 0.4 s')).toBeInTheDocument();
     fireEvent.change(gears, { target: { value: '0.6' } }); await flush();
     expect(JSON.parse(files.get(MODEL_PATH)!)).toMatchObject({ model: null,
-        configuration: { learning: { throttleExplorationSigma: 0.15, brakeExplorationSigma: 0.25,
-            steeringExplorationSigma: 0.35, shiftTemperature: 0.6, throttleExplorationUpdateHz: 2.5,
-            brakeExplorationUpdateHz: 1, steeringExplorationUpdateHz: 0.5, gearExplorationUpdateHz: 5 } } });
+        configuration: { learning: { pedalExplorationSigma: 0.15,
+            steeringExplorationSigma: 0.35, shiftTemperature: 0.6, pedalExplorationUpdateHz: 2.5,
+            steeringExplorationUpdateHz: 0.5, gearExplorationUpdateHz: 5 } } });
     view.unmount();
     await renderTraining();
-    labels.forEach((name, i) => expect(screen.getByRole('slider', { name })).toHaveValue(['0.15', '0.25', '0.35'][i]));
+    labels.forEach((name, i) => expect(screen.getByRole('slider', { name })).toHaveValue(['0.15', '0.35'][i]));
     expect(screen.getByRole('slider', { name: 'Gear exploration' })).toHaveValue('0.6');
     frequencyLabels.forEach((name, i) => expect(screen.getByRole('slider', { name })).toHaveValue(frequencyValues[i]));
     fireEvent.click(screen.getByRole('button', { name: 'Reset exploration' })); await flush();
     labels.forEach((name) => expect(screen.getByRole('slider', { name })).toHaveValue('0.05'));
     expect(screen.getByRole('slider', { name: 'Gear exploration' })).toHaveValue('0.25');
     frequencyLabels.forEach((name, i) => expect(screen.getByRole('slider', { name })).toHaveValue(defaultFrequencies[i]));
-    expect(JSON.parse(files.get(MODEL_PATH)!).configuration.learning).toMatchObject({ throttleExplorationSigma: 0.05,
-        brakeExplorationSigma: 0.05, steeringExplorationSigma: 0.05, shiftTemperature: 0.25,
-        throttleExplorationUpdateHz: 2, brakeExplorationUpdateHz: 2, steeringExplorationUpdateHz: 2, gearExplorationUpdateHz: 10 });
+    expect(JSON.parse(files.get(MODEL_PATH)!).configuration.learning).toMatchObject({ pedalExplorationSigma: 0.05,
+        steeringExplorationSigma: 0.05, shiftTemperature: 0.25,
+        pedalExplorationUpdateHz: 2, steeringExplorationUpdateHz: 2, gearExplorationUpdateHz: 10 });
 });
 
 it.each([true, false])('loads exploration into the GPU and locks it for the run without changing weights (training=%s)', async (train) => {
@@ -1109,29 +1137,27 @@ it.each([true, false])('loads exploration into the GPU and locks it for the run 
     config.network.hiddenUnits = 2;
     config.network.cameraProjectionUnits = 2;
     config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
-    config.learning.throttleExplorationSigma = 0.12;
-    config.learning.brakeExplorationSigma = 0.13;
+    config.learning.pedalExplorationSigma = 0.12;
     config.learning.steeringExplorationSigma = 0.14;
     config.learning.shiftTemperature = 0.4;
-    config.learning.throttleExplorationUpdateHz = 1;
-    config.learning.brakeExplorationUpdateHz = 2;
-    config.learning.steeringExplorationUpdateHz = 3;
-    config.learning.gearExplorationUpdateHz = 4;
+    config.learning.pedalExplorationUpdateHz = 1;
+    config.learning.steeringExplorationUpdateHz = 2;
+    config.learning.gearExplorationUpdateHz = 3;
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
     checkpoint.model.steps = 7;
     files.set(MODEL_PATH, JSON.stringify(checkpoint));
     mockInput = { observation };
     const decide = jest.spyOn(DrivingPolicy.prototype, 'decideAsync');
     await renderTraining();
-    const sliders = ['Throttle exploration', 'Brake exploration', 'Steering exploration']
+    const sliders = ['Throttle/brake exploration', 'Steering exploration']
         .map((name) => screen.getByRole('slider', { name }));
     const gears = screen.getByRole('slider', { name: 'Gear exploration' });
-    const frequencies = ['Throttle', 'Brake', 'Steering', 'Gear']
+    const frequencies = ['Throttle/brake', 'Steering', 'Gear']
         .map((control) => screen.getByRole('slider', { name: `${control} exploration update frequency` }));
     frequencies.forEach((slider, i) => expect(slider).toHaveValue(String(i + 1)));
-    sliders.forEach((slider, i) => expect(slider).toHaveValue(['0.12', '0.13', '0.14'][i]));
+    sliders.forEach((slider, i) => expect(slider).toHaveValue(['0.12', '0.14'][i]));
     expect(gears).toHaveValue('0.4');
-    sliders.forEach((slider, i) => fireEvent.change(slider, { target: { value: ['0.2', '0.3', '0.4'][i] } }));
+    sliders.forEach((slider, i) => fireEvent.change(slider, { target: { value: ['0.2', '0.4'][i] } }));
     frequencies.forEach((slider, i) => fireEvent.change(slider, { target: { value: String(4 - i) } }));
     fireEvent.change(gears, { target: { value: '0.7' } }); await flush();
     expect(JSON.parse(files.get(MODEL_PATH)!).model).toEqual(checkpoint.model);
@@ -1143,9 +1169,9 @@ it.each([true, false])('loads exploration into the GPU and locks it for the run 
     frequencies.forEach((slider) => expect(slider).toBeDisabled());
     await flush();
     expect(DrivingGpuModel.create).toHaveBeenLastCalledWith(expect.objectContaining({
-        learning: expect.objectContaining({ throttleExplorationSigma: 0.2, brakeExplorationSigma: 0.3,
-            steeringExplorationSigma: 0.4, shiftTemperature: 0.7, throttleExplorationUpdateHz: 4,
-            brakeExplorationUpdateHz: 3, steeringExplorationUpdateHz: 2, gearExplorationUpdateHz: 1 }),
+        learning: expect.objectContaining({ pedalExplorationSigma: 0.2,
+            steeringExplorationSigma: 0.4, shiftTemperature: 0.7, pedalExplorationUpdateHz: 4,
+            steeringExplorationUpdateHz: 3, gearExplorationUpdateHz: 2 }),
     }), checkpoint.model);
     expect(decide).toHaveBeenCalledWith(expect.anything(), train, expect.anything());
     sliders.forEach((slider) => expect(slider).toBeDisabled());
@@ -1156,14 +1182,14 @@ it.each([true, false])('loads exploration into the GPU and locks it for the run 
     sliders.forEach((slider) => expect(slider).toBeEnabled());
     expect(gears).toBeEnabled();
     frequencies.forEach((slider) => expect(slider).toBeEnabled());
-    fireEvent.change(frequencies[3], { target: { value: '0.5' } });
+    fireEvent.change(frequencies[2], { target: { value: '0.5' } });
     fireEvent.change(sliders[0], { target: { value: '0.08' } }); await flush();
     fireEvent.click(screen.getByRole('button', { name: startLabel })); await flush();
     expect(DrivingGpuModel.create).toHaveBeenCalledTimes(2);
     expect(DrivingGpuModel.create).toHaveBeenLastCalledWith(expect.objectContaining({
-        learning: expect.objectContaining({ throttleExplorationSigma: 0.08, brakeExplorationSigma: 0.3,
-            steeringExplorationSigma: 0.4, shiftTemperature: 0.7, throttleExplorationUpdateHz: 4,
-            brakeExplorationUpdateHz: 3, steeringExplorationUpdateHz: 2, gearExplorationUpdateHz: 0.5 }),
+        learning: expect.objectContaining({ pedalExplorationSigma: 0.08,
+            steeringExplorationSigma: 0.4, shiftTemperature: 0.7, pedalExplorationUpdateHz: 4,
+            steeringExplorationUpdateHz: 3, gearExplorationUpdateHz: 0.5 }),
     }), checkpoint.model);
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
 });
@@ -1171,10 +1197,10 @@ it.each([true, false])('loads exploration into the GPU and locks it for the run 
 it('keeps exploration disabled until a model file is selected', async () => {
     selectedFile = null;
     await renderTraining();
-    ['Throttle exploration', 'Brake exploration', 'Steering exploration'].forEach((name) =>
+    ['Throttle/brake exploration', 'Steering exploration'].forEach((name) =>
         expect(screen.getByRole('slider', { name })).toBeDisabled());
     expect(screen.getByRole('slider', { name: 'Gear exploration' })).toBeDisabled();
-    ['Throttle', 'Brake', 'Steering', 'Gear'].forEach((control) =>
+    ['Throttle/brake', 'Steering', 'Gear'].forEach((control) =>
         expect(screen.getByRole('slider', { name: `${control} exploration update frequency` })).toBeDisabled());
     expect(screen.getByRole('button', { name: 'Reset exploration' })).toBeDisabled();
     expect(window.drivingModelFiles!.write).not.toHaveBeenCalled();
@@ -1348,28 +1374,26 @@ it('reloads JSON weights, aggression and plan timing every time evaluation start
     mockInput = { observation };
     await renderTraining();
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
-    for (const [throttleBias, brakeBias] of [[1, 0.5], [-1, 1]]) {
+    for (const pedalBias of [1, -1]) {
         // Simulate an updated JSON between runs without remounting the page.
-        checkpoint.configuration.aggression = 50 + throttleBias * 30;
+        checkpoint.configuration.aggression = 50 + pedalBias * 30;
         checkpoint.configuration.actions.planTimesSeconds = [0, 0.4];
         checkpoint.model.outputWeights = checkpoint.model.outputWeights.slice(0,
             checkpoint.configuration.actions.planTimesSeconds.length * checkpoint.configuration.actions.outputs.length + 1);
-        checkpoint.model.sac.logStds = checkpoint.model.sac.logStds.slice(0, checkpoint.configuration.actions.planTimesSeconds.length * 3);
+        checkpoint.model.sac.logStds = checkpoint.model.sac.logStds.slice(0, checkpoint.configuration.actions.planTimesSeconds.length * 2);
         checkpoint.model.outputWeights.forEach((row) => row.fill(0));
-        checkpoint.model.outputWeights[0][checkpoint.configuration.network.hiddenUnits] = throttleBias;
-        checkpoint.model.outputWeights[1][checkpoint.configuration.network.hiddenUnits] = brakeBias;
+        checkpoint.model.outputWeights[0][checkpoint.configuration.network.hiddenUnits] = pedalBias;
         files.set(MODEL_PATH, JSON.stringify(checkpoint));
         fireEvent.click(screen.getByRole('button', { name: 'Run trained model' })); await flush();
         expect(window.virtualController!.apply).toHaveBeenLastCalledWith(expect.objectContaining({
-            throttle: Math.max(0, Math.tanh(throttleBias)), brake: Math.max(0, Math.tanh(brakeBias)),
+            throttle: Math.max(0, Math.tanh(pedalBias)), brake: Math.max(0, -Math.tanh(pedalBias)),
         }));
-        expect(screen.getByRole('slider', { name: 'Driving aggression' })).toHaveValue(String(50 + throttleBias * 30));
+        expect(screen.getByRole('slider', { name: 'Driving aggression' })).toHaveValue(String(50 + pedalBias * 30));
         const plan = within(screen.getByRole('table', { name: 'Planned driving actions' }));
         expect(plan.getAllByRole('row')).toHaveLength(3);
-        expect(plan.getByRole('columnheader', { name: 'Throttle' })).toBeVisible();
-        expect(plan.getByRole('columnheader', { name: 'Brake' })).toBeVisible();
+        expect(plan.getByRole('columnheader', { name: 'Throttle/brake' })).toBeVisible();
         expect(within(plan.getAllByRole('row')[1]).getAllByRole('cell').map((cell) => cell.textContent))
-            .toEqual([Math.max(0, Math.tanh(throttleBias)).toFixed(3), Math.max(0, Math.tanh(brakeBias)).toFixed(3), '0.000', 'Hold']);
+            .toEqual([Math.tanh(pedalBias).toFixed(3), '0.000', 'Hold']);
         fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
         expect(JSON.parse(files.get(MODEL_PATH)!)).toEqual(checkpoint);
     }

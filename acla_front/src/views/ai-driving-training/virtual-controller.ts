@@ -1,10 +1,15 @@
-import type { DrivingAction } from './driving-observation';
 import type { PhysicalController } from './driving-control';
 
 export interface ControllerOutput {
     deviceId?: number;
 }
-export type ControllerAction = DrivingAction;
+export interface ControllerAction {
+    throttle: number;
+    brake: number;
+    steering: number;
+    shiftUp?: boolean;
+    shiftDown?: boolean;
+}
 export interface VirtualController {
     connect(options?: ControllerOutput): Promise<void>;
     apply(action: ControllerAction): Promise<void>;

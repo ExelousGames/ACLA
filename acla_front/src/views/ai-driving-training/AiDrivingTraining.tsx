@@ -30,13 +30,11 @@ const TEST_CONTROLS = [
     { key: 'shiftUp', label: 'shift up', value: true },
 ] as const;
 const EXPLORATION_CONTROLS = [
-    { key: 'throttleExplorationSigma', label: 'Throttle', control: 'throttle' },
-    { key: 'brakeExplorationSigma', label: 'Brake', control: 'brake' },
+    { key: 'pedalExplorationSigma', label: 'Throttle/brake', control: 'pedal' },
     { key: 'steeringExplorationSigma', label: 'Steering', control: 'steering' },
 ] as const;
 const EXPLORATION_FREQUENCIES = [
-    { key: 'throttleExplorationUpdateHz', label: 'Throttle', control: 'throttle' },
-    { key: 'brakeExplorationUpdateHz', label: 'Brake', control: 'brake' },
+    { key: 'pedalExplorationUpdateHz', label: 'Throttle/brake', control: 'pedal' },
     { key: 'steeringExplorationUpdateHz', label: 'Steering', control: 'steering' },
     { key: 'gearExplorationUpdateHz', label: 'Gear', control: 'gear' },
 ] as const;
@@ -86,12 +84,10 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const [aggression, setAggression] = useState(configuration.current.aggression);
     const aggressionRef = useRef(aggression);
     const [exploration, setExploration] = useState(() => ({
-        throttleExplorationSigma: configuration.current.learning.throttleExplorationSigma,
-        brakeExplorationSigma: configuration.current.learning.brakeExplorationSigma,
+        pedalExplorationSigma: configuration.current.learning.pedalExplorationSigma,
         steeringExplorationSigma: configuration.current.learning.steeringExplorationSigma,
         shiftTemperature: configuration.current.learning.shiftTemperature,
-        throttleExplorationUpdateHz: configuration.current.learning.throttleExplorationUpdateHz,
-        brakeExplorationUpdateHz: configuration.current.learning.brakeExplorationUpdateHz,
+        pedalExplorationUpdateHz: configuration.current.learning.pedalExplorationUpdateHz,
         steeringExplorationUpdateHz: configuration.current.learning.steeringExplorationUpdateHz,
         gearExplorationUpdateHz: configuration.current.learning.gearExplorationUpdateHz,
     }));
@@ -228,12 +224,10 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         configuration.current = restored?.configuration ?? cloneConfig(document.configuration);
         aggressionRef.current = configuration.current.aggression;
         setAggression(aggressionRef.current);
-        setExploration({ throttleExplorationSigma: configuration.current.learning.throttleExplorationSigma,
-            brakeExplorationSigma: configuration.current.learning.brakeExplorationSigma,
+        setExploration({ pedalExplorationSigma: configuration.current.learning.pedalExplorationSigma,
             steeringExplorationSigma: configuration.current.learning.steeringExplorationSigma,
             shiftTemperature: configuration.current.learning.shiftTemperature,
-            throttleExplorationUpdateHz: configuration.current.learning.throttleExplorationUpdateHz,
-            brakeExplorationUpdateHz: configuration.current.learning.brakeExplorationUpdateHz,
+            pedalExplorationUpdateHz: configuration.current.learning.pedalExplorationUpdateHz,
             steeringExplorationUpdateHz: configuration.current.learning.steeringExplorationUpdateHz,
             gearExplorationUpdateHz: configuration.current.learning.gearExplorationUpdateHz });
         setModelSteps(restored?.steps ?? null);
@@ -616,11 +610,11 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 <div className="driving-card-title"><h2>AI driver</h2><span>{inputSource === 'recorded' ? replaying ? 'Recorded replay' : 'Offline'
                     : aiActive ? state.source === 'ai' ? 'Driving' : 'Human has control' : 'Not started'}</span></div>
                 <p>{inputSource === 'live' ? 'Start AI training or evaluation when live inputs are ready. If you are already driving, you keep control until Return to AI.'
-                    : 'Recorded training learns held pedal and steering values plus single gear changes from aligned telemetry. Evaluation compares the fixed model with recorded controls. Gaps reset observation history.'}</p>
+                    : 'Recorded training learns signed pedal intent, steering values plus single gear changes from aligned telemetry. Evaluation compares the fixed model with recorded controls. Gaps reset observation history.'}</p>
                 <p>CNN–LSTM soft actor–critic · {config.network.hiddenUnits} recurrent units · continuous throttle/brake and steering, plus learned hold gear, shift up and shift down. Throttle/brake ranges from −1 (full brake) through 0 (both released) to 1 (full throttle).</p>
                 <p>{config.memory.windowMs / 1000}-second observation history covers {fullObservationHistory ? 'all AI observation inputs' : 'the observation inputs selected in this saved model'} during training and evaluation, sampled in {config.memory.intervalMs} ms bins. Memory starts fresh after stopping, changing drivers or interrupted inputs.</p>
                 {inputSource === 'live' && <p>Actions and outcomes are recorded continuously during training and inference. After a delay of up to {config.learning.sequenceSeconds} seconds, SAC learns from recorded transitions and estimates their longer-term rewards while the current plan continues executing and new inference checks it.</p>}
-                <p>One action plan predicts {config.actions.planTimesSeconds.length} control steps from 0 to {planEnd} seconds. The AI smoothly blends throttle, brake and steering independently between steps while computing; gear shifts occur at their scheduled steps. The remaining plan continues when fresh inference agrees, and is replaced when it disagrees or expires. Reward trains the steps contributing to each executed control command; human driving teaches future steps from demonstrated actions.</p>
+                <p>One action plan predicts {config.actions.planTimesSeconds.length} control steps from 0 to {planEnd} seconds. The AI smoothly blends the signed pedal command and steering between steps while computing; gear shifts occur at their scheduled steps. The remaining plan continues when fresh inference agrees, and is replaced when it disagrees or expires. Reward trains the steps contributing to each executed control command; human driving teaches future steps from demonstrated actions.</p>
                 <p className="driving-note">Each model JSON contains its inputs, memory, network, training settings and weights. Training and evaluation load that JSON each time they start.</p>
                 {inputSource === 'live' && <p className="driving-note">Use the same model across games, cars and maps. After switching, stop and restart training or evaluation with fresh live inputs and a matching Live Map reference lap. Learned weights are preserved.</p>}
                 {inputSource === 'live' && <fieldset className="driving-exploration"
@@ -653,24 +647,22 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                             ? 'How often a new gear exploration draw is sampled.'
                             : 'How often exploration weights refresh, blending smoothly between samples. Lower values keep exploration coherent longer while it responds to the driving state.'} Default: {DEFAULT_DRIVING_CONFIG.learning[key]} Hz.</p>
                     </div>)}
-                    <button onClick={() => changeExploration({ throttleExplorationSigma: DEFAULT_DRIVING_CONFIG.learning.throttleExplorationSigma,
-                        brakeExplorationSigma: DEFAULT_DRIVING_CONFIG.learning.brakeExplorationSigma,
+                    <button onClick={() => changeExploration({ pedalExplorationSigma: DEFAULT_DRIVING_CONFIG.learning.pedalExplorationSigma,
                         steeringExplorationSigma: DEFAULT_DRIVING_CONFIG.learning.steeringExplorationSigma,
                         shiftTemperature: DEFAULT_DRIVING_CONFIG.learning.shiftTemperature,
-                        throttleExplorationUpdateHz: DEFAULT_DRIVING_CONFIG.learning.throttleExplorationUpdateHz,
-                        brakeExplorationUpdateHz: DEFAULT_DRIVING_CONFIG.learning.brakeExplorationUpdateHz,
+                        pedalExplorationUpdateHz: DEFAULT_DRIVING_CONFIG.learning.pedalExplorationUpdateHz,
                         steeringExplorationUpdateHz: DEFAULT_DRIVING_CONFIG.learning.steeringExplorationUpdateHz,
                         gearExplorationUpdateHz: DEFAULT_DRIVING_CONFIG.learning.gearExplorationUpdateHz })}>Reset exploration</button>
                     <p className="driving-note">Saved with this model. Stop training to adjust exploration for the next run. Evaluation uses the model’s preferred actions without random exploration.</p>
                 </fieldset>}
                 {inputSource === 'live' && <table className="driving-pedals" aria-label="Planned driving actions">
                     <caption>Action plan · 0–{planEnd} seconds</caption>
-                    <thead><tr><th scope="col">Time</th><th scope="col">Throttle</th><th scope="col">Brake</th><th scope="col">Steering</th><th scope="col">Shift</th></tr></thead>
+                    <thead><tr><th scope="col">Time</th><th scope="col">Throttle/brake</th><th scope="col">Steering</th><th scope="col">Shift</th></tr></thead>
                     <tbody>{state.plan ? state.plan.map(({ timeSeconds, action }) => <tr key={timeSeconds}>
                         <th scope="row">{timeSeconds.toFixed(1)} s</th>
-                        <td>{action.throttle.toFixed(3)}</td><td>{action.brake.toFixed(3)}</td>
+                        <td>{action.pedal.toFixed(3)}</td>
                         <td>{action.steering.toFixed(3)}</td><td>{action.shiftUp ? 'Up' : action.shiftDown ? 'Down' : 'Hold'}</td>
-                    </tr>) : <tr><td colSpan={5}>Waiting for AI control and fresh inputs.</td></tr>}</tbody>
+                    </tr>) : <tr><td colSpan={4}>Waiting for AI control and fresh inputs.</td></tr>}</tbody>
                 </table>}
                 {inputSource === 'live' && <p className="driving-note">Disable automatic gears in the simulator and bind both shift buttons before training. The model learns gear choices from driving rewards. Human and AI shifts have no cooldown. Shifts use {config.actions.shiftPulseMs / 1000}-second presses; a new shift releases the previous press immediately. Downshifts are allowed in every gear, including neutral and reverse.</p>}
                 <div className="driving-metrics"><div><strong>{modelSteps ?? 0}</strong><span>Learning steps</span></div>
@@ -715,7 +707,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 </div>
                 <p className="driving-note" role="status">{saving ? 'Saving model…' : saved ? 'Model saved to file.' : 'Model not saved.'} The complete model saves to the selected file every {config.runtime.saveEverySteps} learning steps and when stopped.</p>
                 {inputSource === 'live' ? <p className="driving-note">Training explores controls; use a practice session and reposition the car between episodes. A new policy starts untrained.</p>
-                    : <p className="driving-note">Replay samples every {Math.max(100, config.runtime.controlIntervalMs)} ms of video. Pedal MAE averages the separate throttle and brake errors. Steering MAE measures steering error. Both use normalized controls and do not measure image recognition accuracy. A new policy starts untrained.</p>}
+                    : <p className="driving-note">Replay samples every {Math.max(100, config.runtime.controlIntervalMs)} ms of video. Pedal MAE measures error on the signed throttle/brake command. Steering MAE measures steering error. Both use normalized controls and do not measure image recognition accuracy. A new policy starts untrained.</p>}
             </section>
             {inputSource === 'live' && <section className="driving-card driving-shared-output" aria-label="Shared vJoy output">
                 <div className="driving-card-title"><h2>Steering wheel (vJoy)</h2><span>{connected ? 'Connected' : 'Disconnected'}</span></div>
@@ -811,7 +803,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 </dl>
                 <p className="driving-note">The policy uses car-local velocity XYZ, g-force XYZ, yaw rate, speed, current gear, engine RPM, game, car, map, normalized position, current controls, camera pixels, relative centerline XYZ, aggression, reference speed and target speed. Centerline input covers 50 map steps behind and 50 ahead, relative to the centerline at the current lap position, wrapping at start/finish. Speed targets follow the Live Phrases calculation up to aggression 50, then increase reference speed linearly up to 50% at aggression 100. The policy generates the pedal commands. Aggression applies during training and evaluation; further training teaches its response. Evaluation does not update weights. Models saved with a different observation input set or aggression calculation need to be trained again.</p>
             </section>
-            {inputSource === 'live' && <section className="driving-card">
+            {inputSource === 'live' && <section className="driving-card" aria-label="Reward signal">
                 <h2>Reward signal</h2>
                 <dl className="driving-rewards">
                     <div><dt>Acceleration / deceleration</dt><dd>{state.reward?.timing ?? 0}</dd>
@@ -840,6 +832,9 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                         <p aria-label="Impact estimate">{!state.reward ? 'Waiting for two fresh motion samples.'
                             : !state.reward.impactEstimate.available ? 'Impact estimate unavailable: no reliable 20–500 ms telemetry interval.'
                             : `${state.reward.impactEstimate.detected ? 'Possible impact' : 'No impact detected'} · Confidence ${(state.reward.impactEstimate.confidence * 100).toFixed(0)}% · Estimated severity ${(state.reward.impactEstimate.severity * 100).toFixed(0)}/100 · Excess Δv ${state.reward.impactEstimate.deltaV.toFixed(2)} m/s`}</p>
+                    </div>
+                    <div><dt>Blocked-motion penalty</dt><dd>{state.reward?.blockedMotion ?? 0}</dd>
+                        <p>Penalizes sustained throttle with little forward motion or sustained steering with a weak lateral G-force response.</p>
                     </div>
                 </dl>
             </section>}

@@ -1,4 +1,4 @@
-import { DrivingModelConfig } from './driving-model-config';
+import { DRIVING_ANALOG_AXES, DrivingModelConfig } from './driving-model-config';
 import { drivingLearningRate } from './driving-update-shaders';
 
 /** Learning targets enter from the CPU; predictions and output gradients stay on the GPU. */
@@ -8,7 +8,7 @@ export function drivingLearningShaders(config: DrivingModelConfig): Record<strin
     const rate = drivingLearningRate(config) || 1;
     const constants = `
 const ACTIONS = ${config.actions.outputs.length}u;
-const AXES = 3u;
+const AXES = ${DRIVING_ANALOG_AXES}u;
 const CRITIC = ${config.actions.planTimesSeconds.length * config.actions.outputs.length}u;
 const EPSILON = ${l.actionEpsilon.toExponential()}f;
 const DEMONSTRATION_RATE = ${(l.demonstrationRate / rate).toExponential()}f;
@@ -32,7 +32,7 @@ fn shiftProbability(offset: u32, choice: u32, up: f32, down: f32) -> f32 {
 `;
     return {
         demonstrationGradient: constants + `
-// Per plan slot: present, throttle, brake, steering, shift choice, up allowed, down allowed.
+// Per plan slot: present, signed pedal, steering, shift choice, up allowed, down allowed.
 @group(0) @binding(1) var<storage, read> targets: array<f32>;
 @group(0) @binding(2) var<storage, read_write> gradients: array<f32>;
 @compute @workgroup_size(64)
@@ -40,7 +40,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     if (id.x > CRITIC) { return; }
     gradients[id.x] = 0.0;
     if (id.x == CRITIC) { return; }
-    let slot = id.x / ACTIONS; let axis = id.x % ACTIONS; let base = slot * 7u;
+    let slot = id.x / ACTIONS; let axis = id.x % ACTIONS; let base = slot * (AXES + 4u);
     if (targets[base] == 0.0) { return; }
     if (axis < AXES) {
         let actionValue = targets[base + 1u + axis];
@@ -49,8 +49,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         gradients[id.x] = DEMONSTRATION_RATE * clamp(desired - outputs[id.x], -DEMONSTRATION_LIMIT, DEMONSTRATION_LIMIT);
     } else {
         let choice = axis - AXES;
-        let probability = shiftProbability(slot * ACTIONS + AXES, choice, targets[base + 5u], targets[base + 6u]);
-        let score = (select(0.0, 1.0, choice == u32(targets[base + 4u])) - probability) / SHIFT_TEMPERATURE;
+        let probability = shiftProbability(slot * ACTIONS + AXES, choice, targets[base + AXES + 2u], targets[base + AXES + 3u]);
+        let score = (select(0.0, 1.0, choice == u32(targets[base + AXES + 1u])) - probability) / SHIFT_TEMPERATURE;
         gradients[id.x] = DEMONSTRATION_RATE * clamp(score, -DEMONSTRATION_LIMIT, DEMONSTRATION_LIMIT);
     }
 }`,

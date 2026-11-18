@@ -1,6 +1,6 @@
 import { DrivingAction, DrivingObservation } from './driving-observation';
 import { DrivingPolicyInput } from './driving-memory';
-import { cloneConfig, DEFAULT_DRIVING_CONFIG, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingExplorationSigmas, drivingFeatureEncoding, drivingObservationInputs, drivingPolicyInputs, readDrivingConfig, validateDrivingConfig } from './driving-model-config';
+import { cloneConfig, DEFAULT_DRIVING_CONFIG, DRIVING_ANALOG_AXES, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingExplorationSigmas, drivingFeatureEncoding, drivingObservationInputs, drivingPolicyInputs, readDrivingConfig, validateDrivingConfig } from './driving-model-config';
 import { DrivingExploration } from './driving-exploration';
 import { DrivingGpuModel, GpuPolicyPass } from './driving-gpu-model';
 import { DrivingRolloutInterval, drivingSequenceTargets } from './driving-rollout';
@@ -105,7 +105,7 @@ export function readTrainingDocument(value: unknown): DrivingTrainingDocument {
     return emptyTrainingDocument(configuration);
 }
 
-/** Hybrid SAC with the existing camera/history inputs and six-output action plan. */
+/** Hybrid SAC with the existing camera/history inputs and signed pedal action plan. */
 export class DrivingPolicy {
     private initialWeights?: PolicyWeights;
     private gpu?: DrivingGpuModel;
@@ -163,12 +163,12 @@ export class DrivingPolicy {
             encoder.lstmNormWeights = [Array(4 * units).fill(1),
                 Array.from({ length: 4 * units }, (_, row) => Number(row >= units && row < 2 * units))];
         }
-        const columns = units + 7;
+        const columns = units + this.actionOutputs + 1;
         const criticWeights = Array.from({ length: 2 }, () => Array.from({ length: units * columns + units + 1 }, (_, i) =>
             i < units * columns && i % columns === columns - 1 || i === units * columns + units ? 0
-                : Math.max(-limit, Math.min(limit, (random() * 2 - 1) / Math.sqrt(units + 6)))));
+                : Math.max(-limit, Math.min(limit, (random() * 2 - 1) / Math.sqrt(columns - 1)))));
         this.initialWeights = { ...encoder, outputWeights, sac: {
-            logStds: this.planTimes.flatMap(() => [Math.log(0.05), Math.log(0.05), Math.log(0.05)]),
+            logStds: new Array(this.planTimes.length * DRIVING_ANALOG_AXES).fill(Math.log(0.05)),
             criticWeights, targetCriticWeights: criticWeights.map((weights) => weights.slice()),
             targetEncoder: JSON.parse(JSON.stringify(encoder)),
         } };
@@ -208,7 +208,7 @@ export class DrivingPolicy {
         const samples = explore && revision === this.explorationRevision ? this.exploration.plan(input, Date.now()) : undefined;
         const plan = this.planTimes.map((timeSeconds, step) => this.actionDecision(
             outputs.slice(step * this.actionOutputs, (step + 1) * this.actionOutputs), timeSeconds,
-            samples?.[step], logStds.slice(step * 3, step * 3 + 3),
+            samples?.[step], logStds.slice(step * DRIVING_ANALOG_AXES, (step + 1) * DRIVING_ANALOG_AXES),
             step === 0 ? shifts : { up: true, down: true }));
         return { input, gpu: pass, value: outputs[this.criticOutput], plan };
     }
@@ -233,12 +233,12 @@ export class DrivingPolicy {
     releaseDecision(decision?: PolicyDecision) { if (decision?.gpu) this.gpu?.release(decision.gpu); }
 
     private actionDecision(outputs: number[], timeSeconds: number, exploration: ExplorationSample | undefined, logStds: number[], shifts: ShiftAvailability): ActionDecision {
-        const means = outputs.slice(0, 3);
+        const means = outputs.slice(0, DRIVING_ANALOG_AXES);
         const initialSigmas = drivingExplorationSigmas(this.configuration);
         const sigmas = logStds.map((value, axis) => Math.exp(value) * initialSigmas[axis] / 0.05);
         const latent = means.map((mean, axis) => mean + (exploration ? sigmas[axis] * exploration.axes[axis] : 0));
         // The execution mask is also retained with the off-policy transition.
-        const shiftLogits = outputs.slice(3);
+        const shiftLogits = outputs.slice(DRIVING_ANALOG_AXES);
         const shiftProbabilities = this.shiftProbabilities(shiftLogits, shifts);
         let shift: ShiftChoice = 0;
         if (exploration) {
@@ -250,8 +250,7 @@ export class DrivingPolicy {
                 if (draw < cumulative) break;
             }
         } else shift = shiftProbabilities.indexOf(Math.max(...shiftProbabilities)) as ShiftChoice;
-        const action = { throttle: Math.max(0, Math.tanh(latent[0])), brake: Math.max(0, Math.tanh(latent[1])),
-            steering: Math.tanh(latent[2]), shiftUp: shift === 1, shiftDown: shift === 2 };
+        const action = { pedal: Math.tanh(latent[0]), steering: Math.tanh(latent[1]), shiftUp: shift === 1, shiftDown: shift === 2 };
         return { timeSeconds, means, latent, variances: sigmas.map((sigma, axis) => sigma * sigma
             * (exploration ? exploration.variances[axis] / initialSigmas[axis] ** 2 : 1)),
             shift, shiftProbabilities, shifts: { ...shifts }, action };
@@ -351,8 +350,7 @@ export class DrivingPolicy {
     private validateTargets(targets: PlannedActionTarget[]) {
         for (const { step, action } of targets) {
             if (!Number.isInteger(step) || step < 0 || step >= this.planTimes.length) throw new Error('Invalid action plan step.');
-            if (![action.throttle, action.brake, action.steering].every(Number.isFinite)
-                || action.throttle < 0 || action.throttle > 1 || action.brake < 0 || action.brake > 1
+            if (![action.pedal, action.steering].every(Number.isFinite) || Math.abs(action.pedal) > 1
                 || Math.abs(action.steering) > 1 || (action.shiftUp && action.shiftDown)) {
                 throw new Error('Invalid demonstration action.');
             }
@@ -419,7 +417,7 @@ export class DrivingPolicy {
             && matrix(encoder.lstmWeights, 4 * config.network.hiddenUnits, drivingPolicyInputs(config) + config.network.hiddenUnits + 1)
             && (config.network.cameraLayerNorm ? matrix(encoder.cameraNormWeights, 2, drivingCameraInputs(config), Math.max(1, config.learning.weightLimit)) : encoder.cameraNormWeights === undefined)
             && (config.network.lstmLayerNorm ? matrix(encoder.lstmNormWeights, 2, 4 * config.network.hiddenUnits, Math.max(1, config.learning.weightLimit)) : encoder.lstmNormWeights === undefined);
-        const criticSize = config.network.hiddenUnits * (config.network.hiddenUnits + 7) + config.network.hiddenUnits + 1;
+        const criticSize = config.network.hiddenUnits * (config.network.hiddenUnits + config.actions.outputs.length + 1) + config.network.hiddenUnits + 1;
         if (!data || Object.keys(data).some((key) => !['context', 'inputs', 'steps', 'cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'lstmNormWeights', 'lstmWeights', 'outputWeights', 'sac'].includes(key))
             || !Number.isInteger(data.inputs) || data.inputs < 1
             || !Number.isSafeInteger(data.steps) || data.steps < 0
@@ -436,7 +434,7 @@ export class DrivingPolicy {
             || !matrix(data.lstmWeights, 4 * config.network.hiddenUnits, data.inputs + config.network.hiddenUnits + 1)
             || !matrix(data.outputWeights, config.actions.planTimesSeconds.length * config.actions.outputs.length + 1, config.network.hiddenUnits + 1)
             || !data.sac || Object.keys(data.sac).some((key) => !['logStds', 'criticWeights', 'targetCriticWeights', 'targetEncoder'].includes(key))
-            || !Array.isArray(data.sac.logStds) || data.sac.logStds.length !== config.actions.planTimesSeconds.length * 3
+            || !Array.isArray(data.sac.logStds) || data.sac.logStds.length !== config.actions.planTimesSeconds.length * DRIVING_ANALOG_AXES
             || !data.sac.logStds.every((v) => typeof v === 'number' && Number.isFinite(v) && v >= -7 && v <= 1)
             || !matrix(data.sac.criticWeights, 2, criticSize) || !matrix(data.sac.targetCriticWeights, 2, criticSize)
             || !validEncoder(data.sac.targetEncoder)) return invalid();

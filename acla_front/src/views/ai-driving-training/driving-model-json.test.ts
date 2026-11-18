@@ -12,7 +12,7 @@ import { circuitMapFixture, trainingFixture } from './training-fixtures';
 beforeEach(() => { mockDrivingGpu(); });
 afterEach(() => { jest.restoreAllMocks(); });
 
-const frequencyKeys = ['throttleExplorationUpdateHz', 'brakeExplorationUpdateHz', 'steeringExplorationUpdateHz', 'gearExplorationUpdateHz'];
+const frequencyKeys = ['pedalExplorationUpdateHz', 'steeringExplorationUpdateHz', 'gearExplorationUpdateHz'];
 
 it.each([false, true])('rejects old actor-critic documents instead of migrating weights (trained=%s)', (trained) => {
     const config = cloneConfig();
@@ -172,7 +172,7 @@ it('rebuilds the whole observation, memory, network and plan from a non-default 
     const restored = DrivingPolicy.restore(JSON.parse(json));
     expect(restored.matches(observation)).toBe(true);
     expect(restored.checkpoint().model.lstmWeights).toHaveLength(4 * 7);
-    expect(restored.checkpoint().model.outputWeights).toHaveLength(19);
+    expect(restored.checkpoint().model.outputWeights).toHaveLength(16);
     expect(restored.planTimes).toEqual([0, 0.3, 1.2]);
     expect(restored.checkpoint()).toEqual(JSON.parse(json));
     expect(restored.checkpoint()).not.toHaveProperty('version');
@@ -202,11 +202,11 @@ it('uses the JSON plan times and target tolerance for delayed training', async (
     const training = new DrivingPlanTraining();
     const features = new DrivingMemory(config).encode(observation);
     const shifts = { up: true, down: true };
-    await training.recordAsync(policy, features, NEUTRAL, shifts, 1000);
-    await training.recordAsync(policy, features, NEUTRAL, shifts, 1310);
-    expect(learn).toHaveBeenCalledWith(features, [{ step: 1, action: NEUTRAL, shifts }]);
+    await training.recordAsync(policy, features, { pedal: 0, steering: 0 }, shifts, 1000);
+    await training.recordAsync(policy, features, { pedal: 0, steering: 0 }, shifts, 1310);
+    expect(learn).toHaveBeenCalledWith(features, [{ step: 1, action: { pedal: 0, steering: 0 }, shifts }]);
     learn.mockClear();
-    await training.recordAsync(policy, features, NEUTRAL, shifts, 2221);
+    await training.recordAsync(policy, features, { pedal: 0, steering: 0 }, shifts, 2221);
     expect(learn).not.toHaveBeenCalled();
 });
 
@@ -284,8 +284,7 @@ it.each([false, true])('rejects shared exploration from older models without mig
     const legacy: any = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
         : emptyTrainingDocument(config);
     legacy.configuration.learning.explorationSigma = 0.25;
-    delete legacy.configuration.learning.throttleExplorationSigma;
-    delete legacy.configuration.learning.brakeExplorationSigma;
+    delete legacy.configuration.learning.pedalExplorationSigma;
     delete legacy.configuration.learning.steeringExplorationSigma;
     frequencyKeys.forEach((key) => { delete legacy.configuration.learning[key]; });
     const before = JSON.stringify(legacy);
@@ -298,16 +297,14 @@ it.each([false, true])('rejects shared exploration from older models without mig
 
 it('preserves explicit exploration settings and rejects missing settings', () => {
     const current: any = emptyTrainingDocument();
-    current.configuration.learning.throttleExplorationSigma = 0.15;
-    current.configuration.learning.brakeExplorationSigma = 0.25;
+    current.configuration.learning.pedalExplorationSigma = 0.15;
     current.configuration.learning.steeringExplorationSigma = 0.35;
     current.configuration.learning.shiftTemperature = 0.5;
-    current.configuration.learning.throttleExplorationUpdateHz = 2.5;
-    current.configuration.learning.brakeExplorationUpdateHz = 1;
+    current.configuration.learning.pedalExplorationUpdateHz = 2.5;
     current.configuration.learning.steeringExplorationUpdateHz = 0.5;
     current.configuration.learning.gearExplorationUpdateHz = 5;
     expect(readTrainingDocument(current)).toEqual(current);
-    for (const key of ['throttleExplorationSigma', 'brakeExplorationSigma', 'steeringExplorationSigma', 'shiftTemperature']) {
+    for (const key of ['pedalExplorationSigma', 'steeringExplorationSigma', 'shiftTemperature']) {
         const missing = JSON.parse(JSON.stringify(current));
         delete missing.configuration.learning[key];
         expect(() => readTrainingDocument(missing)).toThrow(/configuration/);
@@ -325,13 +322,12 @@ it('preserves explicit exploration settings and rejects missing settings', () =>
     expect(() => readTrainingDocument(current)).toThrow(/configuration/);
 });
 
-it.each(['throttleExplorationSigma', 'brakeExplorationSigma', 'steeringExplorationSigma', 'explorationSigma'])
+it.each(['pedalExplorationSigma', 'steeringExplorationSigma', 'explorationSigma'])
 ('rejects invalid exploration values for %s', (key) => {
     for (const value of [0, -1, Number.MIN_VALUE, 1e6 + 1, Infinity, NaN, '0.25', null]) {
         const document: any = emptyTrainingDocument();
         if (key === 'explorationSigma') {
-            delete document.configuration.learning.throttleExplorationSigma;
-            delete document.configuration.learning.brakeExplorationSigma;
+            delete document.configuration.learning.pedalExplorationSigma;
             delete document.configuration.learning.steeringExplorationSigma;
         }
         document.configuration.learning[key] = value;
@@ -437,25 +433,24 @@ it.each(['throttleChangeWeight', 'brakeChangeWeight'] as const)('requires a vali
     expect(() => readTrainingDocument(document)).toThrow(/configuration/);
 });
 
-it('starts new models with separate neutral throttle and brake outputs', () => {
+it('starts new models with one neutral signed pedal output', () => {
     const document = emptyTrainingDocument();
-    expect(document.configuration.actions.outputs).toEqual(['throttle-tanh', 'brake-tanh', 'steering-tanh', 'hold-logit', 'up-logit', 'down-logit']);
-    expect(document.configuration.network.initialActionBias).toEqual([0, 0, 0, 1, 0, 0]);
+    expect(document.configuration.actions.outputs).toEqual(['pedal-tanh', 'steering-tanh', 'hold-logit', 'up-logit', 'down-logit']);
+    expect(document.configuration.network.initialActionBias).toEqual([0, 0, 1, 0, 0]);
     expect(readTrainingDocument(document)).toEqual(document);
 });
 
-it.each([false, true])('rejects combined-pedal model layouts without migration (trained=%s)', (trained) => {
+it.each([false, true])('rejects separate-pedal model layouts without migration (trained=%s)', (trained) => {
     const { observation } = trainingFixture(), config = cloneConfig();
     config.network.hiddenUnits = 3;
     config.network.cameraProjectionUnits = 2;
     config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
     const document = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
         : emptyTrainingDocument(config);
-    document.configuration.actions.outputs = ['throttle-brake-tanh', 'steering-tanh', 'hold-logit', 'up-logit', 'down-logit'];
-    document.configuration.network.initialActionBias = [0, 0, 1, 0, 0];
-    if (document.model) document.model.outputWeights.splice(config.actions.planTimesSeconds.length * 5 + 1);
+    document.configuration.actions.outputs = ['throttle-tanh', 'brake-tanh', 'steering-tanh', 'hold-logit', 'up-logit', 'down-logit'];
+    document.configuration.network.initialActionBias = [0, 0, 0, 1, 0, 0];
     const original = JSON.stringify(document);
-    expect(() => readTrainingDocument(document)).toThrow(/configuration/);
+    expect(() => readTrainingDocument(document)).toThrow(/Create a new model file/);
     expect(JSON.stringify(document)).toBe(original);
 });
 
@@ -541,7 +536,7 @@ it.each([
     (c: any) => { c.memory.windowMs = 30000; c.memory.intervalMs = 299; },
     (c: any) => { c.actions.planTimesSeconds = [0, 1, 0.5]; },
     (c: any) => { c.actions.outputs.reverse(); },
-    (c: any) => { c.learning.throttleExplorationSigma = 0; },
+    (c: any) => { c.learning.pedalExplorationSigma = 0; },
     (c: any) => { c.reward.speedTolerance = 0; },
     (c: any) => { c.reward.accelerationTolerance = 3; },
     (c: any) => { c.reward.progressWeight = -1; },
@@ -584,7 +579,7 @@ it('runs the control loop with saved memory dimensions and pulse duration', asyn
     let now = 1000;
     let observation = trainingFixture(now).observation;
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
-    checkpoint.model.outputWeights.slice(3, 6).forEach((row, i) => { row.fill(0); row[config.network.hiddenUnits] = i === 1 ? 4 : 0; });
+    checkpoint.model.outputWeights.slice(2, 5).forEach((row, i) => { row.fill(0); row[config.network.hiddenUnits] = i === 1 ? 4 : 0; });
     const policy = DrivingPolicy.restore(checkpoint);
     expect(policy.configuration.actions).not.toHaveProperty('shiftCooldownMs');
     expect(policy.checkpoint().configuration.actions).not.toHaveProperty('shiftCooldownMs');

@@ -9,8 +9,8 @@ function intentAt(plan: Plan, seconds: number) {
     const point = plan[step], next = plan[step + 1];
     const weight = next ? (seconds - point.timeSeconds) / (next.timeSeconds - point.timeSeconds) : 0;
     const axes = point.means.map((mean, axis) => {
-        const value = axis < 2 ? Math.max(0, Math.tanh(mean)) : Math.tanh(mean);
-        const nextValue = next ? axis < 2 ? Math.max(0, Math.tanh(next.means[axis])) : Math.tanh(next.means[axis]) : value;
+        const value = Math.tanh(mean);
+        const nextValue = next ? Math.tanh(next.means[axis]) : value;
         return value + (nextValue - value) * weight;
     });
     const shift = point.shiftProbabilities.indexOf(Math.max(...point.shiftProbabilities));

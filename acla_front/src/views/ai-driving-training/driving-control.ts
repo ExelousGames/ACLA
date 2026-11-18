@@ -1,4 +1,4 @@
-import { DrivingAction } from './driving-observation';
+import type { ControllerAction } from './virtual-controller';
 
 export interface PhysicalController {
     id: string;
@@ -17,7 +17,7 @@ export interface ManualMapping {
     shiftDown?: ButtonBinding;
     toggleControl?: ButtonBinding;
 }
-export interface ManualControls { action: DrivingAction; toggleControl: boolean }
+export interface ManualControls { action: ControllerAction; toggleControl: boolean }
 export type ControlSource = 'ai' | 'manual';
 
 /** Detect deliberate movement from rest, ignoring axis jitter and ambiguous inputs. */
@@ -89,7 +89,7 @@ export class DrivingControlSelector {
     source: ControlSource = 'ai';
     private held = { toggleControl: false, shiftUp: false, shiftDown: false };
 
-    select(input: ManualControls | null, allowAI = true): { source: ControlSource; action?: DrivingAction } {
+    select(input: ManualControls | null, allowAI = true): { source: ControlSource; action?: ControllerAction } {
         if (!input) {
             if (this.source === 'manual') throw new Error('Manual controller is unavailable. Controls released.');
             return { source: 'ai' };

@@ -18,9 +18,9 @@ function setup(draw: number | (() => number) = 0.7, learning: Partial<ReturnType
         policy: new DrivingPolicy(observation.context, observation.features.length, typeof draw === 'number' ? () => draw : draw, config) };
 }
 const shifts = { up: true, down: false };
-const action = { throttle: 0.7, brake: 0.1, steering: -0.3, shiftUp: true };
-const explorationFrequencies = (frequency: number) => ({ throttleExplorationUpdateHz: frequency,
-    brakeExplorationUpdateHz: frequency, steeringExplorationUpdateHz: frequency, gearExplorationUpdateHz: frequency });
+const action = { pedal: -0.1, steering: -0.3, shiftUp: true };
+const explorationFrequencies = (frequency: number) => ({ pedalExplorationUpdateHz: frequency,
+    steeringExplorationUpdateHz: frequency, gearExplorationUpdateHz: frequency });
 
 it('requires GPU initialization for every prediction and learning entry point', async () => {
     const { policy, input } = setup();
@@ -63,7 +63,7 @@ it('creates and restores 51 action slots spanning five seconds at 100 ms interva
     const { policy, input } = setup();
     const checkpoint = policy.checkpoint();
     expect(checkpoint.configuration.actions.planTimesSeconds).toEqual(Array.from({ length: 51 }, (_, step) => step / 10));
-    expect(checkpoint.model.outputWeights).toHaveLength(307); // 51 × six action outputs + critic.
+    expect(checkpoint.model.outputWeights).toHaveLength(256); // 51 × five action outputs + value.
     const restored = DrivingPolicy.restore(JSON.parse(JSON.stringify(checkpoint)));
     await restored.initializeGpu();
     const decision = await restored.decideAsync(input, false);
@@ -94,10 +94,7 @@ it.each([0.1, 0.7, 0.95])('decodes GPU outputs, samples controls and preserves e
     expect(decision.plan[0].shift).toBe(0);
     decision.plan.forEach(({ means, latent }) => expect(latent).not.toEqual(means));
     decision.plan.forEach(({ action: result }) => {
-        expect(result.throttle).toBeGreaterThanOrEqual(0);
-        expect(result.throttle).toBeLessThanOrEqual(1);
-        expect(result.brake).toBeGreaterThanOrEqual(0);
-        expect(result.brake).toBeLessThanOrEqual(1);
+        expect(Math.abs(result.pedal)).toBeLessThanOrEqual(1);
         expect(Math.abs(result.steering)).toBeLessThanOrEqual(1);
         expect(result.shiftUp && result.shiftDown).toBe(false);
     });
@@ -106,23 +103,22 @@ it.each([0.1, 0.7, 0.95])('decodes GPU outputs, samples controls and preserves e
     expect(decision.gpu.released).toBe(true);
 });
 
-it.each([[-100, 100], [-0.7, 0.4], [0, 0], [0.4, -0.7], [0.4, 0.7], [100, 100]])(
-    'decodes independent pedal outputs for every plan slot (throttle=%s, brake=%s)', async (throttleLatent, brakeLatent) => {
+it.each([-100, -0.7, 0, 0.4, 100])(
+    'decodes the signed pedal output for every plan slot (latent=%s)', async (pedalLatent) => {
     const { policy, input } = setup();
     await policy.initializeGpu();
     const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
     const prediction = await gpu.forward(input);
-    prediction.outputs = [...policy.planTimes.flatMap(() => [throttleLatent, brakeLatent, Math.atanh(-0.3), 0, 4, -1]), 0.75];
+    prediction.outputs = [...policy.planTimes.flatMap(() => [pedalLatent, Math.atanh(-0.3), 0, 4, -1]), 0.75];
     jest.mocked(gpu.forward).mockResolvedValueOnce(prediction);
     const decision = await policy.decideAsync(input, false);
     expect(decision.value).toBe(0.75);
     for (const { action: result, means, latent } of decision.plan) {
-        expect(result.throttle).toBe(Math.max(0, Math.tanh(throttleLatent)));
-        expect(result.brake).toBe(Math.max(0, Math.tanh(brakeLatent)));
+        expect(result.pedal).toBe(Math.tanh(pedalLatent));
         expect(result.steering).toBeCloseTo(-0.3);
         expect(result.shiftUp).toBe(true);
         expect(result.shiftDown).toBe(false);
-        expect(means).toEqual([throttleLatent, brakeLatent, Math.atanh(-0.3)]);
+        expect(means).toEqual([pedalLatent, Math.atanh(-0.3)]);
         expect(latent).toEqual(means);
     }
     policy.releaseDecision(decision);
@@ -137,38 +133,33 @@ it('explores each control independently while keeping fresh-model movements smal
     await policy.initializeGpu();
     // Keep the exploration test independent of the number of initialized critic weights.
     seed = 42;
-    const throttle: number[] = [], brake: number[] = [], steering: number[] = [], choices = [0, 0, 0];
+    const pedal: number[] = [], steering: number[] = [], choices = [0, 0, 0];
     for (let i = 0; i < 300; i++) {
         const decision = await policy.decideAsync(input, true);
         for (const { action, shift } of decision.plan) {
-            throttle.push(action.throttle);
-            brake.push(action.brake);
+            pedal.push(action.pedal);
             steering.push(action.steering);
             choices[shift]++;
         }
         policy.releaseDecision(decision);
         now += 5100;
     }
-    for (const axis of [throttle, brake, steering]) {
+    for (const axis of [pedal, steering]) {
         const rms = Math.sqrt(axis.reduce((sum, value) => sum + value * value, 0) / axis.length);
         const changes = axis.slice(1).map((value, i) => value - axis[i]);
         const movement = Math.sqrt(changes.reduce((sum, value) => sum + value * value, 0) / changes.length);
-        expect(rms).toBeGreaterThan(axis === steering ? 0.04 : 0.025);
+        expect(rms).toBeGreaterThan(0.04);
         expect(rms).toBeLessThan(0.06);
         expect(movement).toBeLessThan(0.09);
         expect(axis.some((value) => value > 0)).toBe(true);
-        if (axis === steering) expect(axis.some((value) => value < 0)).toBe(true);
-        else expect(axis.some((value) => value === 0)).toBe(true);
-    }
-    for (const [throttleOn, brakeOn] of [[true, false], [false, true], [true, true], [false, false]]) {
-        expect(throttle.some((value, i) => (value > 0) === throttleOn && (brake[i] > 0) === brakeOn)).toBe(true);
+        expect(axis.some((value) => value < 0)).toBe(true);
     }
     const average = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
-    const throttleMean = average(throttle), brakeMean = average(brake);
-    const covariance = average(throttle.map((value, i) => (value - throttleMean) * (brake[i] - brakeMean)));
+    const pedalMean = average(pedal), steeringMean = average(steering);
+    const covariance = average(pedal.map((value, i) => (value - pedalMean) * (steering[i] - steeringMean)));
     const variance = (values: number[], mean: number) => average(values.map((value) => (value - mean) ** 2));
-    expect(Math.abs(covariance / Math.sqrt(variance(throttle, throttleMean) * variance(brake, brakeMean)))).toBeLessThan(0.05);
-    expect((choices[1] + choices[2]) / throttle.length).toBeLessThan(0.05);
+    expect(Math.abs(covariance / Math.sqrt(variance(pedal, pedalMean) * variance(steering, steeringMean)))).toBeLessThan(0.05);
+    expect((choices[1] + choices[2]) / pedal.length).toBeLessThan(0.05);
     expect(choices[1]).toBeGreaterThan(0);
     expect(choices[2]).toBeGreaterThan(0);
     policy.dispose();
@@ -192,7 +183,7 @@ it.each([0.1, 2.5, 10])('shares smooth exploration at %s Hz across overlapping p
     policy.dispose();
 });
 
-it.each(['throttleExplorationUpdateHz', 'brakeExplorationUpdateHz', 'steeringExplorationUpdateHz', 'gearExplorationUpdateHz'] as const)
+it.each(['pedalExplorationUpdateHz', 'steeringExplorationUpdateHz', 'gearExplorationUpdateHz'] as const)
 ('respects the selected control refresh frequency: %s', async (key) => {
     jest.spyOn(Date, 'now').mockReturnValue(1000);
     const baseline = setup(0.98, explorationFrequencies(0.1));
@@ -201,7 +192,7 @@ it.each(['throttleExplorationUpdateHz', 'brakeExplorationUpdateHz', 'steeringExp
     await adjusted.policy.initializeGpu();
     const first = await baseline.policy.decideAsync(baseline.input, true);
     const changed = await adjusted.policy.decideAsync(adjusted.input, true);
-    const changedControl = ['throttleExplorationUpdateHz', 'brakeExplorationUpdateHz', 'steeringExplorationUpdateHz', 'gearExplorationUpdateHz'].indexOf(key);
+    const changedControl = ['pedalExplorationUpdateHz', 'steeringExplorationUpdateHz', 'gearExplorationUpdateHz'].indexOf(key);
     changed.plan[2].latent.forEach((value, axis) => {
         if (axis === changedControl) expect(value).not.toBe(first.plan[2].latent[axis]);
         else expect(value).toBe(first.plan[2].latent[axis]);
@@ -219,14 +210,14 @@ it('updates predictions and shift availability while retaining the current explo
     expect(first.plan[0].shift).toBe(1);
     const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
     const outputs = seed.model.outputWeights.map((row) => row[policy.configuration.network.hiddenUnits]);
-    outputs.splice(0, 3, 0.4, 0.2, -0.3);
+    outputs.splice(0, 2, 0.4, -0.3);
     jest.mocked(gpu.forward).mockResolvedValueOnce({ pass: { released: false } as any, outputs, logStds: seed.model.sac.logStds });
     clock.mockReturnValue(1100);
     const next = await policy.decideAsync(input, true, { up: false, down: false });
-    expect(next.plan[0].means).toEqual([0.4, 0.2, -0.3]);
+    expect(next.plan[0].means).toEqual([0.4, -0.3]);
     next.plan[0].latent.forEach((value, axis) => expect(value - next.plan[0].means[axis])
         .toBeCloseTo(first.plan[1].latent[axis] - first.plan[1].means[axis], 10));
-    expect(next.plan[0].action.throttle).not.toBe(first.plan[0].action.throttle);
+    expect(next.plan[0].action.pedal).not.toBe(first.plan[0].action.pedal);
     expect(next.plan[0].shift).toBe(0);
     expect(next.plan[0].shiftProbabilities).toEqual([1, 0, 0]);
     policy.releaseDecision(first); policy.releaseDecision(next); policy.dispose();
@@ -251,14 +242,14 @@ it('uses no random exploration during evaluation and starts fresh when training 
     policy.dispose();
 });
 
-it.each(['throttleExplorationSigma', 'brakeExplorationSigma', 'steeringExplorationSigma'] as const)
+it.each(['pedalExplorationSigma', 'steeringExplorationSigma'] as const)
 ('changes only the selected control exploration across the action plan: %s', async (key) => {
     const baseline = setup(0.99), adjusted = setup(0.99, { [key]: 0.2 });
     await baseline.policy.initializeGpu();
     await adjusted.policy.initializeGpu();
     const original = await baseline.policy.decideAsync(baseline.input, true);
     const changed = await adjusted.policy.decideAsync(adjusted.input, true);
-    const changedAxis = ['throttleExplorationSigma', 'brakeExplorationSigma', 'steeringExplorationSigma'].indexOf(key);
+    const changedAxis = ['pedalExplorationSigma', 'steeringExplorationSigma'].indexOf(key);
     changed.plan.forEach((step, index) => {
         const before = original.plan[index];
         expect(step.means).toEqual(before.means);
@@ -306,7 +297,7 @@ it('learns the executed control after weights change without using old latents o
     const next = { ...input, features: input.features.map(() => 0) };
     const changed = await policy.decideAsync(next, true);
     expect(changed.plan[0].variances).not.toEqual(original);
-    const executed = { throttle: 0.4, brake: 0.2, steering: -0.1, shiftUp: false, shiftDown: false };
+    const executed = { pedal: -0.2, steering: -0.1, shiftUp: false, shiftDown: false };
     await policy.learnAsync(decision, 1, next, 0.2, [{ step: 0, weight: 1, shift: 0, shifts, action: executed }]);
     expect(gpu.replay).toHaveBeenCalledWith(input);
     expect(gpu.learnTransition).toHaveBeenCalledWith(expect.anything(), next,
@@ -347,7 +338,7 @@ it('trains all available outputs of a demonstrated future together and counts th
     await policy.initializeGpu();
     const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
     const targets = policy.planTimes.map((_, step) => ({ step, action: {
-        throttle: step / 50, brake: 0, steering: -step / 50, shiftUp: step === 3, shiftDown: step === 15,
+        pedal: step / 50, steering: -step / 50, shiftUp: step === 3, shiftDown: step === 15,
     }, shifts: { up: true, down: true } }));
     await policy.learnDemonstratedPlanAsync(input, targets);
     expect(gpu.learnTargets).toHaveBeenCalledTimes(1);
@@ -389,7 +380,7 @@ it('rejects invalid targets and transitions before submitting GPU learning', asy
     for (const step of [-1, 0.5, policy.planTimes.length]) {
         await expect(policy.learnPlannedActionsAsync(input, [{ step, action, shifts }])).rejects.toThrow(/plan step/);
     }
-    for (const invalid of [{ ...action, throttle: NaN }, { ...action, brake: 2 }, { ...action, steering: -2 }, { ...action, shiftDown: true }]) {
+    for (const invalid of [{ ...action, pedal: NaN }, { ...action, pedal: -2 }, { ...action, steering: -2 }, { ...action, shiftDown: true }]) {
         await expect(policy.learnDemonstrationAsync(input, invalid, shifts)).rejects.toThrow(/demonstration/);
     }
     const decision = await policy.decideAsync(input, false);
@@ -524,7 +515,7 @@ it('keeps exploration controls effective on a trained SAC checkpoint without cha
     const checkpoint = policy.checkpoint();
     checkpoint.model.sac.logStds.fill(Math.log(0.1));
     const baseline = DrivingPolicy.restore(checkpoint);
-    checkpoint.configuration.learning.throttleExplorationSigma *= 2;
+    checkpoint.configuration.learning.pedalExplorationSigma *= 2;
     const changed = DrivingPolicy.restore(checkpoint);
     expect(changed.checkpoint().model).toEqual(baseline.checkpoint().model);
     await baseline.initializeGpu(); await changed.initializeGpu();
@@ -543,7 +534,7 @@ it('bounds replay, retains adjacent states and executed actions, and discards ca
     policy.releaseDecision(decision);
     const next = { ...input, features: input.features.map(() => 0.2) };
     const endpoint = { ...input, features: input.features.map(() => 0.9) };
-    const executed = { throttle: 0.3, brake: 0.1, steering: 0.2, shiftUp: false, shiftDown: false };
+    const executed = { pedal: -0.1, steering: 0.2, shiftUp: false, shiftDown: false };
     const interval = (reward: number) => ({ startedAt: 1000, endedAt: 1200, reward, input: next, next: input,
         samples: [{ decision, rewardShare: 1, credits: [{ step: 0, weight: 1, shift: 0 as const, shifts, action: executed }] }] });
     await policy.learnSequenceAsync([interval(1)], endpoint);
@@ -551,10 +542,10 @@ it('bounds replay, retains adjacent states and executed actions, and discards ca
     expect(gpu.learnTransition).toHaveBeenLastCalledWith(expect.anything(), input, expect.objectContaining({
         reward: 1, elapsedSeconds: 0.2, actions: [expect.objectContaining({ action: executed })],
     }));
-    executed.throttle = 0.9;
+    executed.pedal = 0.9;
     await policy.learnSequenceAsync([interval(2)], endpoint);
     const calls = jest.mocked(gpu.learnTransition).mock.calls;
-    expect(calls[calls.length - 2][2].actions[0].action.throttle).toBe(0.3);
+    expect(calls[calls.length - 2][2].actions[0].action.pedal).toBe(-0.1);
     await policy.learnSequenceAsync([interval(3)], endpoint);
     expect(calls.slice(-2).map((call: Parameters<DrivingGpuModel['learnTransition']>) => call[2].reward)).toEqual([2, 3]);
     const before = await policy.checkpointAsync();

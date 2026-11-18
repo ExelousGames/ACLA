@@ -54,7 +54,7 @@ it('changes continuously around refresh boundaries and is smoother than independ
         expect(value).toBe(first[4].axes[axis]);
     });
     const values: number[] = [];
-    for (let i = 0; i < 1000; i++) values.push(sampler.plan(input(), 1600 + i * 20)[0].axes[2]);
+    for (let i = 0; i < 1000; i++) values.push(sampler.plan(input(), 1600 + i * 20)[0].axes[0]);
     const energy = values.reduce((sum, value) => sum + value * value, 0) / values.length;
     const changes = values.slice(1).reduce((sum, value, i) => sum + (value - values[i]) ** 2, 0) / (values.length - 1);
     // Independent centered noise has expected squared change 2 * variance.
@@ -64,9 +64,9 @@ it('changes continuously around refresh boundaries and is smoother than independ
 it.each([0, 0.25, 0.5, 0.75])('retains calibrated marginal variance while blending (phase=%s)', (fraction) => {
     const { config, sampler, input } = setup();
     config.actions.planTimesSeconds = [0];
-    const sums = [0, 0, 0], squares = [0, 0, 0], sigmas = drivingExplorationSigmas(config);
+    const sums = [0, 0], squares = [0, 0], sigmas = drivingExplorationSigmas(config);
     const count = 2000;
-    let expected = [0, 0, 0];
+    let expected = [0, 0];
     for (let i = 0; i < count; i++) {
         sampler.reset();
         sampler.plan(input(), 1000);
@@ -116,6 +116,6 @@ it('retires expired weights instead of accumulating an episode of samples', () =
     const { sampler, input } = setup();
     for (let i = 0; i < 200; i++) sampler.plan(input(), 1000 + i * 100);
     const caches = (sampler as any).samples as Map<number, number[]>[];
-    expect(caches.slice(0, 3).every((cache) => cache.size <= 5)).toBe(true);
-    expect(caches[3].size).toBeLessThanOrEqual(11);
+    expect(caches.slice(0, 2).every((cache) => cache.size <= 5)).toBe(true);
+    expect(caches[2].size).toBeLessThanOrEqual(11);
 });

@@ -1,11 +1,11 @@
 import { DrivingDemonstrationBuffer } from './driving-demonstration-buffer';
 import { cloneConfig } from './driving-model-config';
-import { DrivingAction, DrivingTelemetrySample, NEUTRAL } from './driving-observation';
+import { DrivingTelemetrySample, NEUTRAL } from './driving-observation';
 import type { DrivingPolicyInput } from './driving-memory';
 
 const shifts = { up: true, down: true };
 const input = (id = 1): DrivingPolicyInput => ({ features: [id], cameras: [] });
-const action = (value: number): DrivingAction => ({ throttle: value, brake: 0, steering: -value });
+const action = (value: number) => ({ throttle: value, brake: 0, steering: -value });
 const telemetry = (measuredAt: number): DrivingTelemetrySample => ({ measuredAt, session: 'session',
     context: { game: 'acc', car: 'GT3', map: 'monza' }, normalizedPosition: 0.2, speed: 100,
     localVelocity: [0, 30, 0], gForce: [0, 0, 1], yawRate: 0, gear: 3, rpm: 5000, controls: action(0.3) });
@@ -26,8 +26,24 @@ it('collects all 51 timestamps before exposing one grouped demonstration, indepe
     const sample = buffer.take()!;
     expect(sample.input.features).toEqual([1]);
     expect(sample.targets).toEqual(Array.from({ length: 51 }, (_, step) => ({ step,
-        action: { ...action(step / 50), shiftUp: false, shiftDown: false }, shifts })));
+        action: { pedal: step / 50, steering: -step / 50, shiftUp: false, shiftDown: false }, shifts })));
     expect(buffer.hasReady).toBe(false);
+});
+
+it('labels releasing brake as throttle intent and releasing throttle as brake intent during overlap', () => {
+    const config = cloneConfig();
+    config.actions.planTimesSeconds = [0, 0.1, 0.2, 0.3, 0.4, 0.5];
+    const buffer = new DrivingDemonstrationBuffer(config);
+    buffer.addObservation(input(), 1000);
+    [[0, 0], [0, 0.9], [0.2, 0.7], [0.2, 0.7], [0.8, 0.1], [0.7, 0.2]]
+        .forEach(([throttle, brake], i) => buffer.recordAction({ throttle, brake, steering: 0 }, shifts, 1000 + i * 100));
+    buffer.finish();
+    expect(buffer.take()!.targets.map(({ action }) => action.pedal)).toEqual([0, -0.9, 0.2, 0.2, 0.8, -0.2]);
+
+    buffer.addObservation(input(), 1600);
+    buffer.recordAction({ throttle: 0.6, brake: 0.1, steering: 0 }, shifts, 1600);
+    buffer.finish();
+    expect(buffer.take()!.targets[0].action.pedal).toBe(0.6);
 });
 
 it('retains overlapping origins until consumed and supplies only targets within timestamp tolerance', () => {
@@ -44,8 +60,8 @@ it('retains overlapping origins until consumed and supplies only targets within 
     buffer.advance(1450);
     expect(buffer.queuedSamples).toBe(2);
     const first = buffer.take()!, second = buffer.take()!;
-    expect(first.targets.map(({ step, action: value }) => [step, value.throttle])).toEqual([[0, 0.1], [1, 0.3], [3, 0.5]]);
-    expect(second.targets.map(({ step, action: value }) => [step, value.throttle])).toEqual([[0, 0.3], [2, 0.5]]);
+    expect(first.targets.map(({ step, action: value }) => [step, value.pedal])).toEqual([[0, 0.1], [1, 0.3], [3, 0.5]]);
+    expect(second.targets.map(({ step, action: value }) => [step, value.pedal])).toEqual([[0, 0.3], [2, 0.5]]);
 });
 
 it('keeps distinct short paddle presses, assigns midpoint edges once, and never labels held pulses', () => {
@@ -71,7 +87,7 @@ it('masks only shift supervision when multiple presses cannot fit one categorica
     buffer.recordAction({ ...action(0.6), shiftDown: true }, shifts, 1120);
     buffer.advance(1150);
     expect(buffer.take()!.targets[1]).toEqual({ step: 1,
-        action: { ...action(0.4), shiftUp: false, shiftDown: false }, shifts: { up: false, down: false } });
+        action: { pedal: 0.4, steering: -0.4, shiftUp: false, shiftDown: false }, shifts: { up: false, down: false } });
 });
 
 it('records telemetry and controls while waiting for a delayed camera, without duplicating telemetry timestamps', () => {

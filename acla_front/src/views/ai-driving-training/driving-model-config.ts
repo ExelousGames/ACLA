@@ -5,16 +5,21 @@ export type DrivingModelConfig = typeof defaults;
 export const DEFAULT_DRIVING_CONFIG: DrivingModelConfig = defaults;
 export const cloneConfig = (config = DEFAULT_DRIVING_CONFIG): DrivingModelConfig => JSON.parse(JSON.stringify(config));
 
-/** Match the throttle, brake and steering output order. */
-export const drivingExplorationSigmas = (config: DrivingModelConfig): [number, number, number] =>
-    [config.learning.throttleExplorationSigma, config.learning.brakeExplorationSigma, config.learning.steeringExplorationSigma];
+export const DRIVING_ANALOG_AXES = 2;
 
-/** Match the throttle, brake, steering and categorical gear sampling order. */
-export const drivingExplorationFrequencies = (config: DrivingModelConfig): [number, number, number, number] =>
-    [config.learning.throttleExplorationUpdateHz, config.learning.brakeExplorationUpdateHz,
-        config.learning.steeringExplorationUpdateHz, config.learning.gearExplorationUpdateHz];
+/** Match the signed pedal and steering output order. */
+export const drivingExplorationSigmas = (config: DrivingModelConfig): [number, number] =>
+    [config.learning.pedalExplorationSigma, config.learning.steeringExplorationSigma];
+
+/** Match the signed pedal, steering and categorical gear sampling order. */
+export const drivingExplorationFrequencies = (config: DrivingModelConfig): [number, number, number] =>
+    [config.learning.pedalExplorationUpdateHz, config.learning.steeringExplorationUpdateHz, config.learning.gearExplorationUpdateHz];
 
 export function readDrivingConfig(value: unknown): DrivingModelConfig {
+    const outputs = (value as Partial<DrivingModelConfig> | null)?.actions?.outputs;
+    if (Array.isArray(outputs) && outputs.includes('throttle-tanh')) {
+        throw new Error('This checkpoint uses separate throttle and brake outputs. Create a new model file to train the signed pedal policy.');
+    }
     // Speed and pedal rewards changed without changing the SAC model's input or weight layout.
     const reward = (value as { reward?: Record<string, unknown> } | null)?.reward;
     if (reward && typeof reward === 'object' && !('throttleChangeWeight' in reward) && !('brakeChangeWeight' in reward)) {

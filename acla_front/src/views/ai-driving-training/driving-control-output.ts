@@ -1,11 +1,11 @@
-import { DrivingAction, NEUTRAL } from './driving-observation';
+import { NEUTRAL } from './driving-observation';
 import type { ControlSource } from './driving-control';
-import type { VirtualController } from './virtual-controller';
+import type { ControllerAction, VirtualController } from './virtual-controller';
 
 export type OutputOwner = ControlSource | 'test';
 export interface ControlLease {
     /** False means ownership was revoked before the command was acknowledged. */
-    apply(action: DrivingAction): Promise<boolean>;
+    apply(action: ControllerAction): Promise<boolean>;
 }
 
 /** The only vJoy writer. Each handoff revokes the previous driver's lease. */

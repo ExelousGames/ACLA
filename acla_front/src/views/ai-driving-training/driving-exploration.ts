@@ -1,5 +1,5 @@
 import { DrivingPolicyInput, drivingMemoryInputs } from './driving-memory';
-import { DrivingModelConfig, drivingExplorationFrequencies, drivingExplorationSigmas, drivingFeatureSizes } from './driving-model-config';
+import { DRIVING_ANALOG_AXES, DrivingModelConfig, drivingExplorationFrequencies, drivingExplorationSigmas, drivingFeatureSizes } from './driving-model-config';
 
 /** Fixed observation features keep exploration independent of actor weight updates.
  * Balance feature groups so the dense centerline cannot drown out car dynamics.
@@ -18,14 +18,14 @@ function explorationFeatures(input: DrivingPolicyInput, config: DrivingModelConf
 }
 
 /** gSDE-inspired feature-to-action weights with fixed configured scales.
- * Independent Gaussian columns preserve the pedals' full action space. Columns
+ * Signed pedal and steering each have their own Gaussian column. The columns
  * share driving features and persist across overlapping plans. Smoothly rotating
  * between independent columns preserves their marginal Gaussian variance.
  * https://proceedings.mlr.press/v164/raffin22a.html */
 export class DrivingExploration {
     private startedAt?: number;
     private updatedAt = -Infinity;
-    private samples = Array.from({ length: 4 }, () => new Map<number, number[]>());
+    private samples = Array.from({ length: DRIVING_ANALOG_AXES + 1 }, () => new Map<number, number[]>());
 
     constructor(private config: DrivingModelConfig, private random: () => number) {}
 
@@ -50,7 +50,7 @@ export class DrivingExploration {
         });
         return this.config.actions.planTimesSeconds.map((seconds) => {
             const times = intervals.map((interval) => (elapsed + seconds * 1000) / interval);
-            const axes = times.slice(0, 3).map((time, axis) => {
+            const axes = times.slice(0, DRIVING_ANALOG_AXES).map((time, axis) => {
                 // Snap rounding error at shared plan boundaries, not elapsed time.
                 const nearest = Math.round(time);
                 if (Math.abs(time - nearest) < 1e-9) time = nearest;
@@ -62,7 +62,7 @@ export class DrivingExploration {
                 return features.reduce((sum, feature, i) => sum
                     + feature * (a * left[i] + b * right[i]), 0);
             });
-            const shift = this.sample(3, Math.floor(times[3] + 1e-9), 1)[0];
+            const shift = this.sample(DRIVING_ANALOG_AXES, Math.floor(times[DRIVING_ANALOG_AXES] + 1e-9), 1)[0];
             return { axes, variances: [...variances], shift };
         });
     }
@@ -70,7 +70,7 @@ export class DrivingExploration {
     private sample(axis: number, bucket: number, size: number): number[] {
         let sample = this.samples[axis].get(bucket);
         if (!sample) {
-            sample = Array.from({ length: size }, () => axis === 3 ? this.random()
+            sample = Array.from({ length: size }, () => axis === DRIVING_ANALOG_AXES ? this.random()
                 : Math.sqrt(-2 * Math.log(Math.max(1e-9, this.random()))) * Math.cos(2 * Math.PI * this.random()));
             this.samples[axis].set(bucket, sample);
         }

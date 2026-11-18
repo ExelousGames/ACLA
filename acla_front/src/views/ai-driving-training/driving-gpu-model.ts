@@ -1,10 +1,10 @@
 import type { PolicyCameraImage } from 'views/live-session/track-vision/policy-camera';
 import type { DrivingPolicyInput } from './driving-memory';
-import { DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingMemorySlots, drivingPolicyInputs } from './driving-model-config';
+import { DRIVING_ANALOG_AXES, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingMemorySlots, drivingPolicyInputs } from './driving-model-config';
 import { drivingLstmShaders } from './driving-lstm-shaders';
 import { drivingCameraShaders } from './driving-camera-shaders';
 import { drivingLearningShaders } from './driving-learning-shaders';
-import { drivingSacShaders } from './driving-sac-shaders';
+import { drivingSacShaders, sacPolicySampleFloats } from './driving-sac-shaders';
 import { drivingNormalizationShaders } from './driving-normalization-shaders';
 import { drivingUpdateShaders } from './driving-update-shaders';
 import type { PlannedActionTarget, PolicyModelState, PolicyWeights, ShiftAvailability } from './driving-policy';
@@ -352,9 +352,10 @@ export class DrivingGpuModel {
     }
 
     learnTargets(input: DrivingPolicyInput, targets: PlannedActionTarget[]) {
-        const values = new Array(this.config.actions.planTimesSeconds.length * 7).fill(0);
+        const stride = DRIVING_ANALOG_AXES + 4;
+        const values = new Array(this.config.actions.planTimesSeconds.length * stride).fill(0);
         for (const { step, action, shifts } of targets) {
-            values.splice(step * 7, 7, 1, action.throttle, action.brake, action.steering,
+            values.splice(step * stride, stride, 1, action.pedal, action.steering,
                 action.shiftUp ? 1 : action.shiftDown ? 2 : 0, Number(shifts.up), Number(shifts.down));
         }
         const pass = this.forwardPass(input);
@@ -395,8 +396,8 @@ export class DrivingGpuModel {
                 const data = new Float32Array([target.reward, target.elapsedSeconds, Number(target.terminal), 0,
                     weight, shiftWeight, (analogWeight ? weight : shiftWeight) / weightSum,
                     Number(samplingShifts.up), Number(samplingShifts.down), Number(target.nextShifts.up), Number(target.nextShifts.down),
-                    action.throttle, action.brake, action.steering, action.shiftUp ? 1 : action.shiftDown ? 2 : 0,
-                    normal(), normal(), normal(), normal(), normal(), normal()]);
+                    action.pedal, action.steering, action.shiftUp ? 1 : action.shiftDown ? 2 : 0,
+                    ...Array.from({ length: 2 * DRIVING_ANALOG_AXES }, normal)]);
                 const values = this.scratch(this.training, `sacTransition${index}`, data.byteLength);
                 this.device.queue.writeBuffer(values, 0, data);
                 return values;
@@ -407,13 +408,13 @@ export class DrivingGpuModel {
                 commands.copyBufferToBuffer(pass.states, pass.steps * 6 * this.hidden * 4, features, 0, this.hidden * 4);
                 const endpoint = nextTarget ?? pass;
                 commands.copyBufferToBuffer(endpoint.states, endpoint.steps * 6 * this.hidden * 4, features, this.hidden * 4, this.hidden * 4);
-                const samples = buffer('sacSamples', 26 * 4), activations = buffer('sacActivations', 14 * this.hidden * 4);
+                const samples = buffer('sacSamples', 2 * sacPolicySampleFloats * 4), activations = buffer('sacActivations', 14 * this.hidden * 4);
                 const values = buffer('sacValues', 14 * 4), errors = buffer('sacErrors', 2 * 4);
                 for (const transition of transitions) {
                     this.dispatch(commands, 'sacSample', [pass.outputs, nextPolicy?.outputs ?? pass.outputs, this.logStds, transition, samples], 2);
                     this.dispatch(commands, 'sacCriticForward', [this.criticWeights, this.targetCriticWeights, features, transition, samples, activations, values], 14);
                     this.dispatch(commands, 'sacLoss', [transition, samples, values, errors, outputGradient,
-                        buffer('logStdGradient', this.logStds.size)], 1);
+                        buffer('logStdGradient', this.logStds.size), this.criticWeights, activations], 1);
                     this.dispatch(commands, 'sacCriticWeightGradient', [this.criticWeights, features, transition, samples, activations, errors,
                         buffer('criticGradient', this.criticWeights.size)], Math.ceil(this.criticWeights.size / (4 * 64)));
                     this.dispatch(commands, 'sacCriticHiddenGradient', [this.criticWeights, activations, errors, criticHidden], Math.ceil(this.hidden / 64));

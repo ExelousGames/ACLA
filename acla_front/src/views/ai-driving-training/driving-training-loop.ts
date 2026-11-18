@@ -1,4 +1,4 @@
-import { DrivingAction, DrivingObservation, DrivingReward, DrivingTelemetrySample, drivingReward,
+import { DrivingAction, drivingControllerAction, DrivingObservation, DrivingReward, DrivingTelemetrySample, drivingReward,
     NEUTRAL, ObservationResult, PEDAL_CHANGE_REFERENCE_MS } from './driving-observation';
 import { DrivingPolicy, PlannedAction, PlanStepCredit, PolicyDecision } from './driving-policy';
 import { ControlSource, DrivingControlSelector, ManualControls } from './driving-control';
@@ -8,14 +8,16 @@ import { DrivingDemonstrationBuffer } from './driving-demonstration-buffer';
 import { DrivingConsequenceBatch, DrivingConsequenceBuffer } from './driving-consequence-buffer';
 import { DrivingModelTimer } from './driving-model-timing';
 import { drivingPlansAgree } from './driving-plan-agreement';
+import type { ControllerAction } from './virtual-controller';
 import type { DrivingImpact } from './driving-impact';
+import { DrivingBlockedMotionMonitor } from './driving-blocked-motion';
 
 import { DEFAULT_DRIVING_CONFIG, drivingMemorySlots } from './driving-model-config';
 
 export interface TrainingState {
     mode: 'idle' | 'manual' | 'training' | 'evaluation';
     status: string;
-    action: DrivingAction;
+    action: ControllerAction;
     plan: PlannedAction[] | null;
     source: ControlSource | null;
     steps: number;
@@ -37,7 +39,7 @@ interface ExecutedPlan {
     startedAt: number;
     endedAt?: number;
     executions: (Omit<PlanStepCredit, 'weight'> & { appliedAt: number; action: DrivingAction; nextWeight: number;
-        steeringChangeSquared: number; pedalChanges: Pick<DrivingAction, 'throttle' | 'brake'> })[];
+        steeringChangeSquared: number; pedalChanges: Pick<ControllerAction, 'throttle' | 'brake'> })[];
 }
 
 export class DrivingTrainingLoop {
@@ -71,6 +73,7 @@ export class DrivingTrainingLoop {
     private demonstrations = new DrivingDemonstrationBuffer();
     private modelTiming?: DrivingModelTimer;
     private lastTelemetry?: DrivingTelemetrySample;
+    private blockedMotion = new DrivingBlockedMotionMonitor();
 
     constructor(private output: DrivingControlOutput, private read: () => ObservationResult,
         private publish: (state: TrainingState) => void, private now = Date.now,
@@ -81,8 +84,9 @@ export class DrivingTrainingLoop {
 
     /** The telemetry subscription runs independently of controller and GPU work. */
     recordTelemetry(sample: DrivingTelemetrySample) {
+        if (this.state.mode === 'idle' || sample.session !== this.boundary?.session) return;
+        this.blockedMotion.observe(sample);
         if (this.state.mode !== 'training' || this.state.source !== 'manual') return;
-        if (sample.session !== this.boundary?.session) return;
         const previous = this.lastTelemetry;
         if (previous && (sample.measuredAt < previous.measuredAt
             || (sample.sampleIndex !== undefined && previous.sampleIndex !== undefined && sample.sampleIndex <= previous.sampleIndex))) return;
@@ -204,6 +208,7 @@ export class DrivingTrainingLoop {
     private discardPrevious() {
         this.policy?.resetExploration();
         this.discardPlans();
+        this.blockedMotion.reset();
         this.previous = undefined;
         this.lastInferenceFrame = -Infinity;
     }
@@ -412,6 +417,12 @@ export class DrivingTrainingLoop {
         } finally { this.controlBusy = false; this.planWrite = undefined; }
     }
 
+    private scoreReward(previous: DrivingObservation, current: DrivingObservation,
+        controlChanges?: Pick<ControllerAction, 'steering' | 'throttle' | 'brake'>) {
+        return drivingReward(previous, current, this.config, this.readImpact?.(previous, current), controlChanges,
+            this.blockedMotion.penaltyBetween(previous.measuredAt, current.measuredAt));
+    }
+
     private collectDemonstration(observation: DrivingObservation) {
         const previous = this.previous;
         const input = this.memory.encode(observation);
@@ -421,7 +432,7 @@ export class DrivingTrainingLoop {
         const elapsed = previous ? observation.capturedAt - previous.observation.capturedAt : 0;
         const reward = previous && elapsed > 0 && elapsed <= this.config.runtime.maxTransitionSeconds * 1000
             && observation.measuredAt > previous.observation.measuredAt
-            ? drivingReward(previous.observation, observation, this.config, this.readImpact?.(previous.observation, observation)) : null;
+            ? this.scoreReward(previous.observation, observation) : null;
         this.state = { ...this.state, reward, episodeReward: this.state.episodeReward + (reward?.total ?? 0) };
         this.publish(this.state);
     }
@@ -469,8 +480,7 @@ export class DrivingTrainingLoop {
         const selected = plan.decision.plan[step];
         const next = plan.decision.plan[step + 1];
         const nextWeight = next ? (elapsed - selected.timeSeconds) / (next.timeSeconds - selected.timeSeconds) : 0;
-        const throttle = next ? selected.action.throttle + (next.action.throttle - selected.action.throttle) * nextWeight : selected.action.throttle;
-        const brake = next ? selected.action.brake + (next.action.brake - selected.action.brake) * nextWeight : selected.action.brake;
+        const pedal = next ? selected.action.pedal + (next.action.pedal - selected.action.pedal) * nextWeight : selected.action.pedal;
         const steering = next ? selected.action.steering + (next.action.steering - selected.action.steering) * nextWeight : selected.action.steering;
         // Keep the original categorical choice/mask for credit, but never pulse it twice.
         const shifts = sameStep ? previous.shifts : selected.shifts;
@@ -479,7 +489,7 @@ export class DrivingTrainingLoop {
             if (!await this.releasePaddles(lease) || plan !== this.activePlan) return false;
         }
         const action = { ...selected.action,
-            throttle, brake, steering,
+            pedal, steering,
             shiftUp: Boolean(this.state.action.shiftUp || (!sameStep && shift === 1)),
             shiftDown: Boolean(this.state.action.shiftDown || (!sameStep && shift === 2)) };
         // A replacement plan can jump from the outgoing command. Within a plan,
@@ -487,22 +497,24 @@ export class DrivingTrainingLoop {
         const steeringChangeSquared = !previous && this.plans.length ? (action.steering - this.state.action.steering) ** 2 : 0;
         const outgoing = this.plans[this.plans.length - 1];
         const previousCommand = previous ?? outgoing?.executions[outgoing.executions.length - 1];
-        if (!await lease.apply(action) || plan !== this.activePlan) return false;
+        const controls = drivingControllerAction(action);
+        if (!await lease.apply(controls) || plan !== this.activePlan) return false;
         const appliedAt = this.now();
         // Use acknowledged commands so an unused plan point never incurs pedal cost.
         // One millisecond is the clock resolution for commands acknowledged in the same tick.
         const pedalChanges = { throttle: 0, brake: 0 };
         if (previousCommand) {
             const scale = PEDAL_CHANGE_REFERENCE_MS / Math.max(1, appliedAt - previousCommand.appliedAt);
-            pedalChanges.throttle = (action.throttle - previousCommand.action.throttle) ** 2 * scale;
-            pedalChanges.brake = (action.brake - previousCommand.action.brake) ** 2 * scale;
+            const previousControls = drivingControllerAction(previousCommand.action);
+            pedalChanges.throttle = (controls.throttle - previousControls.throttle) ** 2 * scale;
+            pedalChanges.brake = (controls.brake - previousControls.brake) ** 2 * scale;
         }
         if (!plan.executions.length) plan.startedAt = appliedAt;
         plan.executions.push({ step, appliedAt, shift, shifts, action: { ...action }, nextWeight, steeringChangeSquared, pedalChanges });
         if (!sameStep && shift) {
             this.shiftReleaseAt = appliedAt + this.config.actions.shiftPulseMs;
         }
-        this.state = { ...this.state, action };
+        this.state = { ...this.state, action: controls };
         this.publish(this.state);
         return true;
     }
@@ -645,8 +657,7 @@ export class DrivingTrainingLoop {
             steering: sum.steering + steeringChangeSquared, throttle: sum.throttle + pedalChanges.throttle,
             brake: sum.brake + pedalChanges.brake,
         }), { steering: 0, throttle: 0, brake: 0 });
-        const reward = drivingReward(previous.observation, observation, this.config,
-            this.readImpact?.(previous.observation, observation), controlChanges);
+        const reward = this.scoreReward(previous.observation, observation, controlChanges);
         if (samples.length) this.consequences.add({
             startedAt: previous.observation.measuredAt, endedAt: observation.measuredAt, reward: reward.total,
             input: previous.input, next: input, nextShifts: { up: true, down: true }, terminal: false,

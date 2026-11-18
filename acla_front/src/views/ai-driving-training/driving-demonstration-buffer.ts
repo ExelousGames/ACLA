@@ -1,7 +1,8 @@
-import type { DrivingAction, DrivingTelemetrySample } from './driving-observation';
+import { DrivingAction, DrivingPedalIntent, DrivingTelemetrySample } from './driving-observation';
 import type { DrivingPolicyInput } from './driving-memory';
 import type { PlannedActionTarget, ShiftAvailability } from './driving-policy';
 import { DEFAULT_DRIVING_CONFIG } from './driving-model-config';
+import type { ControllerAction } from './virtual-controller';
 
 export interface DrivingDemonstrationSample {
     input: DrivingPolicyInput;
@@ -18,6 +19,7 @@ type Origin = Pick<DrivingDemonstrationSample, 'input' | 'capturedAt'>;
  * collection running. Camera pixels are shared immutable copies from DrivingMemory. */
 export class DrivingDemonstrationBuffer {
     private actions: RecordedAction[] = [];
+    private pedals = new DrivingPedalIntent();
     private telemetry: DrivingTelemetrySample[] = [];
     private pending: Origin[] = [];
     private ready: DrivingDemonstrationSample[] = [];
@@ -30,6 +32,7 @@ export class DrivingDemonstrationBuffer {
 
     reset() {
         this.actions = [];
+        this.pedals.reset();
         this.telemetry = [];
         this.pending = [];
         this.ready = [];
@@ -37,8 +40,10 @@ export class DrivingDemonstrationBuffer {
     }
 
     /** Shift flags are fresh paddle edges, never the controller's held pulse. */
-    recordAction(action: DrivingAction, shifts: ShiftAvailability, appliedAt: number) {
-        this.actions.push({ action: { ...action }, shifts: { ...shifts }, appliedAt });
+    recordAction(controls: ControllerAction, shifts: ShiftAvailability, appliedAt: number) {
+        const previous = this.actions[this.actions.length - 1];
+        if (previous && appliedAt - previous.appliedAt > this.config.runtime.maxTransitionSeconds * 1000) this.pedals.reset();
+        this.actions.push({ action: this.pedals.action(controls), shifts: { ...shifts }, appliedAt });
         if (this.actions.length > 10000) this.actions.shift();
     }
 
@@ -88,6 +93,7 @@ export class DrivingDemonstrationBuffer {
         for (const origin of this.pending) this.complete(origin);
         this.pending = [];
         this.actions = [];
+        this.pedals.reset();
         this.telemetry = [];
     }
 

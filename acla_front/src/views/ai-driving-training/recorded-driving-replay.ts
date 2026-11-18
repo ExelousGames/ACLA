@@ -1,12 +1,12 @@
 import { DrivingMemory, DrivingPolicyInput } from './driving-memory';
-import { DrivingObservation, ObservationResult } from './driving-observation';
+import { DrivingAction, DrivingObservation, DrivingPedalIntent, ObservationResult } from './driving-observation';
 import { DrivingPlanTraining } from './driving-plan-training';
 import { DrivingPolicy } from './driving-policy';
 
 export interface RecordedReplayProgress {
     samples: number;
     skipped: number;
-    /** Mean absolute error across the independent throttle and brake axes. */
+    /** Mean absolute error of the signed pedal command (0–2). */
     pedalError: number;
     steeringError: number;
     lastError?: string;
@@ -17,7 +17,8 @@ export class RecordedDrivingReplay {
     readonly progress: RecordedReplayProgress = { samples: 0, skipped: 0, pedalError: 0, steeringError: 0 };
     private memory: DrivingMemory;
     private plans = new DrivingPlanTraining();
-    private previous?: { observation: DrivingObservation; input: DrivingPolicyInput };
+    private pedals = new DrivingPedalIntent();
+    private previous?: { observation: DrivingObservation; input: DrivingPolicyInput; action: DrivingAction };
 
     constructor(private policy: DrivingPolicy, private train: boolean) {
         this.memory = new DrivingMemory(policy.configuration);
@@ -26,6 +27,7 @@ export class RecordedDrivingReplay {
     private reset() {
         this.memory.reset();
         this.plans.reset();
+        this.pedals.reset();
         this.previous = undefined;
     }
 
@@ -51,7 +53,7 @@ export class RecordedDrivingReplay {
         }
         const input = this.memory.encode(observation);
         const pending = this.previous;
-        this.previous = { observation, input };
+        this.previous = { observation, input, action: this.pedals.action(observation.controls) };
         if (!pending) return;
 
         // Telemetry records held axes, not paddle presses. A single subsequent gear
@@ -59,7 +61,7 @@ export class RecordedDrivingReplay {
         const gearDelta = observation.gear - pending.observation.gear;
         const knownShift = Number.isInteger(gearDelta) && Math.abs(gearDelta) <= 1;
         const shifts = { up: knownShift, down: knownShift };
-        const action = { ...pending.observation.controls, shiftUp: knownShift && gearDelta === 1,
+        const action = { ...pending.action, shiftUp: knownShift && gearDelta === 1,
             shiftDown: knownShift && gearDelta === -1 };
         if (this.train) {
             await this.policy.trainBatchAsync(async () => {
@@ -74,7 +76,7 @@ export class RecordedDrivingReplay {
                 if (!active()) return;
                 const predicted = decision.plan[0].action;
                 const count = this.progress.samples + 1;
-                const pedalError = (Math.abs(predicted.throttle - action.throttle) + Math.abs(predicted.brake - action.brake)) / 2;
+                const pedalError = Math.abs(predicted.pedal - action.pedal);
                 this.progress.pedalError += (pedalError - this.progress.pedalError) / count;
                 this.progress.steeringError += (Math.abs(predicted.steering - action.steering) - this.progress.steeringError) / count;
             } finally { this.policy.releaseDecision(decision); }

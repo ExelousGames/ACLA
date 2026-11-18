@@ -18,7 +18,7 @@ function setup(train = true) {
         learnDemonstrationAsync: jest.fn(async (_input: DrivingPolicyInput, _action: unknown, _shifts: unknown) => undefined),
         learnPlannedActionsAsync: jest.fn(async (_input: DrivingPolicyInput, _targets: unknown) => undefined),
         decideAsync: jest.fn(async (_input: DrivingPolicyInput, _explore: boolean, _shifts: unknown) => ({
-            plan: [{ action: { throttle: 0.5, brake: 0, steering: 0.2 } }],
+            plan: [{ action: { pedal: 0.5, steering: 0.2 } }],
         } as PolicyDecision)),
         releaseDecision: jest.fn(),
     };
@@ -45,10 +45,29 @@ it('learns from earlier held controls with real image history and later action t
     expect(firstInput.cameras.slice(0, 3)).toEqual([null, null, null]);
     expect(secondInput.cameras[0]).toEqual(first.camera);
     expect(secondInput.cameras[0]).not.toBe(first.camera);
-    expect(fake.learnDemonstrationAsync.mock.calls[0][1]).toEqual({ ...first.controls, shiftUp: false, shiftDown: false });
+    expect(fake.learnDemonstrationAsync.mock.calls[0][1]).toEqual({ pedal: first.controls.throttle, steering: first.controls.steering, shiftUp: false, shiftDown: false });
     expect(fake.learnPlannedActionsAsync).toHaveBeenCalledWith(firstInput, [{ step: 1,
-        action: { ...second.controls, shiftUp: false, shiftDown: false }, shifts: { up: true, down: true } }]);
+        action: { pedal: -0.6, steering: -0.4, shiftUp: false, shiftDown: false }, shifts: { up: true, down: true } }]);
     expect(replay.progress.samples).toBe(2);
+});
+
+it('labels immediate and future targets from pedal motion at each recorded frame', async () => {
+    const { fake, replay, frame } = setup();
+    const pedals = [[0, 0.9], [0.2, 0.7], [0.2, 0.7], [0.8, 0.1], [0.7, 0.2], [0.7, 0.2]];
+    for (let i = 0; i < pedals.length; i++) {
+        const [throttle, brake] = pedals[i];
+        await replay.consume({ observation: frame(1000 + i * 100, { controls: { throttle, brake, steering: 0 } }) });
+    }
+    expect(fake.learnDemonstrationAsync.mock.calls.map(([, action]) => action)).toEqual(
+        [-0.9, 0.2, 0.2, 0.8, -0.2].map((pedal) => expect.objectContaining({ pedal })));
+    expect(fake.learnPlannedActionsAsync).toHaveBeenCalledWith(fake.learnDemonstrationAsync.mock.calls[3][0], [
+        expect.objectContaining({ step: 1, action: expect.objectContaining({ pedal: -0.2 }) }),
+    ]);
+
+    await replay.consume({ error: 'Missing recorded frame.' });
+    await replay.consume({ observation: frame(2000, { controls: { throttle: 0.6, brake: 0.1, steering: 0 } }) });
+    await replay.consume({ observation: frame(2100) });
+    expect(fake.learnDemonstrationAsync.mock.calls[5][1]).toMatchObject({ pedal: 0.6 });
 });
 
 it('labels each consecutive gear transition and masks ambiguous multi-gear jumps', async () => {
@@ -104,7 +123,7 @@ it('evaluates fixed weights with running mean absolute action errors and release
     await replay.consume({ observation: frame(1100, { controls: { throttle: 0, brake: 0.5, steering: -0.4 } }) });
     await replay.consume({ observation: frame(1200) });
     expect(replay.progress.samples).toBe(2);
-    expect(replay.progress.pedalError).toBeCloseTo(0.3);
+    expect(replay.progress.pedalError).toBeCloseTo(0.6);
     expect(replay.progress.steeringError).toBeCloseTo(0.4);
     expect(fake.decideAsync.mock.calls.map(([, explore]) => explore)).toEqual([false, false]);
     expect(fake.releaseDecision).toHaveBeenCalledTimes(2);
@@ -113,12 +132,12 @@ it('evaluates fixed weights with running mean absolute action errors and release
     expect(fake.learnPlannedActionsAsync).not.toHaveBeenCalled();
 });
 
-it('counts throttle and brake errors even when their signed difference matches', async () => {
+it('measures the full distance between opposite signed commands', async () => {
     const { fake, replay, frame } = setup(false);
-    fake.decideAsync.mockResolvedValueOnce({ plan: [{ action: { throttle: 0.8, brake: 0.3, steering: 0 } }] } as PolicyDecision);
+    fake.decideAsync.mockResolvedValueOnce({ plan: [{ action: { pedal: -0.8, steering: 0 } }] } as PolicyDecision);
     await replay.consume({ observation: frame(1000, { controls: { throttle: 0.5, brake: 0, steering: 0 } }) });
     await replay.consume({ observation: frame(1100) });
-    expect(replay.progress.pedalError).toBeCloseTo(0.3);
+    expect(replay.progress.pedalError).toBeCloseTo(1.3);
     expect(replay.progress.steeringError).toBe(0);
 });
 
@@ -130,7 +149,7 @@ it('releases an inference that completes after cancellation without publishing m
     await replay.consume({ observation: frame(1000) });
     const work = replay.consume({ observation: frame(1100) }, () => active);
     active = false;
-    const decision = { plan: [{ action: { throttle: 1, brake: 0, steering: 1 } }] } as PolicyDecision;
+    const decision = { plan: [{ action: { pedal: 1, steering: 1 } }] } as PolicyDecision;
     finish(decision);
     await work;
     expect(fake.releaseDecision).toHaveBeenCalledWith(decision);

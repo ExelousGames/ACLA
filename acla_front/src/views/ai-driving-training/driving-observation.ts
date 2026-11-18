@@ -10,9 +10,43 @@ import { detectDrivingImpact, DrivingImpact, ImpactSample, IMPACT_PENALTY_WEIGHT
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { detectDrivingOffTrack, OFF_TRACK_PENALTY_PER_SECOND, ON_TRACK_REWARD_PER_SECOND } from './driving-off-track';
 import { drivingCenterlineInput } from './driving-centerline';
+import type { ControllerAction } from './virtual-controller';
 
-export interface DrivingAction { throttle: number; brake: number; steering: number; shiftUp?: boolean; shiftDown?: boolean }
-export const NEUTRAL: DrivingAction = { throttle: 0, brake: 0, steering: 0 };
+export interface DrivingAction {
+    /** -1 is full brake, 0 is coast, and +1 is full throttle. */
+    pedal: number;
+    steering: number;
+    shiftUp?: boolean;
+    shiftDown?: boolean;
+}
+
+export const NEUTRAL: ControllerAction = { throttle: 0, brake: 0, steering: 0 };
+
+export function drivingControllerAction({ pedal, ...controls }: DrivingAction): ControllerAction {
+    return { ...controls, throttle: Math.max(0, pedal), brake: Math.max(0, -pedal) };
+}
+
+/** Label a chronological run of human controls, keeping the selected pedal through overlap. */
+export class DrivingPedalIntent {
+    private previous?: Pick<ControllerAction, 'throttle' | 'brake'>;
+    private direction = 0;
+
+    reset() {
+        this.previous = undefined;
+        this.direction = 0;
+    }
+
+    action({ throttle, brake, ...controls }: ControllerAction): DrivingAction {
+        const previous = this.previous;
+        if (throttle === 0 || brake === 0) this.direction = Math.sign(throttle - brake);
+        else if (previous && throttle > previous.throttle && brake < previous.brake) this.direction = 1;
+        else if (previous && brake > previous.brake && throttle < previous.throttle) this.direction = -1;
+        else if (!this.direction) this.direction = Math.sign(throttle - brake);
+        this.previous = { throttle, brake };
+        const pedal = this.direction > 0 ? throttle : this.direction < 0 ? -brake : 0;
+        return { ...controls, pedal };
+    }
+}
 export const PEDAL_CHANGE_REFERENCE_MS = 100;
 export const clamp = (value: number, low = -1, high = 1) => Math.max(low, Math.min(high, value));
 export interface DrivingObservation {
@@ -34,7 +68,7 @@ export interface DrivingObservation {
     /** Forward gears start at 1; neutral is 0 and reverse is -1. */
     gear: number;
     rpm: number;
-    controls: DrivingAction;
+    controls: ControllerAction;
     reference: DrivingReference;
     aggression: number;
     speedTargets: ReferenceSpeedTargets;
@@ -174,7 +208,7 @@ function readCameraObservation(live: LiveTelemetrySnapshot, vision: TrackVisionD
 }
 
 export interface DrivingReward {
-    timing: number; progress: number; impact: number; onTrack: number; offTrack: number;
+    timing: number; progress: number; impact: number; blockedMotion: number; onTrack: number; offTrack: number;
     steeringChange: number; throttleChange: number; brakeChange: number; total: number;
     offTrackDetected: boolean | null;
     impactEstimate: DrivingImpact;
@@ -187,7 +221,7 @@ export interface DrivingReward {
 
 export function drivingReward(previous: DrivingObservation, current: DrivingObservation,
     config = DEFAULT_DRIVING_CONFIG, telemetryImpact?: DrivingImpact,
-    controlChanges?: Pick<DrivingAction, 'steering' | 'throttle' | 'brake'>): DrivingReward {
+    controlChanges?: Pick<ControllerAction, 'steering' | 'throttle' | 'brake'>, blockedMotion = 0): DrivingReward {
     const r = config.reward;
     const dt = (current.capturedAt - previous.capturedAt) / 1000;
     if (dt <= 0 || dt > config.runtime.maxTransitionSeconds || previous.session !== current.session) throw new Error('Training transition crossed a session boundary or data gap.');
@@ -241,10 +275,10 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     const steeringChange = penalty(r.steeringChangeWeight, changes.steering);
     const throttleChange = penalty(r.throttleChangeWeight, changes.throttle);
     const brakeChange = penalty(r.brakeChangeWeight, changes.brake);
-    return { timing, progress, impact, impactEstimate, onTrack, offTrack, steeringChange, throttleChange, brakeChange,
+    return { timing, progress, impact, impactEstimate, blockedMotion, onTrack, offTrack, steeringChange, throttleChange, brakeChange,
         offTrackDetected: current.offTrack,
         speedComparison: { ...speeds, measured: current.speed, aggression: previous.aggression, speedGapTime,
             measuredAcceleration, referenceAcceleration, targetAcceleration },
-        total: clamp(timing + progress + impact + onTrack + offTrack + steeringChange + throttleChange + brakeChange,
+        total: clamp(timing + progress + impact + blockedMotion + onTrack + offTrack + steeringChange + throttleChange + brakeChange,
             -r.totalLimit, r.totalLimit) };
 }
