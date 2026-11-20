@@ -1,4 +1,5 @@
 import { drivingReward, NEUTRAL, readDrivingObservation } from './driving-observation';
+import { DrivingControlChanges } from './driving-control-changes';
 import { circuitMapFixture, brakingFixtureSpeed, brakingReferenceFixture, trainingFixture } from './training-fixtures';
 import { referenceSpeedTargets } from './driving-reference';
 import { getLiveMapReferenceLine } from 'views/live-session/live-map-reference';
@@ -49,15 +50,13 @@ describe('steering-change reward', () => {
         expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact + reward.onTrack + reward.offTrack);
     });
 
-    it.each([[-0.4, 0.4], [0.4, -0.4], [0, 0.8]])('subtracts squared steering changes from %s to %s from total reward', (from, to) => {
+    it.each([[-0.4, 0.4], [0.4, -0.4], [0, 0.8]])('allows an initial steering movement from %s to %s', (from, to) => {
         const { observation } = trainingFixture();
         const before = { ...observation, controls: { ...NEUTRAL, steering: from } };
         const after = { ...before, capturedAt: 1200, measuredAt: 1200, controls: { ...NEUTRAL, steering: to } };
         const reward = drivingReward(before, after);
-        expect(reward.steeringChange).toBeCloseTo(-0.05 * 0.8 ** 2);
-        expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact + reward.onTrack + reward.offTrack + reward.steeringChange);
-        const smaller = drivingReward(before, { ...after, controls: { ...NEUTRAL, steering: (from + to) / 2 } });
-        expect(reward.steeringChange).toBeCloseTo(smaller.steeringChange * 4);
+        expect(reward.steeringChange).toBe(0);
+        expect(reward.total).toBeCloseTo(reward.timing + reward.progress + reward.impact + reward.onTrack + reward.offTrack);
     });
 
     it('includes intermediate command reversals even when telemetry endpoints match, and honors weight and total limits', () => {
@@ -77,23 +76,31 @@ describe('steering-change reward', () => {
     });
 });
 
-it.each(['throttle', 'brake'] as const)('charges more for a faster %s change and zero for a held pedal', (pedal) => {
+it.each(['throttle', 'brake'] as const)('scales the %s penalty by movement speed and configured weight', (pedal) => {
     const { observation } = trainingFixture();
     const before = { ...observation, controls: NEUTRAL };
-    const hold = { ...before, capturedAt: 1200, measuredAt: 1200 };
-    const middle = { ...before, capturedAt: 1100, measuredAt: 1100, controls: { ...NEUTRAL, [pedal]: 0.5 } };
-    const full = { ...hold, controls: { ...NEUTRAL, [pedal]: 1 } };
     const key = `${pedal}Change` as const;
-    const slow = drivingReward(before, full);
-    const fast = drivingReward(before, { ...full, measuredAt: 1100 });
-    expect(slow[key]).toBeCloseTo(-0.025);
-    expect(fast[key]).toBeCloseTo(slow[key] * 2);
-    expect(drivingReward(before, middle)[key] + drivingReward(middle, full)[key]).toBeCloseTo(slow[key]);
-    expect(drivingReward(full, { ...full, capturedAt: 1400, measuredAt: 1400 })[key]).toBe(0);
-    expect(slow.total).toBeCloseTo(drivingReward(before, hold).total + slow[key]);
     const config = cloneConfig();
+    const cost = (steps: number, elapsedMs: number) => {
+        const movement = new DrivingControlChanges();
+        let previous = before, total = 0;
+        // The throttle movement is scored on reversal. Brake is scored as it moves.
+        const positions = Array.from({ length: steps }, (_, i) => (i + 1) / steps);
+        if (pedal === 'throttle') positions.push(0.9);
+        for (const position of positions) {
+            const at = previous.measuredAt + elapsedMs / steps;
+            const current = { ...previous, capturedAt: at, measuredAt: at, controls: { ...NEUTRAL, [pedal]: position } };
+            const changes = movement.record(previous.controls, current.controls, at - previous.measuredAt);
+            total += drivingReward(previous, current, config, undefined, changes)[key];
+            previous = current;
+        }
+        return total;
+    };
+    expect(cost(1, 200)).toBeCloseTo(-0.025);
+    expect(cost(2, 200)).toBeCloseTo(-0.025);
+    expect(cost(1, 100)).toBeCloseTo(-0.05);
     config.reward[`${pedal}ChangeWeight`] = 0;
-    expect(drivingReward(before, full, config)[key]).toBe(0);
+    expect(cost(1, 100)).toBe(0);
 });
 
 describe('impact reward', () => {
@@ -553,10 +560,10 @@ describe('normalized position progress reward', () => {
         expect(drivingReward(before, { ...after, normalizedPosition: 0.248 }).progress).toBeCloseTo(-0.025);
     });
 
-    it('withholds a forward-progress bonus in reverse gear', () => {
+    it('applies the stationary progress penalty in reverse gear even when lap position increases', () => {
         const before = trainingFixture().observation;
         expect(drivingReward(before, { ...before, capturedAt: 1200, measuredAt: 1200,
-            normalizedPosition: 0.252, gear: -1 }).progress).toBe(0);
+            normalizedPosition: 0.252, gear: -1 }).progress).toBeCloseTo(-0.05);
     });
 
     it.each([-1, 0, 3])('penalizes negative progress regardless of gear %s', (gear) => {
@@ -625,7 +632,7 @@ it.each([
         const reward = drivingReward(before, after);
         if (speed === 99.2) expect(reward.timing).toBeCloseTo(0);
         else expect(reward.timing).toBeLessThan(0);
-        expect(reward.steeringChange).toBe(_label === 'steering only' ? -0.0125 : 0);
+        expect(reward.steeringChange).toBe(0);
         expect(reward.throttleChange).toBe(0);
         expect(reward.brakeChange).toBe(0);
     }
@@ -662,6 +669,52 @@ describe('speed gap over time', () => {
     const { observation } = trainingFixture();
     const frame = (speed: number, at = 1000, position = 0.4 + (at - 1000) / 100000) => ({
         ...observation, speed, normalizedPosition: position, capturedAt: at, measuredAt: at,
+    });
+
+    it.each([0.398, 0.4])('keeps at least the standstill speed cost without forward progress to %s', (position) => {
+        const stopped = drivingReward(frame(0), frame(0, 1200, position));
+        expect(stopped.timing).toBeCloseTo(-0.8);
+        for (const speed of [60, 100]) {
+            const approaching = drivingReward(frame(speed), frame(80, 1200, position));
+            expect(approaching.speedComparison.measured).toBe(80);
+            expect(approaching.speedComparison.speedGapTime).toBeCloseTo(16);
+            expect(approaching.timing).toBeCloseTo(stopped.timing);
+            expect(drivingReward(frame(speed), frame(80, 1200)).timing).toBeCloseTo(-0.1);
+        }
+        expect(drivingReward(frame(200), frame(200, 1200, position)).timing).toBeCloseTo(-1.2);
+    });
+
+    it('allows speed-matching credit across start/finish in the forward direction', () => {
+        const forward = drivingReward(frame(120, 1000, 0.999), frame(120, 1200, 0.001));
+        const backward = drivingReward(frame(120, 1000, 0.001), frame(120, 1200, 0.999));
+        expect(forward.timing).toBeCloseTo(0);
+        expect(backward.timing).toBeCloseTo(-1.2);
+    });
+
+    it.each(['acc', 'iracing'])('scores backward motion below standing still in %s', (game) => {
+        const stopped = { ...frame(0), context: { ...observation.context, game }, offTrack: false,
+            localVelocity: [0, 0, 0] as [number, number, number] };
+        const next = { capturedAt: 1200, measuredAt: 1200 };
+        const idle = drivingReward(stopped, { ...stopped, ...next });
+        for (const speed of [2, 80]) {
+            const localVelocity: [number, number, number] = game === 'iracing' ? [0, 0, -speed / 3.6] : [0, -speed / 3.6, 0];
+            const backward = { ...stopped, speed, localVelocity, gear: 0 };
+            const reverse = drivingReward(backward, { ...backward, ...next, normalizedPosition: 0.401 });
+            expect(reverse.speedComparison.measured).toBe(-speed);
+            expect(reverse.speedComparison.speedGapTime).toBeCloseTo((80 + speed) * 0.2);
+            expect(reverse.timing).toBeLessThan(idle.timing);
+            expect(reverse.progress).toBeCloseTo(idle.progress);
+            expect(reverse.onTrack).toBe(0);
+            expect(reverse.total).toBeLessThan(idle.total);
+        }
+    });
+
+    it('uses the direction of each speed measurement across a gear change', () => {
+        const before = { ...frame(10), gear: -1, localVelocity: [0, 0, 0] as [number, number, number] };
+        const reward = drivingReward(before, frame(10, 1200));
+        expect(reward.speedComparison.measured).toBe(10);
+        expect(reward.speedComparison.speedGapTime).toBeCloseTo(16);
+        expect(reward.speedComparison.measuredAcceleration).toBeCloseTo(20 / (3.6 * 0.2));
     });
 
     it.each([-1, 1])('scales linearly with time and gap on side %s of the target', (side) => {

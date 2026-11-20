@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const { DESKTOP_GAME_SET, isRecordingStartFailure } = require('../../electron/recording/recording-protocol');
 const { validateLiveTelemetryRow } = require('../data/live-telemetry-dataset');
 contextBridge.exposeInMainWorld('drivingModelFiles', {
@@ -30,6 +30,14 @@ contextBridge.exposeInMainWorld('sessionVideo', {
     read: (filePath, offset) => ipcRenderer.invoke('session-video-read', filePath, offset),
     delete: (filePath) => ipcRenderer.invoke('session-video-delete', filePath),
     reveal: (filePath) => ipcRenderer.invoke('session-video-reveal', filePath),
+});
+contextBridge.exposeInMainWorld('recordedTrainingRanges', {
+    read: async (file) => ipcRenderer.invoke('session-video-training-read', webUtils.getPathForFile(file)),
+    open: async (file) => ipcRenderer.invoke('session-video-training-open', webUtils.getPathForFile(file)),
+    scan: async (files) => ipcRenderer.invoke('session-video-training-scan', files.map((file) => webUtils.getPathForFile(file))),
+    update: async (id, selection) => ipcRenderer.invoke('session-video-training-update', id, selection),
+    write: async (video, telemetry, selection) => ipcRenderer.invoke('session-video-training-write',
+        webUtils.getPathForFile(video), webUtils.getPathForFile(telemetry), selection),
 });
 /**
  * Electron's main process is a Node.js environment that has full operating system access. 

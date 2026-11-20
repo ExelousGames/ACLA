@@ -129,6 +129,27 @@ async function checks(soakIterations) {
     const credits = (decision, steps = decision.plan.map((_, step) => step)) => steps.map(step =>
         ({ step, weight: 1 / steps.length, action: decision.plan[step].action, shift: decision.plan[step].shift, shifts: decision.plan[step].shifts }));
 
+    const explorationConfig = unnormalizedConfig();
+    explorationConfig.network.hiddenUnits = 1;
+    explorationConfig.network.cameraLayers.forEach(layer => { layer.channels = 1; });
+    explorationConfig.network.cameraProjectionUnits = 1;
+    const explorationSeed = new DrivingPolicy({ game: 'acc', car: 'GT3', map: 'monza' },
+        drivingObservationInputs(explorationConfig), () => 0.5, explorationConfig).checkpoint();
+    const freshExploration = await create(explorationConfig, explorationSeed);
+    explorationSeed.model.sac.criticWeights = [
+        [0, -1, 0.5, 0, -1, 1, 0, 2, 0.1],
+        [0, -2, 0.25, 0, -0.5, 0.5, 0, 1, -0.2],
+    ];
+    const restoredExploration = await create(explorationConfig, explorationSeed);
+    freshExploration.random = restoredExploration.random = () => 0.98;
+    const explorationInput = makeInput(explorationConfig, 0, false), beforeExploration = readbacks;
+    const freshPlan = await freshExploration.decideAsync(explorationInput, true);
+    const restoredPlan = await restoredExploration.decideAsync(explorationInput, true);
+    assert(JSON.stringify(freshPlan.plan) === JSON.stringify(restoredPlan.plan), 'Restored critic weights do not change the sampled plan');
+    assert(readbacks === beforeExploration + 2, 'Each exploration plan uses one actor readback');
+    freshExploration.releaseDecision(freshPlan); restoredExploration.releaseDecision(restoredPlan);
+    freshExploration.dispose(); restoredExploration.dispose();
+
     // Exercise the production forward/backward kernels against independent CPU
     // expectations. Finite gate sums can exceed the GPU tanh overflow threshold;
     // cell states can also exceed it with the supported 101-observation history.

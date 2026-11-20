@@ -183,16 +183,17 @@ it('shows each control-change penalty and sends the combined reward to learning'
     mockInput = { observation: { ...observation, capturedAt: Date.now(), measuredAt: Date.now() } };
     act(() => { jest.advanceTimersByTime(20); }); await flush();
     expect(getDefinition('Normalized position progress').textContent).toBe('0');
-    expect(Number(getDefinition('Acceleration / deceleration').textContent)).toBeCloseTo(-0.12);
-    expect(Number(getDefinition('Steering-change penalty').textContent)).toBeCloseTo(-0.064);
-    expect(Number(getDefinition('Throttle-change penalty').textContent)).toBeCloseTo(-0.064);
+    expect(Number(getDefinition('Acceleration / deceleration').textContent)).toBeCloseTo(-1.5);
+    expect(screen.getByText(/Scored speed gap 30\.00/)).toBeInTheDocument();
+    expect(Number(getDefinition('Steering-change penalty').textContent)).toBeCloseTo(-0.032);
+    expect(Number(getDefinition('Throttle-change penalty').textContent)).toBeCloseTo(-0.032);
     expect(Number(getDefinition('Brake-change penalty').textContent)).toBeCloseTo(-0.036);
     expect(learn).toHaveBeenCalledTimes(3);
     // Every replay proxy shares the same observed endpoints and full Bellman reward.
-    learn.mock.calls.forEach(([, reward]) => expect(reward).toBeCloseTo(-0.284));
+    learn.mock.calls.forEach(([, reward]) => expect(reward).toBeCloseTo(-1.6));
     const total = learn.mock.calls[0][1];
     expect(screen.getByText('Episode reward').previousElementSibling?.textContent).toBe(String(total));
-    expect(screen.getByText(/Holding a steering angle has no penalty/)).toBeInTheDocument();
+    expect(screen.getByText(/Turning the wheel in one direction costs zero/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
 });
 
@@ -840,7 +841,20 @@ it('maps physical controls and switches vJoy ownership with one UI button or one
     fireEvent.click(screen.getByRole('button', { name: 'Start training' })); await flush();
     expect(screen.getByRole('combobox', { name: 'Steering' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Take over' })).toBe(handoverButton);
-    fireEvent.click(handoverButton);
+    const capturedAt = Date.now() + 100;
+    mockInput = { observation: { ...mockInput.observation!, capturedAt, measuredAt: capturedAt } };
+    act(() => { jest.advanceTimersByTime(100); }); await flush();
+    const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
+    let finishLearning!: () => void;
+    jest.mocked(gpu.finishTraining).mockImplementationOnce(() => new Promise<void>((resolve) => { finishLearning = resolve; }));
+    fireEvent.click(handoverButton); await flush();
+    expect(screen.getByText(/finishing exploration learning before human takeover/i)).toBeInTheDocument();
+    expect(screen.getByLabelText('Current control owner')).toHaveTextContent('No driver');
+    expect(handoverButton).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
+    finishLearning(); await flush();
+    expect(screen.getByLabelText('Current control owner')).toHaveTextContent('Human');
+    expect(handoverButton).toBeEnabled();
     act(() => { jest.advanceTimersByTime(50); }); await flush();
     expect(screen.getByText('You are driving')).toBeInTheDocument();
     expect(window.virtualController!.apply).toHaveBeenLastCalledWith(expect.objectContaining({

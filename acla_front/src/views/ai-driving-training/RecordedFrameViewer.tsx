@@ -1,10 +1,11 @@
-import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import { capturePolicyCameraImage, PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
 import type { DrivingModelConfig } from './driving-model-config';
 import type { DrivingPolicy } from './driving-policy';
 import { cameraChannelStats, DrivingCameraInspection } from './driving-camera-inspection';
 import { parseRecordedDrivingSession, RecordedDrivingSession } from './recorded-driving-session';
+import RecordedTrainingRanges, { timestamp, TrainingAnnotation, TrainingRange, TrainingSelection } from './RecordedTrainingRanges';
 import './RecordedFrameViewer.css';
 
 export interface RecordedDrivingFrame {
@@ -12,9 +13,18 @@ export interface RecordedDrivingFrame {
     videoSeconds: number;
     offsetSeconds: number;
     camera: PolicyCameraImage;
+    recordingName?: string;
+    startsRange?: boolean;
+}
+export interface RecordedReplayPosition {
+    recordingNumber: number;
+    recordingCount: number;
+    processedFrames: number;
+    totalFrames: number;
 }
 export interface RecordedFrameViewerHandle {
-    replay(consume: (frame: RecordedDrivingFrame) => Promise<void>, signal: AbortSignal): Promise<void>;
+    replay(consume: (frame: RecordedDrivingFrame) => Promise<void>, signal: AbortSignal,
+        onProgress?: (position: RecordedReplayPosition) => void): Promise<void>;
 }
 interface Props {
     configuration: DrivingModelConfig;
@@ -22,16 +32,71 @@ interface Props {
     disabled: boolean;
     onFrame: (frame: RecordedDrivingFrame | null) => void;
     onBusyChange?: (busy: boolean) => void;
+    onReplayReadyChange?: (ready: boolean) => void;
 }
 interface Example { seconds: number; score: number; thumbnail: string }
 interface Gallery { layer: number; examples: Example[][]; sampled: number; interval: number; complete: boolean }
-const videoFile = (file: File) => file.type.startsWith('video/') || /\.(mp4|webm|mkv|mov|m4v|avi)$/i.test(file.name);
+interface SelectionState { selection: TrainingSelection; dirty?: boolean; error?: string }
+interface ListedAnnotation extends TrainingAnnotation { folderPath?: string; imported?: boolean }
+const FULL_RECORDING: TrainingSelection = { version: 1, offsetSeconds: 0, ranges: null };
+const videoFile = (file: File) => file.type.startsWith('video/') || /\.(mp4|webm|mkv|mov|m4v|avi|ogv|mpg|mpeg|3gp)$/i.test(file.name);
 const telemetryFile = (file: File) => /\.jsonl$/i.test(file.name);
 const fileLabel = (file: File) => file.webkitRelativePath || file.name;
+const folderRelativePath = (file: File) => fileLabel(file).replace(/^[^/]+\//, '');
+const annotationLabel = (item: ListedAnnotation) => item.folderPath ?? item.name;
+const sameFile = (a: File, b: File) => fileLabel(a) === fileLabel(b) && a.size === b.size && a.lastModified === b.lastModified;
+const appendFiles = (existing: File[], added: File[]) => [...existing, ...added.filter((file) => !existing.some((other) => sameFile(file, other)))];
+const folderVideosWithoutAnnotations = (files: File[], annotations: ListedAnnotation[]) => {
+    const sidecarSuffix = /\.training-ranges\.json$/i;
+    const annotated = new Set(files.filter((file) => sidecarSuffix.test(file.name))
+        .map((file) => folderRelativePath(file).replace(sidecarSuffix, '')));
+    for (const { folderPath, selection } of annotations) {
+        if (folderPath) annotated.add(folderPath.replace(/[^/]+$/, () => selection.videoFileName));
+    }
+    return files.filter((file) => videoFile(file) && !annotated.has(folderRelativePath(file)));
+};
+const matchingTelemetry = (video: File, files: File[]) => {
+    const label = fileLabel(video).toLowerCase();
+    // Desktop recordings use <source>.jsonl.video-<timestamp>-<uuid>.mp4.
+    const telemetry = label.replace(/\.jsonl\.video-\d+-[a-f0-9-]+\.(mp4|webm)$|\.[^./]+$/i, '.jsonl');
+    const matches = files.filter((file) => fileLabel(file).toLowerCase() === telemetry);
+    return matches.length === 1 ? matches[0] : null;
+};
 const abortError = () => new DOMException('Recording operation cancelled.', 'AbortError');
 const checkAbort = (signal: AbortSignal) => { if (signal.aborted) throw abortError(); };
 const message = (error: unknown) => error instanceof Error ? error.message : 'Could not read the recording.';
-const timestamp = (seconds: number) => `${Math.floor(seconds / 60)}:${(seconds % 60).toFixed(2).padStart(5, '0')}`;
+const readTelemetry = async (source: File | string, signal: AbortSignal) => {
+    if (typeof source !== 'string') return source.text();
+    const response = await fetch(source, { signal });
+    if (!response.ok) throw new Error('The annotation’s telemetry file could not be read.');
+    return response.text();
+};
+const alignedRange = (duration: number, session: RecordedDrivingSession, offset: number): TrainingRange | null => {
+    const start = Math.max(0, offset), end = Math.min(duration - 0.001, session.durationSeconds + offset);
+    return Number.isFinite(duration) && start <= end ? { start, end } : null;
+};
+
+function loadReplayVideo(video: HTMLVideoElement, url: string, signal: AbortSignal): Promise<void> {
+    checkAbort(signal);
+    return new Promise((resolve, reject) => {
+        const finish = (error?: Error) => {
+            clearTimeout(timeout);
+            video.removeEventListener('loadeddata', loaded);
+            video.removeEventListener('error', failed);
+            signal.removeEventListener('abort', aborted);
+            error ? reject(error) : resolve();
+        };
+        const loaded = () => finish();
+        const failed = () => finish(new Error('The video could not be decoded. Try an MP4 or WebM recording.'));
+        const aborted = () => finish(abortError());
+        const timeout = setTimeout(() => finish(new Error('Timed out loading the video.')), 15000);
+        video.addEventListener('loadeddata', loaded, { once: true });
+        video.addEventListener('error', failed, { once: true });
+        signal.addEventListener('abort', aborted, { once: true });
+        video.preload = 'auto';
+        video.src = url;
+    });
+}
 
 function seekVideo(video: HTMLVideoElement, seconds: number, signal: AbortSignal): Promise<void> {
     checkAbort(signal);
@@ -77,6 +142,7 @@ function thumbnail(source: HTMLCanvasElement): string {
 }
 
 const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(function RecordedFrameViewer(props, ref) {
+    const { onReplayReadyChange } = props;
     const current = useRef(props); current.current = props;
     const video = useRef<HTMLVideoElement>(null);
     const mounted = useRef(true);
@@ -84,17 +150,47 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
     const operation = useRef<AbortController | null>(null);
     const busyRef = useRef('');
     const [busy, setBusy] = useState('');
-    const [videoFiles, setVideoFiles] = useState<File[]>([]);
-    const [telemetryFiles, setTelemetryFiles] = useState<File[]>([]);
-    const [folderSelected, setFolderSelected] = useState(false);
+    const [editor, setEditor] = useState<'add' | { annotationId: string } | null>(null);
+    const [annotations, setAnnotations] = useState<ListedAnnotation[]>([]);
+    const [included, setIncluded] = useState<string[]>([]);
+    const [annotationErrors, setAnnotationErrors] = useState<string[]>([]);
+    const [savedName, setSavedName] = useState('');
+    const [pickedVideos, setPickedVideos] = useState<File[]>([]);
+    const [pickedTelemetry, setPickedTelemetry] = useState<File[]>([]);
+    const [workingFolder, setWorkingFolder] = useState<File[] | null>(null);
     const [selectedVideo, setSelectedVideo] = useState<File | null>(null);
-    const [selectedTelemetry, setSelectedTelemetry] = useState<File | null>(null);
+    const [telemetryOverrides, setTelemetryOverrides] = useState(new Map<File, File | null>());
+    const [selections, setSelections] = useState(new Map<File | string, SelectionState>());
+    const folderVideoCount = useMemo(() => workingFolder?.filter(videoFile).length ?? 0, [workingFolder]);
+    const folderVideos = useMemo(() => folderVideosWithoutAnnotations(workingFolder ?? [], annotations), [annotations, workingFolder]);
+    const videoFiles = useMemo(() => appendFiles(pickedVideos, folderVideos), [pickedVideos, folderVideos]);
+    const telemetryFiles = useMemo(() => appendFiles(pickedTelemetry, workingFolder?.filter(telemetryFile) ?? []), [pickedTelemetry, workingFolder]);
+    const videoSettings = selectedVideo ? selections.get(selectedVideo) : undefined;
+    const adding = editor === 'add';
+    const annotation = editor && editor !== 'add' ? annotations.find((item) => item.id === editor.annotationId) : undefined;
+    const selectionKey = annotation?.id ?? (adding ? selectedVideo : null);
+    const selectedSettings = selectionKey ? selections.get(selectionKey) : undefined;
+    const draft = selectedSettings?.selection ?? annotation?.selection;
+    const selectedTelemetry = (() => {
+        if (!adding || !selectedVideo) return null;
+        const override = telemetryOverrides.get(selectedVideo);
+        if (override === null) return null;
+        if (override && telemetryFiles.some((file) => sameFile(file, override))) return override;
+        if (draft?.version === 2) {
+            const savedLabel = fileLabel(selectedVideo).replace(/[^/]+$/, () => draft.telemetryFileName);
+            return telemetryFiles.find((file) => fileLabel(file) === savedLabel) ?? null;
+        }
+        return matchingTelemetry(selectedVideo, telemetryFiles)
+            ?? (videoFiles.length === 1 && folderVideoCount === folderVideos.length && telemetryFiles.length === 1 ? telemetryFiles[0] : null);
+    })();
+    const previewVideo = annotation?.videoUrl ?? (adding ? selectedVideo : null);
+    const previewTelemetry = annotation?.telemetryUrl ?? selectedTelemetry;
+    const offset = draft?.offsetSeconds ?? 0;
     const [url, setUrl] = useState('');
     const [game, setGame] = useState<DesktopGame>('acc');
     const [session, setSession] = useState<RecordedDrivingSession | null>(null);
     const [loadingTelemetry, setLoadingTelemetry] = useState(false);
     const sessionRef = useRef(session); sessionRef.current = session;
-    const [offset, setOffset] = useState(0);
     const offsetRef = useRef(offset); offsetRef.current = offset;
     const [time, setTime] = useState(0);
     const [duration, setDuration] = useState(0);
@@ -108,7 +204,10 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
     const [gallery, setGallery] = useState<Gallery | null>(null);
     const [progress, setProgress] = useState('');
     const locked = props.disabled || Boolean(busy) || loadingTelemetry;
-    const folderError = folderSelected && (!videoFiles.length || !telemetryFiles.length)
+    const queued = annotations.filter((item) => included.includes(item.id));
+    const replayReady = queued.length > 0;
+    const folderPairCount = annotations.filter((item) => item.folderPath).length;
+    const folderError = workingFolder && ((!pickedVideos.length && !folderVideoCount) || !telemetryFiles.length)
         ? 'Choose a folder containing a video and telemetry .jsonl file, or select the missing file individually.' : '';
 
     const changeBusy = (value: string) => {
@@ -132,29 +231,52 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
     };
 
     useEffect(() => {
-        setDuration(0); setTime(0); setOffset(0); offsetRef.current = 0; setError(''); resetInspection();
+        if (!adding || !selectedVideo || videoSettings) return;
+        let active = true;
+        const remember = (settings: SelectionState) => {
+            if (active) setSelections((previous) => new Map(previous).set(selectedVideo, settings));
+        };
+        const bridge = window.recordedTrainingRanges;
+        if (bridge) {
+            void bridge.read(selectedVideo).then((selection) => remember({ selection: selection ?? FULL_RECORDING }))
+                .catch((reason) => remember({ selection: FULL_RECORDING, error: `Could not load saved ranges. ${message(reason)}` }));
+        } else remember({ selection: FULL_RECORDING });
+        return () => { active = false; };
+    }, [adding, selectedVideo, videoSettings]);
+    useEffect(() => {
+        setDuration(0); setTime(0); setError(''); resetInspection();
         current.current.onFrame(null);
-        if (!selectedVideo) { setUrl(''); return; }
-        const next = URL.createObjectURL(selectedVideo);
+        if (!previewVideo || typeof previewVideo === 'string') { setUrl(previewVideo || ''); return; }
+        const next = URL.createObjectURL(previewVideo);
         setUrl(next);
         return () => URL.revokeObjectURL(next);
         // File identity owns the video URL and the matching inspection results.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedVideo]);
+    }, [previewVideo]);
     useEffect(() => {
-        let cancelled = false;
         setSession(null); sessionRef.current = null; current.current.onFrame(null); setError('');
-        setOffset(0); offsetRef.current = 0; resetInspection();
-        if (!selectedTelemetry) { setLoadingTelemetry(false); return; }
+        resetInspection();
+        if (!previewTelemetry) { setLoadingTelemetry(false); return; }
+        const controller = new AbortController();
+        const { signal } = controller;
         setLoadingTelemetry(true);
-        void selectedTelemetry.text().then((text) => {
+        void readTelemetry(previewTelemetry, signal).then((text) => {
+            if (signal.aborted) return;
             const loaded = parseRecordedDrivingSession(text, game);
-            if (!cancelled) { sessionRef.current = loaded; setSession(loaded); publishFrame(); }
-        }).catch((reason) => { if (!cancelled) setError(message(reason)); })
-            .finally(() => { if (!cancelled) setLoadingTelemetry(false); });
-        return () => { cancelled = true; };
+            sessionRef.current = loaded; setSession(loaded); publishFrame();
+        }).catch((reason) => { if (!signal.aborted) setError(message(reason)); })
+            .finally(() => { if (!signal.aborted) setLoadingTelemetry(false); });
+        return () => controller.abort();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [selectedTelemetry, game]);
+    }, [previewTelemetry, game]);
+    useEffect(() => {
+        publishFrame();
+        // Offset edits change alignment at the current playhead.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [offset]);
+    useEffect(() => {
+        onReplayReadyChange?.(replayReady);
+    }, [onReplayReadyChange, replayReady]);
     useEffect(() => {
         if (busyRef.current === 'Inspecting frame' || busyRef.current === 'Scanning recording') operation.current?.abort();
         resetInspection(); setLayerIndex(0); setChannel(0);
@@ -163,7 +285,10 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
     }, [props.policy, props.policy?.steps]);
     useEffect(() => {
         mounted.current = true;
-        return () => { mounted.current = false; operation.current?.abort(); current.current.onFrame(null); current.current.onBusyChange?.(false); };
+        return () => {
+            mounted.current = false; operation.current?.abort(); current.current.onFrame(null);
+            current.current.onBusyChange?.(false); current.current.onReplayReadyChange?.(false);
+        };
     }, []);
 
     const runOperation = async (label: string, work: (signal: AbortSignal) => Promise<void>, external?: AbortSignal) => {
@@ -182,23 +307,61 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
         }
     };
     useImperativeHandle(ref, () => ({
-        replay: async (consume, signal) => {
-            await runOperation('Replaying recording', async (active) => {
-                const player = video.current, recording = sessionRef.current;
-                if (!player || !recording || !Number.isFinite(player.duration) || player.duration <= 0) {
-                    throw new Error('Load a recorded video and telemetry before replaying.');
-                }
-                const first = Math.max(0, offsetRef.current), last = Math.min(player.duration - 0.001, recording.durationSeconds + offsetRef.current);
-                if (last < first) throw new Error('Video and telemetry do not overlap. Adjust the telemetry offset.');
-                const previousTime = player.currentTime;
+        replay: async (consume, signal, onProgress) => {
+            if (!replayReady) throw new Error('Select at least one training annotation with footage.');
+            await runOperation('Replaying recordings', async (active) => {
                 const step = Math.max(0.1, current.current.configuration.runtime.controlIntervalMs / 1000);
-                try {
-                    for (let at = first; at <= last + 1e-7; at += step) {
-                        checkAbort(active); await seekVideo(player, Math.min(at, last), active); checkAbort(active);
-                        setTime(player.currentTime); await consume(capture()); checkAbort(active);
+                for (let recordingIndex = 0; recordingIndex < queued.length; recordingIndex++) {
+                    checkAbort(active);
+                    const item = queued[recordingIndex];
+                    const { telemetryUrl, videoUrl, selection: { offsetSeconds, ranges } } = item;
+                    const name = annotationLabel(item);
+                    const preview = item.id === annotation?.id && url === videoUrl && sessionRef.current && duration ? video.current : null;
+                    const player = preview ?? document.createElement('video');
+                    const previousTime = player.currentTime;
+                    try {
+                        const recording = (preview && sessionRef.current)
+                            || parseRecordedDrivingSession(await readTelemetry(telemetryUrl, active), game);
+                        checkAbort(active);
+                        if (!preview) {
+                            player.crossOrigin = 'anonymous';
+                            await loadReplayVideo(player, videoUrl, active);
+                        }
+                        const overlap = alignedRange(player.duration, recording, offsetSeconds);
+                        if (!overlap) throw new Error('Video and telemetry do not overlap. Adjust the telemetry offset.');
+                        const clips = (ranges ?? [overlap]).map((range, index) => {
+                            const start = Math.max(range.start, overlap.start), end = Math.min(range.end, overlap.end);
+                            if (end - start < step - 1e-7) {
+                                throw new Error(`Range ${index + 1} needs at least ${step} s of aligned video and telemetry.`);
+                            }
+                            const frameCount = Math.floor((end - start + 1e-7) / step) + 1;
+                            return { start, end, frameCount };
+                        });
+                        const totalFrames = clips.reduce((total, clip) => total + clip.frameCount, 0);
+                        let processedFrames = 0;
+                        const reportProgress = () => onProgress?.({ recordingNumber: recordingIndex + 1,
+                            recordingCount: queued.length, processedFrames, totalFrames });
+                        reportProgress();
+                        for (const { start, end, frameCount } of clips) {
+                            for (let index = 0; index < frameCount; index++) {
+                                checkAbort(active);
+                                await seekVideo(player, Math.min(start + index * step, end), active); checkAbort(active);
+                                if (preview) setTime(player.currentTime);
+                                await consume({ session: recording, videoSeconds: player.currentTime, offsetSeconds,
+                                    camera: capturePolicyCameraImage(originalFrame(player)), recordingName: name, startsRange: index === 0 });
+                                checkAbort(active);
+                                processedFrames++;
+                                reportProgress();
+                            }
+                        }
+                        checkAbort(active);
+                        if (preview) await seekVideo(preview, previousTime, active);
+                    } catch (reason) {
+                        checkAbort(active);
+                        throw new Error(`${name}: ${message(reason)}`);
+                    } finally {
+                        if (!preview) { player.removeAttribute('src'); player.load(); }
                     }
-                } finally {
-                    if (!active.aborted) await seekVideo(player, previousTime, active);
                 }
             }, signal);
         },
@@ -275,50 +438,240 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
         context.putImageData(pixels, 0, 0);
     }, [layer, selectedChannel]);
 
-    const chooseFolder = (files: FileList | null) => {
-        const candidates = Array.from(files ?? []), videos = candidates.filter(videoFile), telemetry = candidates.filter(telemetryFile);
-        setFolderSelected(true);
-        setVideoFiles(videos); setTelemetryFiles(telemetry);
-        setSelectedVideo(videos.length === 1 ? videos[0] : null);
-        setSelectedTelemetry(telemetry.length === 1 ? telemetry[0] : null);
+    const addVideos = (files: File[]) => {
+        const added = appendFiles(videoFiles, files).slice(videoFiles.length);
+        setPickedVideos([...pickedVideos, ...added]);
+        setSavedName('');
+        if (!selectedVideo) setSelectedVideo(videoFiles[0] ?? added[0] ?? null);
+    };
+    const chooseTelemetry = (files: FileList | null) => {
+        const selected = Array.from(files ?? []).filter(telemetryFile);
+        if (selectedVideo && selected.length === 1) {
+            setTelemetryOverrides((previous) => new Map(previous).set(selectedVideo, selected[0]));
+        }
+        setPickedTelemetry(appendFiles(pickedTelemetry, selected));
+    };
+    const editSelection = (change: Partial<Pick<TrainingSelection, 'offsetSeconds' | 'ranges'>>) => {
+        if (!selectionKey || !draft || selectedSettings?.error) return;
+        setSavedName('');
+        setSelections((previous) => new Map(previous).set(selectionKey, {
+            selection: { ...draft, ...change }, dirty: true,
+        }));
+    };
+    const openEditor = (next: typeof editor) => {
+        setSavedName('');
+        setEditor(next);
+    };
+    const rememberAnnotations = (loaded: ListedAnnotation[], replaceFolder = false) => {
+        const existing = new Map(annotations.map((item) => [item.id, item]));
+        const next = new Map(annotations.filter((item) => !replaceFolder || !item.folderPath || item.imported)
+            .map((item) => [item.id, replaceFolder ? { ...item, folderPath: undefined } : item]));
+        for (const item of loaded) {
+            next.set(item.id, { ...next.get(item.id), ...item, imported: existing.get(item.id)?.imported || !item.folderPath });
+        }
+        const list = Array.from(next.values());
+        setAnnotations(list);
+        setIncluded((previous) => list.filter(({ id, selection }) => selection.ranges?.length !== 0
+            && (!existing.has(id) || previous.includes(id))).map(({ id }) => id));
+        if (annotation && !next.has(annotation.id)) openEditor(null);
+    };
+    const chooseWorkingFolder = async (files: File[]) => {
+        const applyFolder = (loaded: ListedAnnotation[]) => {
+            setWorkingFolder(files);
+            const videos = appendFiles(pickedVideos, folderVideosWithoutAnnotations(files, loaded));
+            if (!selectedVideo || !videos.includes(selectedVideo)) {
+                setSelectedVideo(videos.length === 1 ? videos[0] : null);
+                if (adding) setSavedName('');
+            }
+        };
+        const bridge = window.recordedTrainingRanges;
+        if (!bridge) { applyFolder([]); return; }
+        try {
+            await runOperation('Searching working folder', async (signal) => {
+                const jsonFiles = files.filter((file) => /\.json$/i.test(file.name));
+                const results = jsonFiles.length ? await bridge.scan(jsonFiles) : [];
+                checkAbort(signal);
+                const loaded: ListedAnnotation[] = [], errors: string[] = [];
+                results.forEach((result, index) => {
+                    if (!result) return;
+                    const folderPath = folderRelativePath(jsonFiles[index]);
+                    if ('error' in result) errors.push(`${folderPath}: ${result.error}`);
+                    else loaded.push({ ...result, folderPath });
+                });
+                applyFolder(loaded);
+                rememberAnnotations(loaded, true);
+                setAnnotationErrors(errors);
+            });
+        } catch (reason) { reportError(reason); }
+    };
+    const openAnnotations = async (files: File[]) => {
+        const bridge = window.recordedTrainingRanges;
+        if (!bridge || !files.length) return;
+        try {
+            await runOperation('Opening training annotations', async (signal) => {
+                setAnnotationErrors([]);
+                const result = await Promise.allSettled(files.map((file) => bridge.open(file)));
+                checkAbort(signal);
+                const loaded: TrainingAnnotation[] = [], errors: string[] = [];
+                result.forEach((item, index) => {
+                    if (item.status === 'fulfilled') loaded.push(item.value);
+                    else errors.push(`${files[index].name}: ${message(item.reason)}`);
+                });
+                rememberAnnotations(loaded);
+                setAnnotationErrors(errors);
+                if (loaded.length) openEditor({ annotationId: loaded[0].id });
+            });
+        } catch (reason) { reportError(reason); }
+    };
+    const dirty = Boolean(selectedSettings?.dirty || (draft?.version === 2 && selectedTelemetry && draft.telemetryFileName !== selectedTelemetry.name));
+    const canSave = Boolean(window.recordedTrainingRanges && session && draft
+        && (annotation ? dirty : selectedVideo && selectedTelemetry && (dirty || draft.version === 1)));
+    const saveSelection = async () => {
+        const bridge = window.recordedTrainingRanges;
+        if (!canSave || !bridge || !selectionKey || !draft) return;
+        const persist = annotation ? () => bridge.update(annotation.id, draft)
+            : selectedVideo && selectedTelemetry ? () => bridge.write(selectedVideo, selectedTelemetry, draft) : null;
+        if (!persist) return;
+        try {
+            await runOperation('Saving training annotation', async (signal) => {
+                const saved = await persist();
+                checkAbort(signal);
+                setSelections((previous) => {
+                    const next = new Map(previous);
+                    if (annotation) next.delete(selectionKey);
+                    else next.set(selectionKey, { selection: saved.selection });
+                    return next;
+                });
+                setSavedName(saved.name);
+                if (annotation) {
+                    setAnnotations((previous) => previous.map((item) => item.id === saved.id ? { ...item, ...saved } : item));
+                    if (saved.selection.ranges?.length === 0) setIncluded((previous) => previous.filter((id) => id !== saved.id));
+                } else {
+                    const folderPath = selectedVideo && workingFolder?.includes(selectedVideo)
+                        ? folderRelativePath(selectedVideo).replace(/[^/]+$/, () => saved.name) : undefined;
+                    rememberAnnotations([{ ...saved, folderPath }]);
+                    if (folderPath) {
+                        setSelectedVideo(null);
+                        setEditor({ annotationId: saved.id });
+                    }
+                }
+            });
+        } catch (reason) { reportError(reason); }
+    };
+    const seek = (seconds: number) => {
+        if (!video.current) return;
+        video.current.pause();
+        video.current.currentTime = Math.min(seconds, Math.max(0, duration - 0.001));
+        setTime(video.current.currentTime);
     };
     const layers = inspection?.layers ?? props.configuration.network.cameraLayers.map((item, index) => ({ ...item, index }));
-    return <section className="driving-card recorded-frame-viewer" aria-label="Recorded-frame viewer">
-        <h3>Recorded session</h3>
-        <div className="recorded-file-inputs">
-            <label>Local session folder<input type="file" aria-label="Local session folder" multiple disabled={locked}
-                {...{ webkitdirectory: '', directory: '' } as React.InputHTMLAttributes<HTMLInputElement>}
-                onChange={(event) => chooseFolder(event.target.files)} /></label>
-            <label>Recorded video<input type="file" accept="video/*,.mkv,.avi" disabled={locked}
-                onChange={(event) => { const file = event.target.files?.[0] ?? null; setVideoFiles(file ? [file] : []); setSelectedVideo(file); }} /></label>
-            <label>Telemetry JSONL<input type="file" accept=".jsonl" disabled={locked}
-                onChange={(event) => { const file = event.target.files?.[0] ?? null; setTelemetryFiles(file ? [file] : []); setSelectedTelemetry(file); }} /></label>
+    return <section className="driving-card recorded-frame-viewer" aria-label="Training annotations">
+        <div className="driving-card-title"><h2>Training annotations</h2></div>
+        <label className="recorded-setting">Working folder
+            <input type="file" multiple disabled={locked}
+                {...{ webkitdirectory: '' } as React.InputHTMLAttributes<HTMLInputElement>}
+                onChange={(event) => {
+                    const files = Array.from(event.target.files ?? []);
+                    event.target.value = '';
+                    void chooseWorkingFolder(files);
+                }} />
+        </label>
+        {workingFolder && window.recordedTrainingRanges && <p className="driving-note" role="status">
+            {workingFolder[0]?.webkitRelativePath && `${workingFolder[0].webkitRelativePath.split('/')[0]} · `}
+            {folderPairCount} annotated recording {folderPairCount === 1 ? 'pair' : 'pairs'} found
+        </p>}
+        <div className="driving-buttons">
+            <button aria-pressed={adding} disabled={props.disabled || Boolean(busy)} onClick={() => openEditor('add')}>Add new training annotation</button>
         </div>
-        {videoFiles.length > 1 && <label className="recorded-setting">Video in folder<select value={selectedVideo ? videoFiles.indexOf(selectedVideo) : ''} disabled={locked}
-            onChange={(event) => setSelectedVideo(event.target.value === '' ? null : videoFiles[Number(event.target.value)])}>
-            <option value="">Select a video</option>{videoFiles.map((file, index) => <option key={index} value={index}>{fileLabel(file)}</option>)}</select></label>}
-        {telemetryFiles.length > 1 && <label className="recorded-setting">Telemetry in folder<select value={selectedTelemetry ? telemetryFiles.indexOf(selectedTelemetry) : ''} disabled={locked}
-            onChange={(event) => setSelectedTelemetry(event.target.value === '' ? null : telemetryFiles[Number(event.target.value)])}>
-            <option value="">Select telemetry</option>{telemetryFiles.map((file, index) => <option key={index} value={index}>{fileLabel(file)}</option>)}</select></label>}
-        <div className="recorded-settings">
-            <label>Game for JSONL without game metadata<select value={game} disabled={locked} onChange={(event) => setGame(event.target.value as DesktopGame)}>
-                <option value="acc">Assetto Corsa Competizione</option><option value="ac">Assetto Corsa</option><option value="iracing">iRacing</option></select></label>
-            <label>First telemetry at video time (seconds)<input type="number" step="0.01" value={offset} disabled={locked}
-                onChange={(event) => { const value = event.target.valueAsNumber; if (Number.isFinite(value)) { offsetRef.current = value; setOffset(value); publishFrame(); } }} /></label>
+        <label className="recorded-setting">Edit saved annotations
+            <input type="file" accept=".json" multiple disabled={props.disabled || Boolean(busy) || !window.recordedTrainingRanges}
+                onChange={(event) => {
+                    const files = Array.from(event.target.files ?? []);
+                    event.target.value = '';
+                    void openAnnotations(files);
+                }} />
+        </label>
+        <p className="driving-note">{window.recordedTrainingRanges
+            ? 'Choose annotation JSON files. Keep each annotation with its video and telemetry JSONL.'
+            : 'Open and save training annotations in the desktop app.'}</p>
+        {annotationErrors.length > 0 && <ul className="driving-error" role="alert">
+            {annotationErrors.map((item, index) => <li key={index}>{item}</li>)}
+        </ul>}
+        {annotations.length > 0 && <fieldset className="recorded-training-set" disabled={props.disabled || Boolean(busy)}>
+            <legend>Annotations for training ({queued.length} selected)</legend>
+            {annotations.map((item) => <div className="recorded-training-entry" key={item.id}>
+                <label>
+                    <input type="checkbox" checked={included.includes(item.id)} disabled={item.selection.ranges?.length === 0}
+                        onChange={(event) => setIncluded(event.target.checked ? [...included, item.id] : included.filter((id) => id !== item.id))} />
+                    <span>{annotationLabel(item)}<small>{item.selection.videoFileName} · {item.selection.telemetryFileName}</small>
+                        <small>{item.selection.ranges === null ? 'Full aligned recording'
+                        : item.selection.ranges.length ? `${item.selection.ranges.length} selected ranges` : 'No footage selected'}</small></span>
+                </label>
+                <button aria-label={`Edit ${annotationLabel(item)}`} aria-pressed={annotation?.id === item.id}
+                    onClick={() => openEditor({ annotationId: item.id })}>Edit</button>
+            </div>)}
+        </fieldset>}
+        <div hidden={!adding}>
+            {folderVideoCount > 0 && !folderVideos.length && <p className="driving-note">
+                All videos in the working folder already have training annotations.
+            </p>}
+            <div className="recorded-file-inputs">
+                <label>Recorded video<input type="file" accept="video/*,.mkv,.avi" multiple disabled={locked || !adding}
+                    onChange={(event) => addVideos(Array.from(event.target.files ?? []).filter(videoFile))} /></label>
+                <label>Telemetry JSONL<input type="file" accept=".jsonl" multiple disabled={locked || !adding}
+                    onChange={(event) => chooseTelemetry(event.target.files)} /></label>
+            </div>
+            {(folderVideos.length > 0 || videoFiles.length > 1) && <label className="recorded-setting">Video in folder<select value={selectedVideo ? videoFiles.indexOf(selectedVideo) : ''} disabled={locked}
+                onChange={(event) => setSelectedVideo(event.target.value === '' ? null : videoFiles[Number(event.target.value)])}>
+                <option value="">Select a video to review</option>{videoFiles.map((file, index) => <option key={index} value={index}>{fileLabel(file)}</option>)}</select></label>}
+            {telemetryFiles.length > 0 && (videoFiles.length > 1 || telemetryFiles.length > 1) && <label className="recorded-setting">
+                Telemetry in folder<select value={selectedTelemetry ? telemetryFiles.findIndex((file) => sameFile(file, selectedTelemetry)) : ''}
+                    disabled={locked || !selectedVideo}
+                    onChange={(event) => {
+                        if (selectedVideo) setTelemetryOverrides((previous) => new Map(previous).set(selectedVideo,
+                            event.target.value === '' ? null : telemetryFiles[Number(event.target.value)]));
+                    }}>
+                    <option value="">Select telemetry</option>{telemetryFiles.map((file, index) => <option key={index} value={index}>{fileLabel(file)}</option>)}
+                </select>
+            </label>}
         </div>
-        <p className="driving-note">A positive offset means telemetry starts later in the video. Choose matching files from the same session; adjust this offset to align their motion.</p>
+        {annotation && <dl className="recorded-annotation-details">
+            <div><dt>Video</dt><dd>{annotation.selection.videoFileName}</dd></div>
+            <div><dt>Telemetry</dt><dd>{annotation.selection.telemetryFileName}</dd></div>
+        </dl>}
+        {(adding || annotation) && <>
+            <label className="recorded-setting">First telemetry at video time (seconds)<input type="number" step="0.01" value={offset}
+                disabled={locked || !draft || Boolean(selectedSettings?.error)}
+                onChange={(event) => { const value = event.target.valueAsNumber; if (Number.isFinite(value)) editSelection({ offsetSeconds: value }); }} /></label>
+            <p className="driving-note">A positive offset means telemetry starts later in the video.</p>
+            {savedName && <p role="status">Saved {savedName} beside the video.</p>}
+            <label className="recorded-setting">Game for JSONL without game metadata
+                <select value={game} disabled={locked} onChange={(event) => setGame(event.target.value as DesktopGame)}>
+                    <option value="acc">Assetto Corsa Competizione</option><option value="ac">Assetto Corsa</option><option value="iracing">iRacing</option>
+                </select>
+            </label>
+        </>}
         {loadingTelemetry && <p role="status">Reading telemetry…</p>}
-        {session && <p>{selectedTelemetry?.name} · {session.game} · {session.rows.length.toLocaleString()} samples · {session.durationSeconds.toFixed(2)} seconds</p>}
-        {(error || folderError) && <p className="driving-error" role="alert">{error || folderError}</p>}
+        {session && <p>{session.game} · {session.rows.length.toLocaleString()} samples · {session.durationSeconds.toFixed(2)} seconds</p>}
+        {(error || (adding && (selectedSettings?.error || folderError))) && <p className="driving-error" role="alert">
+            {error || selectedSettings?.error || folderError}</p>}
+        {busy && <p role="status">{busy}{progress ? ` · ${progress}` : ''}</p>}
         {url && <>
-            <video ref={video} className="recorded-video" src={url} controls={!locked} preload="auto" aria-label="Original recorded video"
+            <video key={`video:${url}`} ref={video} className="recorded-video" crossOrigin={annotation ? 'anonymous' : undefined}
+                src={url} controls={!locked} preload="auto" aria-label="Original recorded video"
                 onLoadedMetadata={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
                 onLoadedData={publishFrame} onTimeUpdate={publishFrame} onSeeked={publishFrame}
                 onSeeking={() => { if (!busyRef.current) current.current.onFrame(null); }}
                 onError={() => { setError('The recorded video could not be decoded. Try an MP4 or WebM recording.'); current.current.onFrame(null); }} />
             <label className="recorded-timeline">Recorded frame · {timestamp(time)} / {timestamp(duration)}
                 <input type="range" min="0" max={Math.max(0, duration - 0.001)} step="0.01" value={time} disabled={locked || !duration}
-                    onChange={(event) => { if (video.current) { video.current.pause(); video.current.currentTime = Number(event.target.value); setTime(Number(event.target.value)); } }} /></label>
+                    onChange={(event) => seek(Number(event.target.value))} /></label>
+            {draft && !selectedSettings?.error && <RecordedTrainingRanges key={annotation?.id ?? url} selection={draft}
+                duration={duration} time={time} step={Math.max(0.1, props.configuration.runtime.controlIntervalMs / 1000)}
+                overlap={session ? alignedRange(duration, session, offset) : null}
+                disabled={locked || !duration} dirty={dirty} canSave={canSave}
+                playhead={() => video.current?.currentTime ?? time} seek={seek}
+                change={(ranges) => editSelection({ ranges })} save={() => { void saveSelection(); }} />}
             <h3>Camera model inspection</h3>
             <p>Inspect the loaded driving model’s camera CNN. Feature maps show learned activations; they are diagnostic views, not a recognition accuracy score. {props.policy ? `Model: ${props.policy.steps.toLocaleString()} training steps.` : 'Open a model with camera weights to inspect it.'}</p>
             <div className="recorded-settings">
@@ -340,8 +693,9 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
             <label className="recorded-setting">Sample every (seconds)<input type="number" min="0.1" max="60" step="0.1" value={interval} disabled={locked}
                 onChange={(event) => { const value = event.target.valueAsNumber; if (Number.isFinite(value)) setIntervalSeconds(Math.max(0.1, Math.min(60, value))); }} /></label>
             <div className="driving-buttons"><button disabled={locked || !props.policy || !duration} onClick={() => { void scan(); }}>Find strongest examples</button>
-                {busy && <button className="driving-stop" onClick={() => operation.current?.abort()}>Cancel {busy === 'Replaying recording' ? 'replay' : 'inspection'}</button>}</div>
-            {(busy || progress) && <p role="status">{busy}{busy && progress ? ' · ' : ''}{progress}</p>}
+                {(busy === 'Inspecting frame' || busy === 'Scanning recording') && <button className="driving-stop"
+                    onClick={() => operation.current?.abort()}>Cancel inspection</button>}</div>
+            {!busy && progress && <p role="status">{progress}</p>}
             {gallery && <>
                 <p>{gallery.complete ? 'Scan complete' : 'Partial scan'} · Layer {gallery.layer + 1} · {gallery.sampled} frames sampled every {gallery.interval} seconds.</p>
                 <div className="recorded-channel-gallery">{gallery.examples.map((examples, index) => <section key={index} aria-label={`Strongest examples for channel ${index + 1}`}>

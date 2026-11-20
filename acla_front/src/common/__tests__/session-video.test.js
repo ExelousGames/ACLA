@@ -3,12 +3,14 @@ const fs = require('fs/promises');
 const os = require('os');
 const path = require('path');
 const { EventEmitter } = require('events');
+const { runInThisContext } = require('vm');
 const { registerSessionVideo } = require('../../../electron/session-video');
 
 let directory;
 let handlers;
 let event;
 let telemetry;
+let serveTrainingMedia;
 
 beforeEach(async () => {
     directory = await fs.mkdtemp(path.join(os.tmpdir(), 'acla-video-test-'));
@@ -18,7 +20,7 @@ beforeEach(async () => {
     const contents = new EventEmitter();
     contents.mainFrame = {};
     event = { sender: contents, senderFrame: contents.mainFrame };
-    registerSessionVideo({ ipcMain: { handle: (name, callback) => { handlers[name] = callback; } },
+    serveTrainingMedia = registerSessionVideo({ ipcMain: { handle: (name, callback) => { handlers[name] = callback; } },
         getMainWindow: () => ({ isDestroyed: () => false, webContents: contents }),
         getRecordingDirectory: () => directory, shell: { showItemInFolder: jest.fn() } });
 });
@@ -94,4 +96,117 @@ it('rejects foreign frames, unrelated files, and oversized chunks', async () => 
     const { filePath } = await call('create', telemetry);
     await expect(call('append', filePath, new Uint8Array(512 * 1024 + 1))).rejects.toThrow('Invalid video write');
     await expect(call('read', filePath, -1)).rejects.toThrow('not ready');
+});
+
+it('saves and reloads independent annotations with both filenames', async () => {
+    const first = path.join(directory, 'first.webm');
+    const second = path.join(directory, 'second.mp4');
+    await Promise.all([fs.writeFile(first, 'video one'), fs.writeFile(second, 'video two')]);
+    const selected = { version: 2, videoFileName: 'first.webm', telemetryFileName: 'acc.jsonl',
+        offsetSeconds: -0.25, ranges: [{ start: 1, end: 2 }, { start: 4, end: 5 }] };
+    const other = { ...selected, videoFileName: 'second.mp4', offsetSeconds: 0, ranges: [] };
+    await expect(call('training-read', first)).resolves.toBeNull();
+    await expect(call('training-write', first, telemetry, selected)).resolves.toMatchObject({ selection: selected });
+    await call('training-write', second, telemetry, other);
+    await expect(call('training-read', first)).resolves.toEqual(selected);
+    await expect(call('training-read', second)).resolves.toEqual(other);
+    await expect(call('training-write', first, telemetry, { ...selected, ranges: [{ start: 1, end: 3 }, { start: 2, end: 4 }] }))
+        .rejects.toThrow('sorted and separated');
+    expect(JSON.parse(await fs.readFile(`${first}.training-ranges.json`, 'utf8'))).toEqual(selected);
+    expect(await fs.readFile(first, 'utf8')).toBe('video one');
+    expect(await fs.readFile(second, 'utf8')).toBe('video two');
+    await expect(call('training-write', telemetry, telemetry, selected)).rejects.toThrow('Choose a local video');
+    await expect(handlers['session-video-training-write']({ ...event, senderFrame: {} }, first, telemetry, selected)).rejects.toThrow('main workspace');
+});
+
+it('edits renamed annotations in place and streams byte ranges for video seeking', async () => {
+    global.Headers = runInThisContext('Headers');
+    global.Response = runInThisContext('Response');
+    const video = path.join(directory, 'camera.webm');
+    const annotation = path.join(directory, 'turns.json');
+    await fs.writeFile(video, '0123456789');
+    await fs.writeFile(annotation, JSON.stringify({ version: 2, videoFileName: 'camera.webm', telemetryFileName: 'acc.jsonl',
+        offsetSeconds: 0.2, ranges: [{ start: 1, end: 2 }] }));
+    const { id, videoUrl, telemetryUrl, selection, name } = await call('training-open', annotation);
+    expect(name).toBe('turns.json');
+    expect(selection).toMatchObject({ videoFileName: 'camera.webm', telemetryFileName: 'acc.jsonl', offsetSeconds: 0.2 });
+    const updated = { ...selection, offsetSeconds: 0.4, ranges: [{ start: 2, end: 3 }] };
+    await expect(call('training-update', id, updated)).resolves.toMatchObject({ id, name, selection: updated });
+    expect(JSON.parse(await fs.readFile(annotation, 'utf8'))).toEqual(updated);
+    expect(await fs.readdir(directory)).toHaveLength(3);
+    const request = (url, range) => ({ url, method: 'GET', headers: new Headers(range ? { range } : {}) });
+    try {
+        const part = await serveTrainingMedia(request(videoUrl, 'bytes=3-5'));
+        expect(part.status).toBe(206);
+        expect(part.headers.get('content-range')).toBe('bytes 3-5/10');
+        expect(await part.text()).toBe('345');
+        expect(await (await serveTrainingMedia(request(telemetryUrl))).text()).toBe('{}\n');
+        expect((await serveTrainingMedia(request(videoUrl, 'bytes=12-'))).status).toBe(416);
+        event.sender.emit('render-process-gone');
+        expect((await serveTrainingMedia(request(videoUrl))).status).toBe(404);
+        await expect(call('training-update', id, selection)).rejects.toThrow('Open the training annotation before editing it');
+    } finally {
+        delete global.Headers;
+        delete global.Response;
+    }
+});
+
+it('retains legacy sidecars and rejects missing or out-of-folder media in imported JSON', async () => {
+    const video = `${telemetry}.video-1-abc.mp4`;
+    const annotation = `${video}.training-ranges.json`;
+    const legacy = { version: 1, offsetSeconds: 0, ranges: null };
+    await fs.writeFile(video, 'video');
+    await fs.writeFile(annotation, JSON.stringify(legacy));
+    await expect(call('training-read', video)).resolves.toEqual(legacy);
+    const opened = await call('training-open', annotation);
+    expect(opened).toMatchObject({ selection: {
+        ...legacy, version: 2, videoFileName: path.basename(video), telemetryFileName: 'acc.jsonl',
+    } });
+    const updated = { ...opened.selection, offsetSeconds: 0.2 };
+    await expect(call('training-update', opened.id, updated)).resolves.toMatchObject({ selection: updated });
+    await expect(call('training-read', video)).resolves.toEqual(updated);
+    const changed = { ...legacy, version: 2, videoFileName: path.basename(video), telemetryFileName: 'missing.jsonl' };
+    await fs.writeFile(annotation, JSON.stringify(changed));
+    await expect(call('training-open', annotation)).rejects.toThrow('Put missing.jsonl in the same folder');
+    await fs.writeFile(annotation, JSON.stringify({ ...changed, telemetryFileName: '../acc.jsonl' }));
+    await expect(call('training-open', annotation)).rejects.toThrow('Invalid training range file');
+});
+
+it('finds legacy and renamed annotations in a folder selection and reports broken pairs', async () => {
+    const nested = path.join(directory, 'session');
+    await fs.mkdir(nested);
+    const legacyVideo = `${telemetry}.video-1-abc.mp4`;
+    const sidecar = `${legacyVideo}.training-ranges.json`;
+    const renamed = path.join(nested, 'corners.json');
+    const missing = path.join(nested, 'missing.training-ranges.json');
+    const malformed = path.join(nested, 'bad.training-ranges.json');
+    const unrelated = path.join(directory, 'settings.json');
+    const legacy = { version: 1, offsetSeconds: 0, ranges: null };
+    const selection = { version: 2, videoFileName: 'camera.mp4', telemetryFileName: 'inputs.jsonl',
+        offsetSeconds: 0.25, ranges: [{ start: 1, end: 2 }] };
+    await Promise.all([
+        fs.writeFile(legacyVideo, 'video'),
+        fs.writeFile(sidecar, JSON.stringify(legacy)),
+        fs.writeFile(path.join(nested, 'camera.mp4'), 'video'),
+        fs.writeFile(path.join(nested, 'inputs.jsonl'), '{}\n'),
+        fs.writeFile(renamed, JSON.stringify(selection)),
+        fs.writeFile(missing, JSON.stringify({ ...selection, telemetryFileName: path.basename(telemetry) })),
+        fs.writeFile(malformed, '{'),
+        fs.writeFile(unrelated, JSON.stringify({ version: 2, enabled: true })),
+    ]);
+
+    const files = [sidecar, unrelated, renamed, missing, malformed];
+    const found = await call('training-scan', files);
+    expect(found).toEqual([
+        expect.objectContaining({ name: path.basename(sidecar), selection: { ...legacy, version: 2,
+            videoFileName: path.basename(legacyVideo), telemetryFileName: path.basename(telemetry) } }),
+        null,
+        expect.objectContaining({ name: 'corners.json', selection }),
+        { error: 'Put acc.jsonl in the same folder as this annotation.' },
+        { error: expect.any(String) },
+    ]);
+    await expect(call('training-update', found[2].id, { ...selection, offsetSeconds: 1 })).resolves.toMatchObject({
+        selection: { ...selection, offsetSeconds: 1 },
+    });
+    await expect(handlers['session-video-training-scan']({ ...event, senderFrame: {} }, files)).rejects.toThrow('main workspace');
 });

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, utilityProcess, MessageChannelMain, dialog, desktopCapturer, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, utilityProcess, MessageChannelMain, dialog, desktopCapturer, shell, protocol } = require('electron');
 const { Worker } = require('worker_threads');
 const { PythonShell } = require('python-shell');
 const path = require('path');
@@ -10,7 +10,7 @@ const crypto = require('crypto');
 const { detectSupportedDesktopGame } = require('./desktop-game-detection');
 const { RecordingSessionManager } = require('../electron/recording/recording-session-manager');
 const { registerScreenCapture } = require('../electron/screen-capture');
-const { registerSessionVideo } = require('../electron/session-video');
+const { registerSessionVideo, TRAINING_MEDIA_SCHEME } = require('../electron/session-video');
 const { registerTrackVisionModels } = require('../electron/track-vision-models');
 const { registerVirtualController } = require('../electron/virtual-controller');
 const { registerDrivingModelFiles } = require('../electron/driving-model-files');
@@ -53,7 +53,9 @@ function getPythonExecutable() {
 const devMode = app.isPackaged ? false : isDev;
 let mainWindow;
 const configureScreenCapture = registerScreenCapture({ ipcMain, desktopCapturer, getMainWindow: () => mainWindow });
-registerSessionVideo({ ipcMain, getMainWindow: () => mainWindow, getRecordingDirectory, shell });
+protocol.registerSchemesAsPrivileged([{ scheme: TRAINING_MEDIA_SCHEME,
+  privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, corsEnabled: true } }]);
+const serveTrainingMedia = registerSessionVideo({ ipcMain, getMainWindow: () => mainWindow, getRecordingDirectory, shell });
 registerTrackVisionModels({ app, ipcMain, getMainWindow: () => mainWindow });
 registerVirtualController({ app, ipcMain, getMainWindow: () => mainWindow, getPythonExecutable });
 registerDrivingModelFiles({ app, ipcMain, dialog, getMainWindow: () => mainWindow });
@@ -1164,6 +1166,7 @@ ipcMain.handle('resize-floating-chat', (event, payload) => {
 });
 
 app.on('ready', () => {
+  protocol.handle(TRAINING_MEDIA_SCHEME, serveTrainingMedia);
   registerRecordingIpc();
   createWindow();
 });

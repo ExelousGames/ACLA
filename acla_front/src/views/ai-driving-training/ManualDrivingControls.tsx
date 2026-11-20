@@ -127,17 +127,18 @@ const ManualDrivingControls = forwardRef<ManualDrivingControlsHandle, {
     try { preview = mapManualControls(devices, mapping); }
     catch (reason) { mappingError = reason instanceof Error ? reason.message : 'Check the controller mapping.'; }
     const humanDriving = source === 'manual';
+    const takeoverPending = running && source === null;
     const liveDevices = !testing && (!running || enabled);
 
     return <section className="driving-card driving-manual" aria-label="Human takeover">
-        <div className="driving-card-title"><h2>Human takeover</h2><span>{running ? source === 'manual' ? 'You are driving' : 'AI is driving' : enabled && preview ? 'Ready' : 'Set up your controls'}</span></div>
+        <div className="driving-card-title"><h2>Human takeover</h2><span>{takeoverPending ? 'Takeover pending' : running ? humanDriving ? 'You are driving' : 'AI is driving' : enabled && preview ? 'Ready' : 'Set up your controls'}</span></div>
         <p>Drive through the same vJoy wheel as the AI. Human driving works without a model, telemetry or screen capture.</p>
         <div className="driving-buttons">
             <button type="button" className="driving-primary" aria-pressed={enabled}
                 disabled={running || testing || !connected || detecting !== null || (!enabled && !preview)}
                 onClick={() => setEnabled((current) => !current)}>
                 {enabled && <span aria-hidden="true">✓&nbsp;</span>}Enable controller takeover</button>
-            <button className="driving-primary" disabled={!connected || testing || (humanDriving
+            <button className="driving-primary" disabled={!connected || testing || takeoverPending || (humanDriving
                 ? !running || !aiActive || !aiReady : !enabled || !preview)}
                 onClick={() => onSourceChange(humanDriving ? 'ai' : 'manual')}>
                 {humanDriving ? 'Return to AI' : running ? 'Take over' : 'Start human driving'}</button>

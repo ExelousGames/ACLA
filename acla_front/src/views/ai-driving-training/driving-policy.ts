@@ -17,7 +17,7 @@ export interface PlannedAction {
 interface ActionDecision extends PlannedAction {
     means: number[];
     latent: number[];
-    /** Sampling-time marginal variances for exploration diagnostics. */
+    /** Sampling variances for exploration diagnostics. */
     variances?: number[];
     shift: ShiftChoice;
     shiftProbabilities: number[];
@@ -232,7 +232,8 @@ export class DrivingPolicy {
 
     releaseDecision(decision?: PolicyDecision) { if (decision?.gpu) this.gpu?.release(decision.gpu); }
 
-    private actionDecision(outputs: number[], timeSeconds: number, exploration: ExplorationSample | undefined, logStds: number[], shifts: ShiftAvailability): ActionDecision {
+    private actionDecision(outputs: number[], timeSeconds: number, exploration: ExplorationSample | undefined,
+        logStds: number[], shifts: ShiftAvailability): ActionDecision {
         const means = outputs.slice(0, DRIVING_ANALOG_AXES);
         const initialSigmas = drivingExplorationSigmas(this.configuration);
         const sigmas = logStds.map((value, axis) => Math.exp(value) * initialSigmas[axis] / 0.05);
@@ -240,20 +241,22 @@ export class DrivingPolicy {
         // The execution mask is also retained with the off-policy transition.
         const shiftLogits = outputs.slice(DRIVING_ANALOG_AXES);
         const shiftProbabilities = this.shiftProbabilities(shiftLogits, shifts);
-        let shift: ShiftChoice = 0;
-        if (exploration) {
-            const draw = exploration.shift;
-            let cumulative = 0;
-            for (let i = 0; i < shiftProbabilities.length; i++) {
-                cumulative += shiftProbabilities[i];
-                if (shiftProbabilities[i] > 0) shift = i as ShiftChoice;
-                if (draw < cumulative) break;
-            }
-        } else shift = shiftProbabilities.indexOf(Math.max(...shiftProbabilities)) as ShiftChoice;
+        const shift = this.chooseShift(shiftProbabilities, exploration?.shift);
         const action = { pedal: Math.tanh(latent[0]), steering: Math.tanh(latent[1]), shiftUp: shift === 1, shiftDown: shift === 2 };
         return { timeSeconds, means, latent, variances: sigmas.map((sigma, axis) => sigma * sigma
             * (exploration ? exploration.variances[axis] / initialSigmas[axis] ** 2 : 1)),
             shift, shiftProbabilities, shifts: { ...shifts }, action };
+    }
+
+    private chooseShift(probabilities: number[], draw?: number): ShiftChoice {
+        if (draw === undefined) return probabilities.indexOf(Math.max(...probabilities)) as ShiftChoice;
+        let cumulative = 0, shift: ShiftChoice = 0;
+        for (const gear of [0, 1, 2] as const) {
+            cumulative += probabilities[gear];
+            if (probabilities[gear] > 0) shift = gear;
+            if (draw < cumulative) break;
+        }
+        return shift;
     }
 
     private shiftProbabilities(values: number[], shifts: ShiftAvailability): number[] {

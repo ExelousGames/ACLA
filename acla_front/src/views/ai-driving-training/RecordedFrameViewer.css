@@ -2,7 +2,7 @@
 .recorded-frame-viewer h3 { font-size: 15px; margin: 16px 0 12px; }
 .recorded-frame-viewer label { display: grid; gap: 7px; color: #a3adb7; font-size: 12px; min-width: 0; }
 .recorded-file-inputs, .recorded-settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin: 14px 0; }
-.recorded-frame-viewer input:not([type="range"]), .recorded-frame-viewer select { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; border: 1px solid #3a414d; border-radius: 6px; color: #edf3f2; background: #232934; }
+.recorded-frame-viewer input:not([type="range"]):not([type="checkbox"]), .recorded-frame-viewer select { box-sizing: border-box; width: 100%; min-width: 0; padding: 8px; border: 1px solid #3a414d; border-radius: 6px; color: #edf3f2; background: #232934; }
 .recorded-frame-viewer input:disabled, .recorded-frame-viewer select:disabled { opacity: .5; }
 .recorded-frame-viewer input:focus-visible, .recorded-frame-viewer select:focus-visible { outline: 2px solid #00e676; outline-offset: 3px; }
 .recorded-frame-viewer input[type="file"] { font-size: 11px; }
@@ -10,6 +10,24 @@
 .recorded-video { display: block; width: 100%; max-height: 480px; background: #07090d; border-radius: 8px; margin-top: 16px; }
 .recorded-timeline { margin: 12px 0 22px; font-variant-numeric: tabular-nums; }
 .recorded-timeline input { width: 100%; accent-color: #00e676; }
+.recorded-training-set { display: grid; gap: 8px; margin: 14px 0; padding: 12px; border: 1px solid #3a414d; border-radius: 8px; }
+.recorded-training-set label { display: flex; align-items: flex-start; color: #edf3f2; overflow-wrap: anywhere; }
+.recorded-training-set input { flex: none; accent-color: #00e676; }
+.recorded-training-set small { display: block; color: #a3adb7; margin-top: 3px; }
+.recorded-training-entry { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.recorded-frame-viewer button[aria-pressed="true"] { border-color: #00e676; }
+.recorded-annotation-details { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); gap: 12px; margin: 16px 0; }
+.recorded-annotation-details dt { color: #a3adb7; font-size: 12px; }
+.recorded-annotation-details dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.recorded-training-ranges { margin: 14px 0 22px; padding: 0 14px 14px; border: 1px solid #3a414d; border-radius: 8px; }
+.recorded-range-track { position: relative; height: 12px; border-radius: 4px; overflow: hidden; background: #181e27; }
+.recorded-range-track span { position: absolute; top: 0; bottom: 0; }
+.recorded-range-overlap { background: #496278; }
+.recorded-range-marker { background: #00b961; }
+.recorded-range-playhead { width: 2px; transform: translateX(-1px); background: #edf3f2; }
+.recorded-range-list { display: grid; gap: 8px; padding-inline-start: 24px; }
+.recorded-range-list li { padding: 4px 0; font-variant-numeric: tabular-nums; }
+.recorded-range-list button { margin: 2px 0 2px 6px; }
 .recorded-feature-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
 .recorded-feature-images figure { min-width: 0; margin: 0; }
 .recorded-feature-images img, .recorded-feature-images canvas { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; display: block; background: #07090d; border-radius: 6px; }

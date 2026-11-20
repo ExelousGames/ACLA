@@ -53,22 +53,25 @@ it('uses the last observed endpoint within the horizon when telemetry crosses it
     expect(second.sequence.flatMap(({ samples }) => samples)).toHaveLength(1);
 });
 
-it('bootstraps from the horizon endpoint and keeps the original input', () => {
-    const buffer = new DrivingConsequenceBuffer(3);
+it('includes fifth-second rewards and bootstraps from the default horizon endpoint', () => {
+    const learning = { ...cloneConfig().learning, discount: 0.5, discountIntervalSeconds: 1 };
+    const buffer = new DrivingConsequenceBuffer(learning.sequenceSeconds);
     const start = { features: [0], cameras: [] }, successor = { features: [1], cameras: [] };
-    const horizon = { features: [3], cameras: [] };
+    const horizon = { features: [5], cameras: [] };
     const origin = { ...interval(0, 1000, 2), input: start, next: successor, nextShifts: { up: true, down: false } };
     buffer.add(origin, successor);
     buffer.add(interval(1000, 2000, -5), input);
-    buffer.add({ ...interval(2000, 3000, -9), next: horizon, nextShifts: { up: false, down: true } }, horizon);
+    buffer.add(interval(2000, 3000, 0), input);
+    buffer.add(interval(3000, 4000, 0), input);
+    expect(buffer.hasReady).toBe(false);
+    buffer.add({ ...interval(4000, 5000, -8), next: horizon, nextShifts: { up: false, down: true } }, horizon);
     const batch = buffer.take()!;
     expect(batch.input).toBe(horizon);
-    const learning = { ...cloneConfig().learning, discount: 0.5, discountIntervalSeconds: 1 };
     const [target] = drivingSequenceTargets(batch.sequence, learning);
     expect(target.input).toBe(start);
     expect(target.next).toBe(horizon);
     expect(target.nextShifts).toEqual({ up: false, down: true });
-    expect(target).toMatchObject({ reward: -2.75, elapsedSeconds: 3, terminal: false });
+    expect(target).toMatchObject({ reward: -1, elapsedSeconds: 5, terminal: false });
 });
 
 it('keeps a late acknowledged command eligible for consequences three seconds after that command', () => {

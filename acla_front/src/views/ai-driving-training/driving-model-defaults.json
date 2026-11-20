@@ -51,7 +51,7 @@
     "shiftPulseMs": 100
   },
   "learning": {
-    "sequenceSeconds": 3,
+    "sequenceSeconds": 5,
     "pedalExplorationSigma": 0.05,
     "throttleExplorationSpeedLimitKmh": 400,
     "steeringExplorationSigma": 0.05,

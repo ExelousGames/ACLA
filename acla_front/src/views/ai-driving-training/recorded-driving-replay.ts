@@ -24,7 +24,7 @@ export class RecordedDrivingReplay {
         this.memory = new DrivingMemory(policy.configuration);
     }
 
-    private reset() {
+    startRange() {
         this.memory.reset();
         this.plans.reset();
         this.pedals.reset();
@@ -37,7 +37,7 @@ export class RecordedDrivingReplay {
         if (!observation || !this.policy.matches(observation)) {
             this.progress.skipped++;
             this.progress.lastError = result.error || 'Recorded inputs do not match this model.';
-            this.reset();
+            this.startRange();
             return;
         }
         const previous = this.previous;
@@ -49,7 +49,7 @@ export class RecordedDrivingReplay {
             if (elapsed <= 0 || elapsed > this.policy.configuration.runtime.maxTransitionSeconds * 1000
                 || observation.measuredAt <= previous.observation.measuredAt
                 || observation.session !== previous.observation.session || observation.reference !== previous.observation.reference
-                || Math.abs(movement) > this.policy.configuration.runtime.maxPositionJump) this.reset();
+                || Math.abs(movement) > this.policy.configuration.runtime.maxPositionJump) this.startRange();
         }
         const input = this.memory.encode(observation);
         const pending = this.previous;

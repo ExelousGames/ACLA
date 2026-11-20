@@ -10,6 +10,9 @@ import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { detectDrivingOffTrack, OFF_TRACK_PENALTY_PER_SECOND, ON_TRACK_REWARD_PER_SECOND } from './driving-off-track';
 import { drivingCenterlineInput } from './driving-centerline';
 import type { ControllerAction } from './virtual-controller';
+import { ControlChanges, DrivingControlChanges } from './driving-control-changes';
+
+export { PEDAL_CHANGE_REFERENCE_MS } from './driving-control-changes';
 
 export interface DrivingAction {
     /** -1 is full brake, 0 is coast, and +1 is full throttle. */
@@ -46,7 +49,6 @@ export class DrivingPedalIntent {
         return { ...controls, pedal };
     }
 }
-export const PEDAL_CHANGE_REFERENCE_MS = 100;
 export const clamp = (value: number, low = -1, high = 1) => Math.max(low, Math.min(high, value));
 export interface DrivingObservation {
     capturedAt: number;
@@ -216,16 +218,27 @@ export interface DrivingReward {
     steeringChange: number; throttleChange: number; brakeChange: number; total: number;
     offTrackDetected: boolean | null;
     impactEstimate: DrivingImpact;
-    speedComparison: ReferenceSpeedTargets & { measured: number; aggression: number;
-        /** Integrated absolute speed gap in (km/h)·s. */
+    speedComparison: ReferenceSpeedTargets & { aggression: number;
+        /** Signed speed in km/h, with reverse motion scored as negative. */
+        measured: number;
+        /** Integrated speed gap used for scoring, in (km/h)·s. */
         speedGapTime: number;
-        /** Change in speed over this transition, in m/s². */
+        /** Change in signed speed over this transition, in m/s². */
         measuredAcceleration: number; referenceAcceleration: number; targetAcceleration: number };
+}
+
+function longitudinalVelocity({ context, localVelocity }: DrivingObservation): number {
+    return localVelocity[context.game === 'iracing' ? 2 : 1];
+}
+
+function signedSpeed(observation: DrivingObservation): number {
+    const { speed, gear } = observation;
+    return speed > 0 && (gear < 0 || longitudinalVelocity(observation) < 0) ? -speed : speed;
 }
 
 export function drivingReward(previous: DrivingObservation, current: DrivingObservation,
     config = DEFAULT_DRIVING_CONFIG, telemetryImpact?: DrivingImpact,
-    controlChanges?: Pick<ControllerAction, 'steering' | 'throttle' | 'brake'>, blockedMotion = 0): DrivingReward {
+    controlChanges?: ControlChanges, blockedMotion = 0): DrivingReward {
     const r = config.reward;
     const dt = (current.capturedAt - previous.capturedAt) / 1000;
     if (dt <= 0 || dt > config.runtime.maxTransitionSeconds || previous.session !== current.session) throw new Error('Training transition crossed a session boundary or data gap.');
@@ -236,52 +249,50 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     if (positionChange > 0.5) positionChange -= 1;
     if (Math.abs(positionChange) > config.runtime.maxPositionJump) throw new Error('Lap position jumped. Reposition the car and start a new episode.');
     if (previous.reference !== current.reference) throw new Error('Live Map reference changed. Start a new episode.');
-    const movingForward = current.speed > 0 && current.gear >= 0 && positionChange > 0;
+    const previousSpeed = signedSpeed(previous), currentSpeed = signedSpeed(current);
+    const movingForward = currentSpeed > 0 && positionChange > 0;
     const forwardProgress = movingForward ? Math.min(positionChange, r.progressLimit) : 0;
     const progressPerSecond = Math.abs(positionChange / measuredSeconds);
     // Half strength at 0.01 lap/second; faster progress approaches 0.25 * progressWeight per lap.
     // Weight by signed distance so extra samples do not earn extra reward at the same rate.
     const signedProgress = positionChange < 0 ? clamp(positionChange, -r.progressLimit, 0) : forwardProgress;
-    // Penalize speeds below 1 km/h even when normalized position changes.
-    const progress = current.speed < 1
-        ? -0.25 * r.progressWeight * 0.01 * measuredSeconds
-        : 0.25 * r.progressWeight * signedProgress * progressPerSecond / (progressPerSecond + 0.01);
+    const distanceReward = 0.25 * r.progressWeight * signedProgress * progressPerSecond / (progressPerSecond + 0.01);
+    const stationaryPenalty = -0.25 * r.progressWeight * 0.01 * measuredSeconds;
+    // Reversing incurs at least the stationary penalty, even when lap position increases.
+    const progress = current.speed < 1 ? stationaryPenalty
+        : currentSpeed < 0 ? Math.min(distanceReward, stationaryPenalty) : distanceReward;
     // Keep both ends of the speed profile on the settings that produced the action.
     const start = referenceSpeedTargets(previous.reference, previous.normalizedPosition, previous.aggression);
     const speeds = referenceSpeedTargets(previous.reference, current.normalizedPosition, previous.aggression);
-    const measuredAcceleration = (current.speed - previous.speed) / (3.6 * measuredSeconds);
+    const measuredAcceleration = (currentSpeed - previousSpeed) / (3.6 * measuredSeconds);
     const referenceAcceleration = (speeds.reference - start.reference) / (3.6 * measuredSeconds);
     const targetAcceleration = (speeds.target - start.target) / (3.6 * measuredSeconds);
-    const startError = previous.speed - start.target, endError = current.speed - speeds.target;
+    const startError = previousSpeed - start.target, endError = currentSpeed - speeds.target;
     const startGap = Math.abs(startError), endGap = Math.abs(endError);
     // Integrate the linearly interpolated error. A target crossing splits the area into two triangles.
     const averageGap = startError * endError < 0
         ? (startGap ** 2 + endGap ** 2) / (2 * (startGap + endGap))
         : (startGap + endGap) / 2;
-    const speedGapTime = averageGap * measuredSeconds;
+    // A speed match only earns relief below the standstill cost with forward lap progress.
+    const minimumGap = positionChange > 0 ? 0 : (start.target + speeds.target) / 2;
+    const speedGapTime = Math.max(averageGap, minimumGap) * measuredSeconds;
     const timing = speedGapTime > 0 && r.timingWeight > 0 ? -r.timingWeight * speedGapTime / r.speedTolerance : 0;
     const impactSample = (observation: DrivingObservation): ImpactSample => ({ measuredAt: observation.measuredAt,
-        velocity: [observation.localVelocity[0], observation.localVelocity[observation.context.game === 'iracing' ? 2 : 1]],
+        velocity: [observation.localVelocity[0], longitudinalVelocity(observation)],
         steering: observation.controls.steering, brake: observation.controls.brake });
     const impactEstimate = telemetryImpact ?? detectDrivingImpact(impactSample(previous), impactSample(current));
     const impact = impactEstimate.detected ? -IMPACT_PENALTY_WEIGHT * impactEstimate.confidence * impactEstimate.severity : 0;
     const offTrack = current.offTrack === true ? -OFF_TRACK_PENALTY_PER_SECOND * measuredSeconds : 0;
     // Reward confirmed on-track driving without paying the policy to park or reverse.
     const onTrack = current.offTrack === false && forwardProgress > 0 ? ON_TRACK_REWARD_PER_SECOND * measuredSeconds : 0;
-    // Human driving uses measured changes. AI supplies accumulated command changes between images.
-    const pedalScale = PEDAL_CHANGE_REFERENCE_MS / (measuredSeconds * 1000);
-    const changes = controlChanges ?? {
-        steering: (current.controls.steering - previous.controls.steering) ** 2,
-        throttle: (current.controls.throttle - previous.controls.throttle) ** 2 * pedalScale,
-        brake: (current.controls.brake - previous.controls.brake) ** 2 * pedalScale,
-    };
+    const changes = controlChanges ?? new DrivingControlChanges().record(previous.controls, current.controls, measuredSeconds * 1000);
     const penalty = (weight: number, change: number) => weight > 0 && change > 0 ? -weight * change : 0;
     const steeringChange = penalty(r.steeringChangeWeight, changes.steering);
     const throttleChange = penalty(r.throttleChangeWeight, changes.throttle);
     const brakeChange = penalty(r.brakeChangeWeight, changes.brake);
     return { timing, progress, impact, impactEstimate, blockedMotion, onTrack, offTrack, steeringChange, throttleChange, brakeChange,
         offTrackDetected: current.offTrack,
-        speedComparison: { ...speeds, measured: current.speed, aggression: previous.aggression, speedGapTime,
+        speedComparison: { ...speeds, measured: currentSpeed, aggression: previous.aggression, speedGapTime,
             measuredAcceleration, referenceAcceleration, targetAcceleration },
         total: clamp(timing + progress + impact + blockedMotion + onTrack + offTrack + steeringChange + throttleChange + brakeChange,
             -r.totalLimit, r.totalLimit) };

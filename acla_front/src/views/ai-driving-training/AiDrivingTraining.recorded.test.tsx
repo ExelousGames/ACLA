@@ -6,7 +6,7 @@ import { emptyTrainingDocument } from './driving-policy';
 import { cloneConfig } from './driving-model-config';
 import { trainingFixture } from './training-fixtures';
 import { parseRecordedDrivingSession } from './recorded-driving-session';
-import type { RecordedDrivingFrame } from './RecordedFrameViewer';
+import type { RecordedDrivingFrame, RecordedFrameViewerHandle } from './RecordedFrameViewer';
 import { loadRecordedDrivingReferences } from './recorded-driving-reference';
 
 let mockFrames: RecordedDrivingFrame[] = [];
@@ -18,11 +18,22 @@ jest.mock('./recorded-driving-reference', () => ({
 jest.mock('./RecordedFrameViewer', () => {
     const React = require('react');
     return { __esModule: true, default: React.forwardRef((props: any, ref: any) => {
-        React.useImperativeHandle(ref, () => ({ replay: async (consume: any, signal: AbortSignal) => {
-            for (const frame of mockFrames) { if (signal.aborted) return; await consume(frame); }
+        const replay: RecordedFrameViewerHandle['replay'] = async (consume, signal, onProgress) => {
+            const totalFrames = mockFrames.length;
+            let processedFrames = 0;
+            onProgress?.({ recordingNumber: 1, recordingCount: 1, processedFrames, totalFrames });
+            for (const frame of mockFrames) {
+                if (signal.aborted) return;
+                await consume(frame);
+                processedFrames++;
+                onProgress?.({ recordingNumber: 1, recordingCount: 1, processedFrames, totalFrames });
+            }
             if (mockWaitForCancel && !signal.aborted) await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
-        } }));
-        return <button disabled={props.disabled} onClick={() => props.onFrame(mockFrames[0])}>Load test recording</button>;
+        };
+        React.useImperativeHandle(ref, () => ({ replay }));
+        return <button disabled={props.disabled} onClick={() => {
+            props.onFrame(mockFrames[0]); props.onReplayReadyChange(true);
+        }}>Load test recording</button>;
     }) };
 });
 const flush = async () => { await act(async () => { for (let i = 0; i < 80; i++) await Promise.resolve(); }); };
@@ -55,15 +66,17 @@ async function loadRecording() {
 
 it('trains and evaluates local recording without connecting or writing virtual controls', async () => {
     const view = await loadRecording();
+    const aiDriver = within(screen.getByRole('region', { name: 'AI driver' }));
     expect(screen.queryByRole('button', { name: 'Connect wheel' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Train from recording' })).toBeEnabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Train from recording' })); await flush();
+    expect(aiDriver.getByRole('button', { name: 'Train from annotations' })).toBeEnabled();
+    fireEvent.click(aiDriver.getByRole('button', { name: 'Train from annotations' })); await flush();
     expect(JSON.parse(savedJson).model.steps).toBe(2);
     expect(screen.getByText(/Completed\. Learning from recording/)).toBeInTheDocument();
+    expect(aiDriver.queryByRole('progressbar', { name: 'Annotation training progress' })).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Driving aggression'), { target: { value: '73' } }); await flush();
     expect(JSON.parse(savedJson).configuration.aggression).toBe(73);
     const trained = savedJson;
-    fireEvent.click(screen.getByRole('button', { name: 'Evaluate recording' })); await flush();
+    fireEvent.click(aiDriver.getByRole('button', { name: 'Evaluate annotations' })); await flush();
     expect(screen.getByText(/Completed\. Evaluating recording.*pedal MAE/)).toBeInTheDocument();
     expect(savedJson).toBe(trained);
     fireEvent.keyDown(window, { key: 'Escape' }); await flush();
@@ -76,21 +89,31 @@ it('trains and evaluates local recording without connecting or writing virtual c
 it('locks source and model changes during replay, stops and saves on cancellation', async () => {
     mockWaitForCancel = true;
     await loadRecording();
-    fireEvent.click(screen.getByRole('button', { name: 'Train from recording' })); await flush();
+    const aiDriver = within(screen.getByRole('region', { name: 'AI driver' }));
+    fireEvent.click(aiDriver.getByRole('button', { name: 'Train from annotations' }));
+    const progress = aiDriver.getByRole('progressbar', { name: 'Annotation training progress' });
+    expect(progress).not.toHaveAttribute('value');
+    await flush();
+    expect(progress).toHaveAttribute('value', '1');
+    expect(progress).toHaveAttribute('aria-valuetext', 'Recording 1 of 1 · 3 / 3 frames processed');
     expect(screen.getByLabelText('AI observation input source')).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Open model' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Stop replay' })); await flush();
+    expect(aiDriver.getByText('Model file')).toBeInTheDocument();
+    for (const name of ['New model', 'Open model', 'Save model']) {
+        expect(aiDriver.getByRole('button', { name })).toBeDisabled();
+    }
+    fireEvent.click(aiDriver.getByRole('button', { name: 'Stop replay' })); await flush();
     expect(screen.getByText(/Stopped\. Learning from recording/)).toBeInTheDocument();
+    expect(progress).not.toBeInTheDocument();
     expect(JSON.parse(savedJson).model.steps).toBe(2);
     expect(screen.getByLabelText('AI observation input source')).toBeEnabled();
     expect(window.virtualController!.apply).not.toHaveBeenCalled();
 });
 
-it.each(['Train from recording', 'Evaluate recording'])('keeps the consumed frame visible during %s between replay updates', async (action) => {
+it.each(['Train from annotations', 'Evaluate annotations'])('keeps the consumed frame visible during %s between replay updates', async (action) => {
     mockFrames[0].session.rows.forEach((row, index) => { row.sample = { ...row.sample, Physics_speed_kmh: 108 + index * 10 }; });
     await loadRecording();
-    if (action === 'Evaluate recording') {
-        fireEvent.click(screen.getByRole('button', { name: 'Train from recording' })); await flush();
+    if (action === 'Evaluate annotations') {
+        fireEvent.click(screen.getByRole('button', { name: 'Train from annotations' })); await flush();
     }
     mockWaitForCancel = true;
     fireEvent.click(screen.getByRole('button', { name: action })); await flush();
@@ -105,10 +128,10 @@ it.each(['Train from recording', 'Evaluate recording'])('keeps the consumed fram
     fireEvent.click(screen.getByRole('button', { name: 'Stop replay' })); await flush();
 });
 
-it.each(['Train from recording', 'Evaluate recording'])('keeps skipped sample errors visible during %s between replay updates', async (action) => {
+it.each(['Train from annotations', 'Evaluate annotations'])('keeps skipped sample errors visible during %s between replay updates', async (action) => {
     await loadRecording();
-    if (action === 'Evaluate recording') {
-        fireEvent.click(screen.getByRole('button', { name: 'Train from recording' })); await flush();
+    if (action === 'Evaluate annotations') {
+        fireEvent.click(screen.getByRole('button', { name: 'Train from annotations' })); await flush();
     }
     const lastRow = mockFrames[0].session.rows[2];
     lastRow.sample = { ...lastRow.sample, Graphics_status: 1 };
@@ -128,8 +151,19 @@ it('reports unavailable recording references and supports retry', async () => {
     (loadRecordedDrivingReferences as jest.Mock).mockRejectedValueOnce(new Error('Reference download failed.'));
     await loadRecording();
     expect(screen.getByText(/Could not load recorded training references/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Train from recording' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Reload recorded references' })); await flush();
     act(() => { jest.advanceTimersByTime(250); }); await flush();
-    expect(screen.getByRole('button', { name: 'Train from recording' })).toBeEnabled();
+    expect(screen.getByText('All model inputs ready')).toBeInTheDocument();
+});
+
+it('trains one model across recordings and clears imitation history between close ranges', async () => {
+    const first = mockFrames.map((frame, index) => ({ ...frame, recordingName: 'first.mp4', startsRange: index === 0 || index === 2 }));
+    const secondSession = { ...first[0].session, id: 'second' };
+    const second = mockFrames.map((frame, index) => ({ ...frame, session: secondSession, recordingName: 'second.mp4', startsRange: index === 0 }));
+    mockFrames = [...first, ...second];
+    await loadRecording();
+    fireEvent.click(screen.getByRole('button', { name: 'Train from annotations' })); await flush();
+    expect(JSON.parse(savedJson).model.steps).toBe(3);
+    expect(loadRecordedDrivingReferences).toHaveBeenCalledWith(secondSession);
+    expect(screen.getByText(/Completed\. Learning from recording · second\.mp4.*3 samples/)).toBeInTheDocument();
 });

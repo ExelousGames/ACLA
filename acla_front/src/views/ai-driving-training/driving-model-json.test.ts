@@ -240,20 +240,20 @@ it('supports a configuration-only JSON and isolates exported values from the run
     expect(policy.checkpoint().model.lstmWeights[0][0]).not.toBe(4);
 });
 
-it('starts fresh models with five-second plans and three-second consequence windows', () => {
+it('starts fresh models with five-second plans and five-second consequence windows', () => {
     const document = emptyTrainingDocument();
     expect(document.configuration.actions.planTimesSeconds).toEqual(Array.from({ length: 51 }, (_, index) => index / 10));
     expect(document.configuration.actions.planAgreementTolerance).toBe(0.05);
-    expect(document.configuration.learning.sequenceSeconds).toBe(3);
+    expect(document.configuration.learning.sequenceSeconds).toBe(5);
     expect(() => validateDrivingConfig(document.configuration)).not.toThrow();
 });
 
 it.each([false, true])('requires explicit consequence and agreement settings without migrating old models (trained=%s)', (trained) => {
     const { observation } = trainingFixture(), config = cloneConfig();
-    config.learning.sequenceSeconds = 5;
+    config.learning.sequenceSeconds = 3;
     const current = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
         : emptyTrainingDocument(config);
-    expect(readTrainingDocument(current).configuration.learning.sequenceSeconds).toBe(5);
+    expect(readTrainingDocument(current).configuration.learning.sequenceSeconds).toBe(3);
     const legacy = JSON.parse(JSON.stringify(current));
     delete legacy.configuration.learning.sequenceSeconds;
     const before = JSON.stringify(legacy);

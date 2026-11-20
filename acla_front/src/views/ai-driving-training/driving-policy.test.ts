@@ -287,6 +287,26 @@ it('does not restore old exploration when inference finishes after an episode re
     policy.releaseDecision(stale); policy.releaseDecision(fresh); policy.dispose();
 });
 
+it('uses actor exploration at every plan step with restored critic weights', async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(1000);
+    jest.spyOn(Math, 'random').mockReturnValue(0.98);
+    const { policy, input } = setup(0.98);
+    const checkpoint = policy.checkpoint();
+    checkpoint.model.sac.criticWeights.forEach((row) => row.fill(1));
+    const restored = DrivingPolicy.restore(checkpoint);
+    await policy.initializeGpu(); await restored.initializeGpu();
+    const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[1].value;
+    const available = { up: false, down: true };
+    const fresh = await policy.decideAsync(input, true, available);
+    const loaded = await restored.decideAsync(input, true, available);
+    expect(gpu.forward).toHaveBeenLastCalledWith(input);
+    expect(loaded.plan).toEqual(fresh.plan);
+    loaded.plan.forEach(({ latent, means }) => expect(latent).not.toEqual(means));
+    expect(loaded.plan[0].shiftProbabilities[1]).toBe(0);
+    policy.releaseDecision(fresh); restored.releaseDecision(loaded);
+    policy.dispose(); restored.dispose();
+});
+
 it('learns the executed control after weights change without using old latents or variances', async () => {
     const { policy, input } = setup();
     await policy.initializeGpu();

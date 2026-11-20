@@ -68,6 +68,8 @@
 .driving-controls output { font-variant-numeric: tabular-nums; }
 .driving-controls meter { display: block; width: 100%; height: 12px; margin-top: 5px; accent-color: #00e676; }
 .driving-buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.driving-annotation-progress { display: grid; gap: 4px; margin-top: 12px; color: var(--lp-muted, #a3adb7); font-size: 12px; font-variant-numeric: tabular-nums; }
+.driving-annotation-progress progress { width: 100%; height: 10px; color-scheme: dark; accent-color: var(--lp-green, #00e676); }
 .driving-training button { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #3a414d; border-radius: 6px; background: #232934; color: #edf3f2; font-size: 12px; padding: 9px 13px; cursor: pointer; line-height: 1.4; }
 .driving-training button:disabled { opacity: .4; cursor: not-allowed; }
 .driving-training button:not(:disabled):hover { border-color: #00e676; }

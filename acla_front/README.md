@@ -149,6 +149,10 @@ locally; enabling takeover is explicit each time the page opens.
 Steering passes through linearly with no dead zone. Each fresh paddle pull produces
 a separate shift press with no cooldown, including rapid repeated or alternating shifts.
 
+During live AI training, requesting takeover ends exploration. If learning is pending,
+vJoy holds neutral while the model finishes its current update and trains on the
+buffered rewards, including the last partially observed window. Human controls
+become active when that work finishes. Stop can cancel the handoff at any time.
 Takeover is latched and owns steering, both pedals and shifts until an explicit
 return to AI. Starting training or evaluation while you are driving arms the AI
 and keeps human ownership; use **Return to AI** when ready. A return requires an
@@ -225,14 +229,15 @@ Between samples, steering and signed throttle/brake are linearly interpolated
 every 20 ms (or faster if the configured control interval is shorter). Pedal
 transitions pass through zero, so throttle and brake never overlap. Gear choices
 remain discrete and execute only when their sample becomes due.
-New models use 155 action outputs (five per step) plus one critic output. Create
+New models use 155 action outputs (five per step) plus one reserved scalar output. Create
 and train a new model for this denser plan; existing weights are not migrated.
 The current plan continues during learning and inference. A new output replaces
 the entire plan immediately and starts its own clock. A late control tick skips
 expired steps; after the final step, the AI holds its pedals and steering until
 the next output or input interruption. Each planned shift is pulsed only once.
-Training explores every plan slot. Observed reward is shared among the steps
-that actually controlled the car, weighted by their acknowledged execution time
+Training samples pedal, steering, and gear from the actor at every plan slot.
+The SAC critics evaluate actions during learning. Observed reward is shared among
+the steps that actually controlled the car, weighted by their acknowledged execution time
 and contribution to each interpolated command. Gear credit follows only the due
 step's executed choice and mask, independently of the analog blend.
 This includes the outgoing plan's actions while a replacement was computing;
@@ -249,9 +254,9 @@ origins, dropping the oldest completed samples first if training falls behind;
 the human-control status reports any drops. Handoff closes partial futures using
 only available targets; Stop cancels queued and incomplete demonstrations.
 
-AI consequence collection runs independently of model training and inference. Set
-`configuration.learning.sequenceSeconds` in the model JSON (default **4 seconds**;
-3–5 seconds is an initial experiment, not an established optimum). The five-second
+By default, the SAC critics use up to **5 seconds** of observed rewards after each
+acknowledged action. To change this window for an existing model, set
+`configuration.learning.sequenceSeconds` in its JSON file. The five-second
 observation history supplies past context independently of this training window.
 Collection retains observation inputs, acknowledged actions and shift masks,
 rewards, and capture/execution timestamps. Rewards are
@@ -369,26 +374,31 @@ The selected lap must contain raw XYZ coordinates, `expert_optimal_speed` (km/h)
 `expert_optimal_throttle` and `expert_optimal_brake` (both between 0 and 1).
 Aggression, reference speed and target speed are included in observations and memory.
 The acceleration/deceleration term charges for the size of the speed gap and how long
-it lasts. At each end of a transition it compares measured speed with the target at
-that lap position, using the aggression that produced the action. The reward
+it lasts. At each end of a transition it compares signed speed with the target at
+that lap position, using the aggression that produced the action. Reverse gear or
+negative longitudinal velocity makes the scored speed negative. The reward
 integrates the absolute gap over elapsed telemetry time, assuming the gap changes
 linearly between samples. If speed crosses the target, both sides contribute to the
-cost. Reaching the target sooner reduces accumulated cost. Leaving sooner, drifting
-away faster over the same interval, or holding a larger gap increases the cost.
-Following the target profile gives this term a score of zero. The cost also applies
-when the car is stopped or moving backward.
+cost. With forward lap progress, reaching the target sooner reduces accumulated
+cost, and following the target profile gives this term a score of zero. When
+normalized lap position stays flat or moves backward, the scored gap is at least
+the gap from standing still over the same interval. Larger speed errors still add
+cost. Forward progress is corrected for start/finish crossings.
 
 The speed term is `−timingWeight × integratedGap / speedTolerance`. With the defaults
-of 1 and 20 km/h, a 20 km/h gap held for one second costs 1 point. The integrated gap
-is reported under **Reward signal** in (km/h)·s.
+of 1 and 20 km/h, a scored 20 km/h gap held for one second costs 1 point. The scored
+speed gap is reported under **Reward signal** in (km/h)·s.
 
-**Throttle-change penalty** and **Brake-change penalty** each use the squared change
-in pedal position, scaled by `100 ms / elapsedMs`. The default weights
-`throttleChangeWeight` and `brakeChangeWeight` are both 0.05. A full-range change over
-100 ms costs 0.05 points. A slower change costs less, and holding the pedal costs zero.
-AI training scores acknowledged commands between observations, including changes when a
-plan is replaced. Manual driving uses the pedal positions and timestamps in telemetry.
-Both penalties appear under **Reward signal**.
+**Steering-change penalty** and **Throttle-change penalty** are zero while a control
+moves continuously in either direction or holds steady. Steering through center counts
+as one movement. Reversing direction, or moving again after a pause, scores the preceding
+movement once. Steering uses the squared distance the wheel moved. Throttle sums the
+squared position changes during that movement, each scaled by `100 ms / elapsedMs`.
+
+**Brake-change penalty** applies that time-scaled squared change to every brake movement.
+All three weights default to 0.05. AI training scores acknowledged commands across plan
+steps and replacements. Manual driving uses the controls from camera-paired telemetry.
+The three penalties appear under **Reward signal**.
 
 Compatible SAC checkpoints from the previous reward scheme load with the new pedal
 weights. Loading divides the old timing weight by 100 to match the new scale and
@@ -405,8 +415,9 @@ regardless of normalized-position changes:
 `-0.25 × progressWeight × 0.01 × telemetrySeconds`,
 or -0.25 reward per second with default weights. This low-speed penalty scales with
 elapsed telemetry time so its accumulated value is independent of sampling frequency.
-Positive progress rewards require speed of at least 1 km/h and a non-reverse
-gear. Signed progress uses the existing 0.02-per-observation cap. At 0.01 lap/second
+Positive progress rewards require forward motion of at least 1 km/h in a
+non-reverse gear. At 1 km/h or faster in reverse, the progress term uses the larger
+of the stationary and distance-based penalties. At 0.01 lap/second
 the rate factor is one half; it approaches 1 as the rate increases, keeping the
 bonus below `0.25 × progressWeight × cappedForwardProgress`.
 Distance weighting keeps accumulated reward independent of sampling frequency
@@ -446,9 +457,8 @@ than 2% of a lap. Detection and its penalty appear separately under **Reward sig
 The penalty scales with elapsed telemetry time, including while stationary, and does
 not add policy inputs or change the saved model format.
 **On-track reward** adds `1 × telemetrySeconds` when the same detection confirms the
-car is on track and it makes forward lap-position progress with nonzero speed in a
-non-reverse gear. Off-track or unavailable detection, stationary driving, and backward
-progress earn no on-track reward. It appears separately under **Reward signal** and
+car is on track, moving forward in a non-reverse gear, and making forward lap-position
+progress. It appears separately under **Reward signal** and
 scales with telemetry time so additional samples do not earn extra credit.
 
 The total reward combines acceleration/deceleration timing, normalized-position progress,
@@ -491,7 +501,9 @@ convolution weights (`cameraWeights`: layers, output-channel rows, then flattene
 kernel Y/X/input-channel weights and a final bias), linear projection weights
 (`cameraProjectionWeights`: output rows, pooled Y/X/channel columns and a final bias),
 LSTM gate weights (`lstmWeights`: input/forget/candidate/output rows, with input features,
-previous hidden values and bias columns) and the actor/critic output matrix (`outputWeights`). An untrained document has `model: null`.
+previous hidden values and bias columns), the actor output matrix (`outputWeights`),
+and the SAC parameters (`sac`), including the online and target critic weights.
+An untrained document has `model: null`.
 The format and algorithm names identify supported operations; there is no numeric model version.
 
 Training and evaluation reload and validate JSON from the selected file every time
@@ -503,9 +515,7 @@ The app remembers the selected path while it is running; after restarting, use
 **Open model** to select it again. Model files require the desktop app.
 Validation checks supported encodings, finite values, resource limits, timing,
 feature names/order and the matrix dimensions derived from the configuration.
-Missing settings are rejected rather than filled with current defaults, except
-older otherwise-compatible files missing `learning.sequenceSeconds`: these receive
-the explicit four-second setting while preserving their weights and input layout.
+Model files must specify `learning.sequenceSeconds`. Training uses the saved duration.
 
 Models are never saved in browser local storage. The old `acla.self-driving.model`,
 numbered checkpoints and separate aggression setting are deleted when the training
