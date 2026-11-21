@@ -766,7 +766,7 @@ it('uses configured knot times and never repeats a shift while interpolating wit
     await run.loop.stop();
 });
 
-it('credits both analog endpoints by their acknowledged contribution without crediting a future shift', async () => {
+it('credits analog interpolation throughout the slot and credits Hold once', async () => {
     const run = setup();
     const decision = await plannedDecision(run);
     decision.plan[1].shift = 1; decision.plan[1].action.shiftUp = true;
@@ -784,12 +784,13 @@ it('credits both analog endpoints by their acknowledged contribution without cre
     expect(learn.mock.calls.map(([, , , elapsed]) => elapsed)).toEqual(Array(5).fill(0.1));
     expect(learn.mock.calls.reduce((sum, [, reward]) => sum + reward, 0)).toBeCloseTo(run.loop.state.reward!.total);
     const credits = learn.mock.calls.flatMap(([, , , , segment]) => segment);
-    const weight = (step: number, key: 'weight' | 'shiftWeight') => credits.filter((credit) => credit.step === step)
-        .reduce((sum, credit) => sum + credit[key]!, 0) / 5; // Equal 20 ms segments.
-    expect(weight(0, 'weight')).toBeCloseTo(0.6);
-    expect(weight(1, 'weight')).toBeCloseTo(0.4);
-    expect(weight(0, 'shiftWeight')).toBeCloseTo(1);
-    expect(weight(1, 'shiftWeight')).toBe(0);
+    const weight = (step: number) => credits.filter((credit) => credit.step === step)
+        .reduce((sum, credit) => sum + credit.weight, 0) / 5; // Equal 20 ms segments.
+    expect(weight(0)).toBeCloseTo(0.6);
+    expect(weight(1)).toBeCloseTo(0.4);
+    expect(credits.filter(({ shiftWeight, weight }) => (shiftWeight ?? weight) > 0)).toEqual([
+        expect.objectContaining({ step: 0, appliedAt: 1000, shift: 0, shiftWeight: 1 }),
+    ]);
     expect(credits.filter(({ step }) => step === 1).every(({ shifts }) => !shifts.up && !shifts.down)).toBe(true);
     expect(credits.find(({ appliedAt }) => appliedAt === 1040)?.action?.steering).toBeCloseTo(0.028);
     await run.loop.stop();
@@ -887,8 +888,8 @@ it('rewards every executed slot by acknowledged duration and excludes a skipped 
     expect(learn.mock.calls.map(([, , , elapsed]) => elapsed)).toEqual(Array(6).fill(0.8));
     const shares = [0.125, 0.125, 0.25, 0.125, 0.125, 0.25];
     learn.mock.calls.forEach(([, reward], index) => expect(reward).toBeCloseTo(run.loop.state.reward!.total * shares[index]));
-    expect(learn.mock.calls.flatMap(([, , , , credits]) => credits.map(({ step, weight }) => [step, weight])))
-        .toEqual([[0, 1], [1, 1], [2, 1], [4, 1], [5, 1], [6, 1]]);
+    expect(learn.mock.calls.flatMap(([, , , , credits]) => credits.map(({ step, weight, shift, shiftWeight }) => [step, weight, shift, shiftWeight])))
+        .toEqual([0, 1, 2, 4, 5, 6].map((step) => [step, 1, 0, 1]));
     await run.loop.stop();
 });
 
@@ -1082,6 +1083,7 @@ it.each([true, false])('executes and credits rapid repeated and alternating AI s
         const credits = learn.mock.calls.flatMap(([, , , , segment]) => segment);
         expect(Array.from(new Set(credits.map(({ step }) => step)))).toEqual([0, 1, 2, 3, 4]);
         expect(credits.map(({ shift }) => shift)).toEqual([...choices, 0]);
+        expect(credits.map(({ shiftWeight }) => shiftWeight)).toEqual([1, 1, 1, 1, 1, 0]);
         expect(credits.every(({ shifts }) => shifts.up && shifts.down)).toBe(true);
     }
     await run.loop.stop();
@@ -1129,13 +1131,13 @@ it.each([[1, 'shiftUp'], [2, 'shiftDown']] as const)('credits shift %s once, eve
     await tick(1080, 1080, 1070);
 
     const credits = learn.mock.calls.flatMap(([decision, , , , entries]) => entries.map((credit) => [decision, credit] as const));
-    expect(credits.map(([decision, { appliedAt, shift: choice, action }]) =>
-        [decision === hold ? 'replacement' : 'original', appliedAt, choice, action!.shiftUp, action!.shiftDown])).toEqual([
-        ['original', 1000, shift, shift === 1, shift === 2],
-        ['original', 1000, 0, false, false],
-        ['original', 1020, 0, false, false],
-        ['replacement', 1040, 0, false, false],
-        ['replacement', 1060, 0, false, false],
+    expect(credits.map(([decision, { appliedAt, shift: choice, shiftWeight, action }]) =>
+        [decision === hold ? 'replacement' : 'original', appliedAt, choice, shiftWeight, action!.shiftUp, action!.shiftDown])).toEqual([
+        ['original', 1000, shift, 1, shift === 1, shift === 2],
+        ['original', 1000, 0, 0, false, false],
+        ['original', 1020, 0, 0, false, false],
+        ['replacement', 1040, 0, 1, false, false],
+        ['replacement', 1060, 0, 0, false, false],
     ]);
     await tick(1100, 1080, 1070);
     const writes = run.controller.apply.mock.calls;
@@ -1740,7 +1742,7 @@ it.each(['inference', 'learning'] as const)('latches physical takeover and waits
     await run.loop.stop();
 });
 
-it('waits for the in-flight, queued and partial exploration batches to finish on the GPU before granting UI takeover', async () => {
+it.each(['takeover', 'Stop', 'Stop during takeover'])('finishes the in-flight, queued and partial exploration batches on %s', async (end) => {
     const run = setup(true);
     run.policy.configuration.learning.sequenceSeconds = 0.4;
     run.manual.mockResolvedValue({ action: { ...NEUTRAL, brake: 1 }, toggleControl: false });
@@ -1757,7 +1759,9 @@ it('waits for the in-flight, queued and partial exploration batches to finish on
         jest.advanceTimersByTime(100); await flush();
     }
     expect(sequences).toHaveBeenCalledTimes(1);
-    run.loop.setControlSource('manual');
+    if (end !== 'Stop') run.loop.setControlSource('manual');
+    const stopped = end === 'takeover' ? undefined : run.loop.finishTraining();
+    if (stopped) expect(run.loop.finishTraining()).toBe(stopped);
     run.loop.setControlSource('manual');
     await flush();
     expect(run.controller.apply).toHaveBeenLastCalledWith(NEUTRAL);
@@ -1770,9 +1774,14 @@ it('waits for the in-flight, queued and partial exploration batches to finish on
     expect(run.loop.state.source).toBeNull();
     expect(run.controller.apply).toHaveBeenCalledTimes(writes);
     finishLast(); await flush();
-    expect(run.loop.state).toMatchObject({ source: 'manual', steps: run.policy.steps, action: NEUTRAL });
+    await stopped;
+    expect(run.loop.state).toMatchObject({ source: stopped ? null : 'manual', steps: run.policy.steps, action: NEUTRAL,
+        mode: stopped ? 'idle' : 'training' });
     jest.advanceTimersByTime(50); await flush();
-    expect(run.controller.apply).toHaveBeenLastCalledWith(expect.objectContaining({ brake: 1 }));
+    if (stopped) {
+        expect(run.controller.apply).toHaveBeenCalledTimes(writes);
+        expect(run.publish.mock.calls.some(([state]) => state.source === 'manual')).toBe(false);
+    } else expect(run.controller.apply).toHaveBeenLastCalledWith(expect.objectContaining({ brake: 1 }));
     await run.loop.stop();
 });
 
@@ -1800,6 +1809,23 @@ it.each(['stop', 'disconnect', 'learning failure'] as const)('cancels a pending 
     await flush();
     expect(run.loop.state).toMatchObject({ mode: 'idle', source: null, action: NEUTRAL });
     expect(run.publish.mock.calls.some(([state]) => state.source === 'manual')).toBe(false);
+    expect(run.controller.apply).toHaveBeenLastCalledWith(NEUTRAL);
+});
+
+it('finishes a partial human demonstration using only the controls applied before Stop', async () => {
+    const run = shortHumanPlan();
+    const action = { throttle: 0.4, brake: 0, steering: 0.2 };
+    run.manual.mockResolvedValue({ action, toggleControl: false });
+    run.loop.startManual(); await flush();
+    const learn = jest.spyOn(run.policy, 'learnDemonstratedPlanAsync');
+    await run.loop.start(run.policy, true); await flush();
+    expect(learn).not.toHaveBeenCalled();
+    await run.loop.finishTraining();
+    expect(learn).toHaveBeenCalledTimes(1);
+    expect(learn).toHaveBeenCalledWith(expect.anything(), [expect.objectContaining({
+        step: 0, action: expect.objectContaining({ pedal: 0.4, steering: 0.2 }),
+    })]);
+    expect(run.loop.state).toMatchObject({ mode: 'idle', source: null, steps: 1 });
     expect(run.controller.apply).toHaveBeenLastCalledWith(NEUTRAL);
 });
 

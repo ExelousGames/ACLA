@@ -17,7 +17,7 @@ import type { AccControlPreset, ControllerAction, VirtualController } from './vi
 import ManualDrivingControls, { ManualDrivingControlsHandle } from './ManualDrivingControls';
 import ObservationInputDelays, { ObservationDelaySnapshot } from './ObservationInputDelays';
 import RecordedFrameViewer, { RecordedDrivingFrame, RecordedFrameViewerHandle, RecordedReplayPosition } from './RecordedFrameViewer';
-import { findRecordedTelemetry, readRecordedDrivingObservation } from './recorded-driving-session';
+import { findRecordedTelemetry, readRecordedDrivingObservation, type RecordedObservationResult } from './recorded-driving-session';
 import { loadRecordedDrivingReferences, RecordedDrivingReferences, recordedTrackKey } from './recorded-driving-reference';
 import { RecordedDrivingReplay, RecordedReplayProgress } from './recorded-driving-replay';
 import { selectLiveMapReference } from 'views/live-session/live-map-reference';
@@ -104,6 +104,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const inputSourceRef = useRef(inputSource);
     const [screenFrames] = useState(() => new SessionScreenFrameReader());
     const recordedViewer = useRef<RecordedFrameViewerHandle>(null);
+    const [trainingPickerContainer, setTrainingPickerContainer] = useState<HTMLDivElement | null>(null);
     const recordedFrame = useRef<RecordedDrivingFrame | null>(null);
     const recordedReferences = useRef<RecordingReferences | null>(null);
     const [recordedSession, setRecordedSession] = useState<RecordedDrivingFrame['session'] | null>(null);
@@ -115,9 +116,10 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const [annotationProgress, setAnnotationProgress] = useState<RecordedReplayPosition | 'preparing' | null>(null);
     const replayAbort = useRef<AbortController | null>(null);
     const running = state.mode !== 'idle';
+    const finishing = state.mode === 'finishing';
     const aiActive = state.mode === 'training' || state.mode === 'evaluation';
 
-    const save = (): Promise<boolean> => {
+    const save = (afterTraining?: Promise<void>): Promise<boolean> => {
         const destination = modelPath.current;
         if (!documentReady.current || !destination) return Promise.resolve(true);
         const current = policy.current;
@@ -127,6 +129,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         const task = (async () => {
             try {
                 await previous;
+                if (afterTraining) await afterTraining;
                 if (policy.current !== current || generation !== saveGeneration.current) return true;
                 const document = current ? await current.checkpointAsync() : emptyTrainingDocument(configuration.current);
                 if (policy.current !== current || generation !== saveGeneration.current) return true;
@@ -145,8 +148,8 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         trackDrivingModelSave(destination, task);
         return task;
     };
-    const readRecorded = (frame: RecordedDrivingFrame | null, references = recordedReferences.current): ObservationResult => {
-        if (!frame) return { error: 'Choose a recorded video and telemetry JSONL, then select a frame.' };
+    const readRecorded = (frame: RecordedDrivingFrame | null, references = recordedReferences.current): RecordedObservationResult => {
+        if (!frame) return { error: 'Waiting for a frame from replay or the annotation editor.' };
         if (!references || references.sessionId !== frame.session.id || !references.data) {
             return { error: references?.sessionId === frame.session.id && references.error
                 ? references.error : 'Loading matching circuit maps and reference laps for this recording…' };
@@ -185,7 +188,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     };
     const refreshInputs = () => {
         const mode = loop.current?.state.mode;
-        const consuming = replayAbort.current || mode === 'training' || mode === 'evaluation';
+        const consuming = replayAbort.current || mode === 'training' || mode === 'evaluation' || mode === 'finishing';
         // Preview while idle; active runs own sampling, even while awaiting work.
         const result = consuming ? sampledInputs.current : read();
         // Refresh profiling without acquiring another observation.
@@ -300,7 +303,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 setModelSteps(policy.current?.steps ?? null);
                 if (next.mode === 'training') setSaved(false);
                 const saveEvery = configuration.current.runtime.saveEverySteps;
-                if (next.mode === 'idle' || (next.steps > 0
+                if (next.mode === 'idle' || (next.mode === 'training' && next.steps > 0
                     && Math.floor(next.steps / saveEvery) > Math.floor(Math.max(0, lastSaveStep.current) / saveEvery))) {
                     lastSaveStep.current = next.steps;
                     void save();
@@ -348,10 +351,12 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             window.removeEventListener('keydown', onKey);
             window.removeEventListener('blur', onBlur);
             window.removeEventListener('beforeunload', onUnload);
-            if (inputSourceRef.current === 'live') void loop.current?.stop();
+            const liveLoop = inputSourceRef.current === 'live' ? loop.current : null;
+            const afterTraining = liveLoop?.state.mode === 'finishing' ? liveLoop.finishTraining() : undefined;
+            if (!afterTraining) void liveLoop?.stop();
             void api?.disconnect().catch(() => undefined);
             const current = policy.current;
-            void save().finally(() => current?.dispose());
+            void save(afterTraining).finally(() => current?.dispose());
         };
         // The live component directory is read through a ref, without restarting a running episode.
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -582,6 +587,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const liveStartBlocker = fileBusy ? 'Wait for the model file to finish loading.'
         : !filePath ? 'Create or open a model file.'
         : initializingGpu ? 'Preparing the model and waiting for fresh live inputs.'
+        : finishing ? 'Finishing the current training run.'
         : aiActive ? 'AI is already running. Stop it before starting another run.'
         : testTimer.current ? 'Stop the controller calibration test.'
         : !connected ? 'Connect the virtual wheel.'
@@ -632,31 +638,31 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 <span className="driving-eyebrow">CONTROL OWNER</span>
                 <strong aria-label="Current control owner">{testMode.current ? 'Calibration test' : state.source === 'manual' ? 'Human' : state.source === 'ai' ? 'AI' : 'No driver'}</strong>
                 <span>{connected ? `vJoy ${deviceId} → Simulator` : 'Connect vJoy to drive'}</span>
-                <button className="driving-stop" disabled={!running && !testTimer.current && !initializingGpu}
-                    onClick={() => { startGeneration.current++; stopTest(); void loop.current?.stop(); }}>Stop</button>
+                <button className="driving-stop" disabled={finishing || (!running && !testTimer.current && !initializingGpu)}
+                    onClick={() => { startGeneration.current++; stopTest(); void loop.current?.finishTraining(); }}>Stop</button>
             </div>
             <span className="driving-route-arrow" aria-hidden="true">←</span>
             <div className="driving-route-source" data-active={state.source === 'ai'}>
                 <span className="driving-eyebrow">AI INPUT</span><strong>Driving policy</strong>
-                <span>{aiActive ? state.mode === 'training' ? 'Training enabled' : 'Evaluation · learning off' : 'Not started'}</span>
+                <span>{finishing ? 'Finishing training' : aiActive ? state.mode === 'training' ? 'Training enabled' : 'Evaluation · learning off' : 'Not started'}</span>
             </div>
-            <p>One driver owns steering, pedals and shifts at a time. Human takeover stays active until you explicitly return control to AI. Stop releases every input.</p>
+            <p>One driver owns steering, pedals and shifts at a time. Human takeover stays active until you explicitly return control to AI. Stop releases every input. During training, it also finishes learning from the current run and saves the model.</p>
         </section>}
         <div className="driving-grid">
             {inputSource === 'recorded' && <RecordedFrameViewer ref={recordedViewer} configuration={config}
-                policy={policy.current} disabled={replaying || initializingGpu || fileBusy}
+                policy={policy.current} disabled={replaying || initializingGpu || fileBusy} trainingPickerContainer={trainingPickerContainer}
                 onFrame={updateRecordedFrame} onBusyChange={setViewerBusy} onReplayReadyChange={setReplayReady} />}
             {inputSource === 'live' && <ManualDrivingControls ref={manualControls} connected={connected} running={running} source={state.source}
-                testing={Boolean(testMode.current)} aiActive={aiActive} aiReady={Boolean(observation && !mismatched)} onSourceChange={changeSource} />}
+                finishing={finishing} testing={Boolean(testMode.current)} aiActive={aiActive} aiReady={Boolean(observation && !mismatched)} onSourceChange={changeSource} />}
             <section className="driving-card driving-ai-input" aria-label="AI driver">
                 <div className="driving-card-title"><h2>AI driver</h2><span>{inputSource === 'recorded' ? replaying ? 'Recorded replay' : 'Offline'
-                    : aiActive ? state.source === 'ai' ? 'Driving' : state.source === 'manual' ? 'Human has control' : 'Finishing learning' : 'Not started'}</span></div>
+                    : finishing || (aiActive && !state.source) ? 'Finishing learning' : aiActive ? state.source === 'ai' ? 'Driving' : 'Human has control' : 'Not started'}</span></div>
                 <p>{inputSource === 'live' ? 'Start AI training or evaluation when live inputs are ready. If you are already driving, you keep control until Return to AI.'
                     : 'Recorded training learns signed pedal intent, steering values plus single gear changes from aligned telemetry. Evaluation compares the fixed model with recorded controls. Gaps reset observation history.'}</p>
                 <p>CNN–LSTM soft actor–critic · {config.network.hiddenUnits} recurrent units · continuous throttle/brake and steering, plus learned hold gear, shift up and shift down. Throttle/brake ranges from −1 (full brake) through 0 (both released) to 1 (full throttle).</p>
                 <p>{config.memory.windowMs / 1000}-second observation history covers {fullObservationHistory ? 'all AI observation inputs' : 'the observation inputs selected in this saved model'} during training and evaluation, sampled in {config.memory.intervalMs} ms bins. Memory starts fresh after stopping, changing drivers or interrupted inputs.</p>
                 {inputSource === 'live' && <p>During training, SAC uses up to {config.learning.sequenceSeconds} seconds of recorded rewards to learn how earlier controls affect later outcomes. The current plan keeps running as the model learns.</p>}
-                <p>One action plan predicts {config.actions.planTimesSeconds.length} control steps from 0 to {planEnd} seconds. The AI smoothly blends the signed pedal command and steering between steps while computing; gear shifts occur at their scheduled steps. The remaining plan continues when fresh inference agrees, and is replaced when it disagrees or expires. Reward trains the steps contributing to each executed control command; human driving teaches future steps from demonstrated actions.</p>
+                <p>One action plan predicts {config.actions.planTimesSeconds.length} control steps from 0 to {planEnd} seconds. The AI smoothly blends the signed pedal command and steering between steps while computing. Gear shifts occur at their scheduled steps. The remaining plan continues when fresh inference agrees, and is replaced when it disagrees or expires. During training, each step that contributes to a command learns which controls are likely to earn more reward after penalties. Exploration adds random variation around those choices. Human driving teaches future steps from demonstrated actions.</p>
                 <p className="driving-note">Each model JSON contains its inputs, memory, network, training settings and weights. Training and evaluation load that JSON each time they start.</p>
                 {inputSource === 'live' && <p className="driving-note">Use the same model across games, cars and maps. After switching, stop and restart training or evaluation with fresh live inputs and a matching Live Map reference lap. Learned weights are preserved.</p>}
                 {inputSource === 'live' && <fieldset className="driving-exploration"
@@ -757,13 +763,16 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                         <button disabled={Boolean(liveStartBlocker) || !modelSteps} aria-describedby="driving-start-status" onClick={() => { void start(false); }}>Run trained model</button>
                     </div>
                     <p id="driving-start-status" className="driving-note" role="status" aria-label="AI start status">{liveStartStatus}</p>
-                </> : <div className="driving-buttons" role="group" aria-label="Recorded training controls">
-                    <button className="driving-primary" disabled={recordedStartDisabled}
-                        onClick={() => { void startRecorded(true); }}>Train from annotations</button>
-                    <button disabled={recordedStartDisabled || !modelSteps}
-                        onClick={() => { void startRecorded(false); }}>Evaluate annotations</button>
-                    <button className="driving-stop" disabled={!replaying} onClick={() => replayAbort.current?.abort()}>Stop replay</button>
-                </div>}
+                </> : <>
+                    <div ref={setTrainingPickerContainer} />
+                    <div className="driving-buttons" role="group" aria-label="Recorded training controls">
+                        <button className="driving-primary" disabled={recordedStartDisabled}
+                            onClick={() => { void startRecorded(true); }}>Train from annotations</button>
+                        <button disabled={recordedStartDisabled || !modelSteps}
+                            onClick={() => { void startRecorded(false); }}>Evaluate annotations</button>
+                        <button className="driving-stop" disabled={!replaying} onClick={() => replayAbort.current?.abort()}>Stop replay</button>
+                    </div>
+                </>}
                 {annotationProgress !== null && <div className="driving-annotation-progress">
                     <progress aria-label="Annotation training progress" aria-valuetext={trainingProgressText}
                         max={1} value={trainingProgress} />
@@ -904,7 +913,8 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                             : `${state.reward.impactEstimate.detected ? 'Possible impact' : 'No impact detected'} · Confidence ${(state.reward.impactEstimate.confidence * 100).toFixed(0)}% · Estimated severity ${(state.reward.impactEstimate.severity * 100).toFixed(0)}/100 · Excess Δv ${state.reward.impactEstimate.deltaV.toFixed(2)} m/s`}</p>
                     </div>
                     <div><dt>Blocked-motion penalty</dt><dd>{state.reward?.blockedMotion ?? 0}</dd>
-                        <p>Penalizes sustained throttle with little forward motion or sustained steering with a weak lateral G-force response.</p>
+                        <p>Penalizes sustained throttle with little forward motion. It also flags possible wall riding when
+                            steering is held to one side and the car repeatedly rebounds within two seconds without turning consistently.</p>
                     </div>
                 </dl>
             </section>}

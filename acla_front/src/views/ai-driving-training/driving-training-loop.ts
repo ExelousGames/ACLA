@@ -16,7 +16,7 @@ import { DrivingBlockedMotionMonitor } from './driving-blocked-motion';
 import { DEFAULT_DRIVING_CONFIG, drivingMemorySlots } from './driving-model-config';
 
 export interface TrainingState {
-    mode: 'idle' | 'manual' | 'training' | 'evaluation';
+    mode: 'idle' | 'manual' | 'training' | 'evaluation' | 'finishing';
     status: string;
     action: ControllerAction;
     plan: PlannedAction[] | null;
@@ -41,7 +41,7 @@ interface ExecutedPlan {
     startedAt: number;
     endedAt?: number;
     executions: (Omit<PlanStepCredit, 'weight'> & { appliedAt: number; action: DrivingAction; nextWeight: number;
-        controlChanges: ControlChanges })[];
+        shiftWeight: number; controlChanges: ControlChanges })[];
 }
 
 export class DrivingTrainingLoop {
@@ -64,6 +64,7 @@ export class DrivingTrainingLoop {
     private modelLease?: ControlLease;
     private modelWork?: Promise<void>;
     private handoffWork?: Promise<void>;
+    private finishing?: Promise<void>;
     private modelRevision = 0;
     private learningRevision = 0;
     private starting = false;
@@ -181,8 +182,32 @@ export class DrivingTrainingLoop {
         void this.tick(policy);
     }
 
-    async stop(status = 'Stopped. Controller released.'): Promise<void> {
-        const generation = ++this.generation;
+    /** The Stop button releases the wheel while the captured training segment finishes. */
+    finishTraining(): Promise<void> {
+        if (this.finishing) return this.finishing;
+        if (this.state.mode !== 'training' || !this.policy) return this.stop();
+        const generation = this.generation;
+        const policy = this.policy;
+        clearInterval(this.timer);
+        this.lease = undefined;
+        this.activePlan = undefined;
+        this.modelRevision++;
+        this.modelTiming?.finish(false);
+        this.state = { ...this.state, mode: 'finishing', status: 'Finishing training…', action: NEUTRAL, source: null, plan: null };
+        this.finishing = this.output.release().then(async () => {
+            if (generation !== this.generation) return;
+            await this.finishBufferedTraining(policy);
+            if (generation === this.generation) this.endSession('Training finished. Controller released.', policy.steps);
+        }).catch(async (error) => {
+            if (generation === this.generation) await this.stop(error instanceof Error ? error.message : 'Controller failed.');
+        });
+        this.publish(this.state);
+        return this.finishing;
+    }
+
+    private endSession(status: string, steps = this.state.steps) {
+        this.generation++;
+        this.finishing = undefined;
         this.modelRevision++;
         this.learningRevision++;
         clearInterval(this.timer);
@@ -192,9 +217,14 @@ export class DrivingTrainingLoop {
         this.memory.reset();
         this.demonstrations.reset();
         this.lastTelemetry = undefined;
+        this.state = { ...this.state, mode: 'idle', status, steps, action: NEUTRAL, source: null, plan: null };
         this.policy = undefined;
-        this.state = { ...this.state, mode: 'idle', status, action: NEUTRAL, source: null, plan: null };
         this.publish(this.state);
+    }
+
+    async stop(status = 'Stopped. Controller released.'): Promise<void> {
+        this.endSession(status);
+        const generation = this.generation;
         try { await this.output.release(); }
         catch (error) {
             if (generation !== this.generation) return;
@@ -230,7 +260,7 @@ export class DrivingTrainingLoop {
 
     private changeSource(source: ControlSource) {
         if (source === this.state.source) return;
-        const learning = this.policy && this.state.mode === 'training' ? this.finishHandoffTraining(this.policy) : undefined;
+        const learning = this.policy && this.state.mode === 'training' ? this.finishBufferedTraining(this.policy) : undefined;
         this.modelRevision++;
         this.modelTiming?.finish(false);
         this.selector.source = source;
@@ -253,7 +283,7 @@ export class DrivingTrainingLoop {
         const generation = this.generation;
         try {
             await Promise.all([this.output.release(), learning]);
-            if (generation === this.generation) this.grantControl('manual');
+            if (generation === this.generation && this.state.mode === 'training') this.grantControl('manual');
         } catch (error) {
             if (generation === this.generation) await this.stop(error instanceof Error ? error.message : 'Controller failed.');
         }
@@ -267,7 +297,7 @@ export class DrivingTrainingLoop {
         this.publish(this.state);
     }
 
-    private finishHandoffTraining(policy: DrivingPolicy) {
+    private finishBufferedTraining(policy: DrivingPolicy) {
         const pending = this.handoffWork ?? (this.modelLease && this.modelWork);
         const batches = this.consequences.finish();
         const demonstrations = this.demonstrations;
@@ -566,7 +596,7 @@ export class DrivingTrainingLoop {
             controlChanges.throttle += previousCommand.controlChanges.throttle;
         }
         if (!plan.executions.length) plan.startedAt = appliedAt;
-        plan.executions.push({ step, appliedAt, shift, shifts, action, nextWeight, controlChanges });
+        plan.executions.push({ step, appliedAt, shift, shifts, action, nextWeight, controlChanges, shiftWeight: sameStep ? 0 : 1 });
         if (shift) {
             this.shiftReleaseAt = appliedAt + this.config.actions.shiftPulseMs;
         }
@@ -586,14 +616,14 @@ export class DrivingTrainingLoop {
                 return { execution, startedAt, duration };
             }).filter(({ duration }) => duration > 0);
             return intervals.map(({ execution, startedAt, duration }) => {
-                const { step, shifts, appliedAt, nextWeight } = execution;
+                const { step, shifts, appliedAt, nextWeight, shiftWeight } = execution;
                 const changed = appliedAt >= from;
-                // A command can span several telemetry intervals. Credit its press at acknowledgement.
+                // A command can span several telemetry intervals. Credit its gear choice only at acknowledgement.
                 const shift = changed ? execution.shift : 0;
                 const action = shift === execution.shift ? execution.action : { ...execution.action, shiftUp: false, shiftDown: false };
                 // Each acknowledged command has its own consequence clock.
-                // Both analog endpoints contributed; only the due slot chose a gear.
-                const credits: PlanStepCredit[] = [{ step, shift, shifts, action, appliedAt, weight: 1 - nextWeight, shiftWeight: 1 },
+                const credits: PlanStepCredit[] = [{ step, shift, shifts, action, appliedAt, weight: 1 - nextWeight,
+                    shiftWeight: changed ? shiftWeight : 0 },
                     ...(nextWeight > 0 ? [{ step: step + 1, shift: 0 as const, shifts: { up: false, down: false },
                         action, appliedAt, weight: nextWeight, shiftWeight: 0 }] : [])];
                 return { plan, startedAt, duration, credits, controlChanges: changed ? execution.controlChanges : NEUTRAL };
@@ -662,7 +692,9 @@ export class DrivingTrainingLoop {
             }
             if (active()) timing.finish(true);
         } catch (error) {
-            if (active() || (learningActive() && this.handoffWork)) await this.stop(error instanceof Error ? error.message : 'Training failed.');
+            if (active() || (learningActive() && (this.handoffWork || this.state.mode === 'finishing'))) {
+                await this.stop(error instanceof Error ? error.message : 'Training failed.');
+            }
         } finally { timing.finish(false); this.modelLease = undefined; this.installingPlan = false; }
     }
 

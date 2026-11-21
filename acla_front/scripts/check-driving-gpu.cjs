@@ -456,22 +456,41 @@ async function checks(soakIterations) {
     close(Array.from(measuredSamples.slice(sacPolicySampleFloats)), expectedSample, 'Next actor distribution matches current sampler');
     distribution.dispose();
 
-    const forecastSeed = JSON.parse(JSON.stringify(sacSeed));
-    forecastSeed.model.outputWeights.forEach(row => row.fill(0));
-    forecastSeed.model.outputWeights[0][sacConfig.network.hiddenUnits] = 0.6;
-    forecastSeed.model.outputWeights[actionOutputs][sacConfig.network.hiddenUnits] = 0.1;
-    forecastSeed.model.sac.logStds[0] = -2;
-    forecastSeed.model.sac.logStds[DRIVING_ANALOG_AXES] = -3;
-    const forecast = await create(sacConfig, forecastSeed), teacherPass = forecast.gpu.replay(sacNext);
-    forecast.gpu.learnTransition(teacherPass, sacInput, { reward: 0.25, elapsedSeconds: 0.4, terminal: true,
-        actions: [{ ...sacCredit, step: 1, action: { ...sacAction, pedal: 0.95 } }], nextShifts: sacCredit.shifts, originInput: sacInput });
-    forecast.gpu.release(teacherPass);
-    const forecastAfter = await forecast.checkpointAsync();
-    close([forecastAfter.model.outputWeights[actionOutputs][sacConfig.network.hiddenUnits]],
-        [0.1 + sacConfig.learning.actorRate * (0.6 - 0.1)], 'Future head learns current actor teacher rather than executed control');
-    close([forecastAfter.model.sac.logStds[DRIVING_ANALOG_AXES]], [-3 + sacConfig.learning.actorRate], 'Future spread distills frozen current actor spread');
-    close(forecastAfter.model.outputWeights.slice(2 * actionOutputs).flat(), forecastSeed.model.outputWeights.slice(2 * actionOutputs).flat(), 'Uncredited future head stays unchanged');
-    forecast.dispose();
+    // Fit a critic from an observed outcome, then check policy improvement at
+    // every horizon. The other critic is optimistic and favors the opposite pedal.
+    for (const reward of [-1, 1]) {
+        const seed = JSON.parse(JSON.stringify(sacSeed)), h = sacConfig.network.hiddenUnits;
+        seed.configuration.learning.criticRate = 0.1;
+        seed.configuration.learning.actorRate = 0.05;
+        seed.model.outputWeights.forEach(row => row.fill(0));
+        const [lower, optimistic] = seed.model.sac.criticWeights;
+        lower[h] = 0.8;
+        lower[h + 1] = -0.5;
+        lower[h + DRIVING_ANALOG_AXES + 1] = 0.6;
+        optimistic[h] = -1;
+        optimistic[h * (h + actionOutputs + 1)] = 1;
+        optimistic[optimistic.length - 1] = 3;
+        const policy = await create(seed.configuration, seed);
+        const up = { ...sacCredit, shift: 1, shifts, action: { ...sacAction, shiftUp: true } };
+        await directSac(policy, sacNext, true, [up], reward);
+        const replay = policy.gpu.replay(sacNext);
+        const steps = sacConfig.actions.planTimesSeconds;
+        policy.gpu.learnTransition(replay, sacNext, { reward, elapsedSeconds: 0.4, terminal: true,
+            actions: steps.map((_, step) => ({ ...up, step, weight: 1 / steps.length })), nextShifts: shifts, originInput: sacInput });
+        policy.gpu.release(replay);
+        const learned = await policy.checkpointAsync();
+        policy.random = () => 0.98;
+        const decision = await policy.decideAsync(sacInput, true, shifts);
+        decision.plan.forEach(({ means, latent }, step) => {
+            assert(reward * means[0] > 0 && reward * means[1] < 0, `Outcome steers preferred controls at step ${step}`);
+            const rows = learned.model.outputWeights.slice(step * actionOutputs + DRIVING_ANALOG_AXES, (step + 1) * actionOutputs);
+            assert(reward * rows[1][h] > 0 && reward * rows[0][h] < 0 && rows[2][h] === 0, `Outcome steers allowed gears at step ${step}`);
+            assert(reward * (learned.model.sac.logStds[step * DRIVING_ANALOG_AXES] - Math.fround(Math.log(0.05))) < 0,
+                `Outcome changes exploration spread at step ${step}`);
+            assert(latent.every((value, axis) => value !== means[axis]), `Learned step ${step} still explores`);
+        });
+        policy.releaseDecision(decision); policy.dispose();
+    }
 
     const blended = await create(config), blendedInput = makeInput(config);
     const blendedDecision = await blended.decideAsync(blendedInput, true, shifts);

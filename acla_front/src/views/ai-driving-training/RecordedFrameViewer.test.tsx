@@ -323,7 +323,7 @@ it('edits a selected saved annotation in place and preserves its training checkb
     expect(screen.getByRole('button', { name: 'Save training annotation' })).toBeDisabled();
 });
 
-it('loads multiple annotation files and replays saved ranges across only the checked annotations', async () => {
+it('selects one or more annotation files from the AI driver and replays only the checked files', async () => {
     const ref = React.createRef<RecordedFrameViewerHandle>();
     const config = cloneConfig();
     config.runtime.controlIntervalMs = 100;
@@ -335,23 +335,39 @@ it('loads multiple annotation files and replays saved ranges across only the che
             [{ start: 0, end: 0.2 }, { start: 0.4, end: 0.5 }]),
         savedAnnotation('second.json', 'second-camera.webm', 'second-controls.jsonl', 0.3, [{ start: 0.6, end: 0.7 }]),
         savedAnnotation('extra.json', 'extra.mp4', 'extra.jsonl', 0, null),
+        savedAnnotation('empty.json', 'empty.mp4', 'empty.jsonl', 0, []),
     ]);
     const onReplayReadyChange = jest.fn();
-    render(<RecordedFrameViewer ref={ref} configuration={config} policy={null} disabled={false}
-        onFrame={jest.fn()} onReplayReadyChange={onReplayReadyChange} />);
+    function View() {
+        const [container, setContainer] = React.useState<HTMLDivElement | null>(null);
+        return <>
+            <RecordedFrameViewer ref={ref} configuration={config} policy={null} disabled={false}
+                trainingPickerContainer={container} onFrame={jest.fn()} onReplayReadyChange={onReplayReadyChange} />
+            <section aria-label="AI driver"><div ref={setContainer} /></section>
+        </>;
+    }
+    render(<View />);
+    const aiDriver = within(screen.getByRole('region', { name: 'AI driver' }));
+    const picker = aiDriver.getByLabelText('Select annotation files for training');
+    const selectTrainingFiles = (...names: string[]) => fireEvent.change(picker, { target: {
+        files: names.map((name) => new File(['{}'], name)),
+    } });
     expect(onReplayReadyChange).toHaveBeenLastCalledWith(false);
-    expect(screen.getByLabelText('Edit saved annotations')).toHaveAttribute('multiple');
-    pickAnnotations('first.json', 'second.json', 'extra.json', 'missing.json');
-    const preview = await loadAnnotationPreview(2.5);
-    expect(open).toHaveBeenCalledTimes(4);
-    expect(screen.getByRole('alert')).toHaveTextContent('missing.json: Put the video in the same folder');
-    expect(screen.queryByRole('button', { name: /^View/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Edit first.json' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByText('first-camera.mp4')).toBeInTheDocument();
-    expect(screen.getByText('first-controls.jsonl')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Jump to start of range 2' })).toBeEnabled();
-    fireEvent.click(screen.getByRole('checkbox', { name: /^extra\.json/ }));
-    await waitFor(() => expect(onReplayReadyChange).toHaveBeenLastCalledWith(true));
+    expect(picker).toHaveAttribute('multiple');
+
+    selectTrainingFiles('extra.json');
+    const extra = await aiDriver.findByRole('checkbox', { name: /^extra\.json/ });
+    expect(extra).toBeChecked();
+    expect(onReplayReadyChange).toHaveBeenLastCalledWith(true);
+
+    selectTrainingFiles('first.json', 'second.json', 'empty.json', 'missing.json');
+    expect(await aiDriver.findByRole('group', { name: 'Annotations for training (2 selected)' })).toBeInTheDocument();
+    expect(extra).not.toBeChecked();
+    expect(aiDriver.getByRole('checkbox', { name: /^empty\.json/ })).toBeDisabled();
+    expect(aiDriver.getByRole('alert')).toHaveTextContent('missing.json: Put the video in the same folder');
+    expect(open).toHaveBeenCalledTimes(5);
+    expect(screen.queryByLabelText('Original recorded video')).not.toBeInTheDocument();
+    expect(window.fetch).not.toHaveBeenCalled();
 
     const create = document.createElement.bind(document);
     jest.spyOn(document, 'createElement').mockImplementation(((tag: string) => {
@@ -379,7 +395,10 @@ it('loads multiple annotation files and replays saved ranges across only the che
         ...[0, 1, 2].map((processedFrames) => ({ recordingNumber: 2, recordingCount: 2, processedFrames, totalFrames: 2 })),
     ]);
     expect(parse.mock.calls.map(([input]) => input)).toEqual(['first-controls.jsonl', 'second-controls.jsonl']);
-    expect(preview.currentTime).toBe(0);
+
+    selectTrainingFiles('empty.json', 'missing.json');
+    await waitFor(() => expect(onReplayReadyChange).toHaveBeenLastCalledWith(false));
+    expect(aiDriver.getByRole('group', { name: 'Annotations for training (0 selected)' })).toBeInTheDocument();
 });
 
 it('ignores an in-flight inspection after the selected model changes', async () => {

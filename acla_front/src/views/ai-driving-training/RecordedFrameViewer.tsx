@@ -1,4 +1,5 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import { capturePolicyCameraImage, PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
 import type { DrivingModelConfig } from './driving-model-config';
@@ -30,6 +31,7 @@ interface Props {
     configuration: DrivingModelConfig;
     policy: DrivingPolicy | null;
     disabled: boolean;
+    trainingPickerContainer?: HTMLDivElement | null;
     onFrame: (frame: RecordedDrivingFrame | null) => void;
     onBusyChange?: (busy: boolean) => void;
     onReplayReadyChange?: (ready: boolean) => void;
@@ -154,6 +156,7 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
     const [annotations, setAnnotations] = useState<ListedAnnotation[]>([]);
     const [included, setIncluded] = useState<string[]>([]);
     const [annotationErrors, setAnnotationErrors] = useState<string[]>([]);
+    const [trainingAnnotationErrors, setTrainingAnnotationErrors] = useState<string[]>([]);
     const [savedName, setSavedName] = useState('');
     const [pickedVideos, setPickedVideos] = useState<File[]>([]);
     const [pickedTelemetry, setPickedTelemetry] = useState<File[]>([]);
@@ -462,7 +465,8 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
         setSavedName('');
         setEditor(next);
     };
-    const rememberAnnotations = (loaded: ListedAnnotation[], replaceFolder = false) => {
+    const rememberAnnotations = (loaded: ListedAnnotation[], mode: 'merge' | 'folder' | 'training' = 'merge') => {
+        const replaceFolder = mode === 'folder';
         const existing = new Map(annotations.map((item) => [item.id, item]));
         const next = new Map(annotations.filter((item) => !replaceFolder || !item.folderPath || item.imported)
             .map((item) => [item.id, replaceFolder ? { ...item, folderPath: undefined } : item]));
@@ -470,9 +474,10 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
             next.set(item.id, { ...next.get(item.id), ...item, imported: existing.get(item.id)?.imported || !item.folderPath });
         }
         const list = Array.from(next.values());
+        const pickedIds = new Set(loaded.map(({ id }) => id));
         setAnnotations(list);
         setIncluded((previous) => list.filter(({ id, selection }) => selection.ranges?.length !== 0
-            && (!existing.has(id) || previous.includes(id))).map(({ id }) => id));
+            && (mode === 'training' ? pickedIds.has(id) : !existing.has(id) || previous.includes(id))).map(({ id }) => id));
         if (annotation && !next.has(annotation.id)) openEditor(null);
     };
     const chooseWorkingFolder = async (files: File[]) => {
@@ -499,17 +504,18 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
                     else loaded.push({ ...result, folderPath });
                 });
                 applyFolder(loaded);
-                rememberAnnotations(loaded, true);
+                rememberAnnotations(loaded, 'folder');
                 setAnnotationErrors(errors);
             });
         } catch (reason) { reportError(reason); }
     };
-    const openAnnotations = async (files: File[]) => {
+    const openAnnotations = async (files: File[], purpose: 'edit' | 'training') => {
         const bridge = window.recordedTrainingRanges;
         if (!bridge || !files.length) return;
+        const setErrors = purpose === 'training' ? setTrainingAnnotationErrors : setAnnotationErrors;
         try {
             await runOperation('Opening training annotations', async (signal) => {
-                setAnnotationErrors([]);
+                setErrors([]);
                 const result = await Promise.allSettled(files.map((file) => bridge.open(file)));
                 checkAbort(signal);
                 const loaded: TrainingAnnotation[] = [], errors: string[] = [];
@@ -517,9 +523,9 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
                     if (item.status === 'fulfilled') loaded.push(item.value);
                     else errors.push(`${files[index].name}: ${message(item.reason)}`);
                 });
-                rememberAnnotations(loaded);
-                setAnnotationErrors(errors);
-                if (loaded.length) openEditor({ annotationId: loaded[0].id });
+                rememberAnnotations(loaded, purpose === 'training' ? 'training' : 'merge');
+                setErrors(errors);
+                if (purpose === 'edit' && loaded.length) openEditor({ annotationId: loaded[0].id });
             });
         } catch (reason) { reportError(reason); }
     };
@@ -565,6 +571,29 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
         setTime(video.current.currentTime);
     };
     const layers = inspection?.layers ?? props.configuration.network.cameraLayers.map((item, index) => ({ ...item, index }));
+    const trainingPicker = <div className="recorded-training-picker">
+        <label className="recorded-setting">Select annotation files for training
+            <input type="file" accept=".json" multiple disabled={props.disabled || Boolean(busy) || !window.recordedTrainingRanges}
+                onChange={(event) => {
+                    const files = Array.from(event.target.files ?? []);
+                    event.target.value = '';
+                    void openAnnotations(files, 'training');
+                }} />
+        </label>
+        {trainingAnnotationErrors.length > 0 && <ul className="driving-error" role="alert">
+            {trainingAnnotationErrors.map((item, index) => <li key={index}>{item}</li>)}
+        </ul>}
+        {annotations.length > 0 && <fieldset className="recorded-training-set" disabled={props.disabled || Boolean(busy)}>
+            <legend>Annotations for training ({queued.length} selected)</legend>
+            {annotations.map((item) => <label key={item.id}>
+                <input type="checkbox" checked={included.includes(item.id)} disabled={item.selection.ranges?.length === 0}
+                    onChange={(event) => setIncluded(event.target.checked ? [...included, item.id] : included.filter((id) => id !== item.id))} />
+                <span>{annotationLabel(item)}<small>{item.selection.videoFileName} · {item.selection.telemetryFileName}</small>
+                    <small>{item.selection.ranges === null ? 'Full aligned recording'
+                        : item.selection.ranges.length ? `${item.selection.ranges.length} selected ranges` : 'No footage selected'}</small></span>
+            </label>)}
+        </fieldset>}
+    </div>;
     return <section className="driving-card recorded-frame-viewer" aria-label="Training annotations">
         <div className="driving-card-title"><h2>Training annotations</h2></div>
         <label className="recorded-setting">Working folder
@@ -588,7 +617,7 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
                 onChange={(event) => {
                     const files = Array.from(event.target.files ?? []);
                     event.target.value = '';
-                    void openAnnotations(files);
+                    void openAnnotations(files, 'edit');
                 }} />
         </label>
         <p className="driving-note">{window.recordedTrainingRanges
@@ -597,20 +626,13 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
         {annotationErrors.length > 0 && <ul className="driving-error" role="alert">
             {annotationErrors.map((item, index) => <li key={index}>{item}</li>)}
         </ul>}
-        {annotations.length > 0 && <fieldset className="recorded-training-set" disabled={props.disabled || Boolean(busy)}>
-            <legend>Annotations for training ({queued.length} selected)</legend>
-            {annotations.map((item) => <div className="recorded-training-entry" key={item.id}>
-                <label>
-                    <input type="checkbox" checked={included.includes(item.id)} disabled={item.selection.ranges?.length === 0}
-                        onChange={(event) => setIncluded(event.target.checked ? [...included, item.id] : included.filter((id) => id !== item.id))} />
-                    <span>{annotationLabel(item)}<small>{item.selection.videoFileName} · {item.selection.telemetryFileName}</small>
-                        <small>{item.selection.ranges === null ? 'Full aligned recording'
-                        : item.selection.ranges.length ? `${item.selection.ranges.length} selected ranges` : 'No footage selected'}</small></span>
-                </label>
-                <button aria-label={`Edit ${annotationLabel(item)}`} aria-pressed={annotation?.id === item.id}
-                    onClick={() => openEditor({ annotationId: item.id })}>Edit</button>
-            </div>)}
-        </fieldset>}
+        {annotations.length > 0 && <div className="driving-buttons recorded-edit-buttons" role="group" aria-label="Edit loaded annotations">
+            {annotations.map((item) => <button key={item.id} disabled={props.disabled || Boolean(busy)}
+                aria-pressed={annotation?.id === item.id} onClick={() => openEditor({ annotationId: item.id })}>
+                Edit {annotationLabel(item)}
+            </button>)}
+        </div>}
+        {props.trainingPickerContainer ? createPortal(trainingPicker, props.trainingPickerContainer) : trainingPicker}
         <div hidden={!adding}>
             {folderVideoCount > 0 && !folderVideos.length && <p className="driving-note">
                 All videos in the working folder already have training annotations.

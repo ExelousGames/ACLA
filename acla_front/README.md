@@ -152,7 +152,8 @@ a separate shift press with no cooldown, including rapid repeated or alternating
 During live AI training, requesting takeover ends exploration. If learning is pending,
 vJoy holds neutral while the model finishes its current update and trains on the
 buffered rewards, including the last partially observed window. Human controls
-become active when that work finishes. Stop can cancel the handoff at any time.
+become active when that work finishes. Pressing **Stop** during a handoff keeps
+the wheel neutral, finishes the pending training, and saves the model.
 Takeover is latched and owns steering, both pedals and shifts until an explicit
 return to AI. Starting training or evaluation while you are driving arms the AI
 and keeps human ownership; use **Return to AI** when ready. A return requires an
@@ -235,8 +236,12 @@ The current plan continues during learning and inference. A new output replaces
 the entire plan immediately and starts its own clock. A late control tick skips
 expired steps; after the final step, the AI holds its pedals and steering until
 the next output or input interruption. Each planned shift is pulsed only once.
-Training samples pedal, steering, and gear from the actor at every plan slot.
-The SAC critics evaluate actions during learning. Observed reward is shared among
+During training, each plan step samples pedal and steering around its learned
+preferred controls and draws a gear choice from its learned probabilities.
+For each contributing future step, the two SAC critics score that step's choices
+at the observed state where it took effect. The lower estimate of reward after
+penalties guides the step's preferred controls, exploration spread and gear
+probabilities. Observed reward is shared among
 the steps that actually controlled the car, weighted by their acknowledged execution time
 and contribution to each interpolated command. Gear credit follows only the due
 step's executed choice and mask, independently of the analog blend.
@@ -251,8 +256,8 @@ are skipped. Paddle edges label their nearest slot once, independent of the held
 while preserving its analog targets. GPU completion time never selects labels.
 Collection continues during GPU work. The CPU buffer retains up to 512 observation
 origins, dropping the oldest completed samples first if training falls behind;
-the human-control status reports any drops. Handoff closes partial futures using
-only available targets; Stop cancels queued and incomplete demonstrations.
+the human-control status reports any drops. A handoff or **Stop** closes partial
+demonstrations using the controls already recorded. Escape cancels queued demonstrations.
 
 By default, the SAC critics use up to **5 seconds** of observed rewards after each
 acknowledged action. To change this window for an existing model, set
@@ -274,8 +279,10 @@ so retaining the sequence does not retain every decision's GPU workspace.
 The backlog retains up to two completed windows plus the window being collected;
 if training falls behind, the oldest complete window is dropped without shortening
 the requested batch duration. Evaluation continues collection and reward reporting
-without updating weights. Stop, invalid inputs and long telemetry gaps discard
-queued and incomplete sequences. Driver handoffs flush the outgoing partial window
+without updating weights. **Stop** releases the wheel immediately and saves the
+model after the queued updates and final partial window finish. Escape, invalid
+inputs and long telemetry gaps discard queued and incomplete sequences.
+Driver handoffs flush the outgoing partial window
 before starting a separate ownership segment. Human demonstration learning uses
 one grouped update per buffered observation, including its available future targets.
 Sequence and demonstrated-plan gradients are summed, then globally clipped once

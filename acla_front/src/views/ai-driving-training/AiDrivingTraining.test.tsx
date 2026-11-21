@@ -262,20 +262,24 @@ it.each([20, 80])('shows a brief %s km/h impact from live telemetry between slow
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
 });
 
-it('shows sustained blocked motion in the reward without an impact', async () => {
+it.each([
+    { motion: 'standstill', forward: 0, steering: 0, rebound: 0, expectedPenalty: -0.85 },
+    { motion: 'shallow rebounds', forward: 20, steering: 0.05, rebound: 0.33, expectedPenalty: -0.089 },
+])('shows the blocked-motion penalty for $motion between AI frames', async ({ forward, steering, rebound, expectedPenalty }) => {
     const fixture = trainingFixture(Date.now());
     act(() => liveTelemetryStore.resetSession());
     let sequence = 0;
-    const publish = () => {
+    const publish = (lateral = 0) => {
         sequence++;
         liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence,
             committedSequence: sequence, committedCount: sequence, sample: { ...fixture.live.currentTelemetry,
-                Physics_local_velocity_x: 0, Physics_local_velocity_y: 0, Physics_speed_kmh: 0, Physics_gas: 0.8 } });
+                Physics_local_velocity_x: lateral, Physics_local_velocity_y: forward, Physics_speed_kmh: forward * 3.6,
+                Physics_local_angular_vel_z: 0, Physics_steer_angle: steering, Physics_gas: 0.8 } });
     };
     act(() => publish());
     const live = liveTelemetryStore.getSnapshot();
-    const initial = { ...fixture.observation, speed: 0, localVelocity: [0, 0, 0] as [number, number, number],
-        controls: { ...fixture.observation.controls, throttle: 0.8 },
+    const initial = { ...fixture.observation, speed: forward * 3.6, localVelocity: [0, forward, 0] as [number, number, number],
+        yawRate: 0, controls: { ...fixture.observation.controls, throttle: 0.8, steering },
         session: JSON.stringify([live.sessionGeneration, live.streamGeneration, 'acc', 'GT3', 'monza']) };
     mockInput = { observation: initial };
     await renderTraining();
@@ -283,11 +287,12 @@ it('shows sustained blocked motion in the reward without an impact', async () =>
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     fireEvent.click(screen.getByRole('button', { name: 'Start training' })); await flush();
     for (let i = 0; i <= 10; i++) {
-        act(() => { jest.advanceTimersByTime(100); publish(); }); await flush();
+        const lateral = i === 2 || i === 8 ? rebound : 0;
+        act(() => { jest.advanceTimersByTime(100); publish(lateral); }); await flush();
     }
     mockInput = { observation: { ...initial, capturedAt: Date.now(), measuredAt: Date.now() } };
     act(() => { jest.advanceTimersByTime(20); }); await flush();
-    expect(Number(getDefinition('Blocked-motion penalty').textContent)).toBeCloseTo(-0.85);
+    expect(Number(getDefinition('Blocked-motion penalty').textContent)).toBeCloseTo(expectedPenalty);
     expect(getDefinition('Impact penalty').textContent).toBe('0');
     const rewardBreakdown = within(screen.getByRole('region', { name: 'Reward signal' })).getAllByRole('definition')
         .reduce((total, entry) => total + Number(entry.textContent), 0);
@@ -770,8 +775,8 @@ it.each([true, false])('keeps the session active through invalid inputs and resu
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
     expect(screen.getByLabelText('Current control owner')).toHaveTextContent('No driver');
     const saved = JSON.parse(files.get(MODEL_PATH)!);
-    expect(saved.model.steps).toBe(10); // Recovery has not collected a complete training sequence yet.
-    expect(saved).toEqual(checkpoint);
+    if (train) expect(saved.model.steps).toBe(11); // Stop trains the single observed interval after recovery.
+    else expect(saved).toEqual(checkpoint);
 });
 
 it('removes retired saves and starts a new JSON model', async () => {
@@ -1333,9 +1338,8 @@ it.each([true, false])('uses Live Map’s speed targets and applies slider chang
     expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
     const saved = JSON.parse(files.get(MODEL_PATH)!);
-    // Rewards update immediately; this short session has not completed a sequence.
-    expect(saved.model.steps).toBe(10);
-    expect(saved.model).toEqual(checkpoint.model);
+    if (train) expect(saved.model.steps).toBeGreaterThan(10);
+    else expect(saved.model).toEqual(checkpoint.model);
 });
 
 it('restores a saved model after remount', async () => {
@@ -1592,6 +1596,43 @@ it.each([0, 49])('automatically saves when a completed consequence window reache
     expect(window.drivingModelFiles!.write).toHaveBeenCalledWith(MODEL_PATH, expect.any(String));
     expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
     expect(localStorage.getItem('acla.self-driving.model')).toBeNull();
+});
+
+it.each([false, true])('saves the final partial training window after Stop releases the wheel (remount=%s)', async (remount) => {
+    const { observation } = trainingFixture(Date.now());
+    const config = cloneConfig();
+    config.network.hiddenUnits = 3;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 2; });
+    config.network.cameraProjectionUnits = 8;
+    const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
+    files.set(MODEL_PATH, JSON.stringify(checkpoint));
+    mockInput = { observation };
+    const view = await renderTraining();
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Start training' })); await flush();
+    const next = Date.now() + 100;
+    mockInput = { observation: { ...observation, capturedAt: next, measuredAt: next } };
+    act(() => { jest.advanceTimersByTime(100); }); await flush();
+    const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
+    let finishUpdate!: () => void;
+    jest.mocked(gpu.finishTraining).mockImplementationOnce(() => new Promise<void>((resolve) => { finishUpdate = resolve; }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
+    expect(window.virtualController!.apply).toHaveBeenLastCalledWith({ throttle: 0, brake: 0, steering: 0 });
+    expect(screen.getByText('Finishing training…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start training' })).toBeDisabled();
+    if (remount) {
+        view.unmount();
+        await renderTraining();
+        expect(screen.getByRole('button', { name: 'Open model' })).toBeDisabled();
+    }
+    expect(JSON.parse(files.get(MODEL_PATH)!).model.steps).toBe(0);
+    finishUpdate(); await flush();
+    const saved = JSON.parse(files.get(MODEL_PATH)!).model;
+    expect(saved.steps).toBeGreaterThan(0);
+    expect(saved.lstmWeights).not.toEqual(checkpoint.model.lstmWeights);
+    expect(screen.getByRole('button', { name: 'Open model' })).toBeEnabled();
+    expect(screen.getByLabelText('Current control owner')).toHaveTextContent('No driver');
+    if (!remount) expect(screen.getByText('Training finished. Controller released.')).toBeInTheDocument();
 });
 
 it('waits for a departing page’s GPU checkpoint before reopening the file', async () => {

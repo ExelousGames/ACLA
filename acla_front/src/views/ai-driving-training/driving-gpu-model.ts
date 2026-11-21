@@ -389,9 +389,8 @@ export class DrivingGpuModel {
             const weightSum = analogWeight || actions.reduce((sum, { weight, shiftWeight = weight }) => sum + shiftWeight, 0);
             const commandShifts = actions.find(({ weight, shiftWeight = weight }) => shiftWeight > 0)?.shifts;
             const normal = () => Math.sqrt(-2 * Math.log(Math.max(1e-12, this.random()))) * Math.cos(2 * Math.PI * this.random());
-            const transitions = actions.map(({ weight, shiftWeight = weight, action, shifts }, index) => {
-                // Every current-state sample uses the acknowledged command's
-                // availability. Per-slot masks only govern the future forecast.
+            const transitions = actions.map(({ step, weight, shiftWeight = weight, action, shifts }, index) => {
+                // The immediate actor learns at the observed execution state.
                 const samplingShifts = commandShifts ?? shifts;
                 const data = new Float32Array([target.reward, target.elapsedSeconds, Number(target.terminal), 0,
                     weight, shiftWeight, (analogWeight ? weight : shiftWeight) / weightSum,
@@ -400,29 +399,34 @@ export class DrivingGpuModel {
                     ...Array.from({ length: 2 * DRIVING_ANALOG_AXES }, normal)]);
                 const values = this.scratch(this.training, `sacTransition${index}`, data.byteLength);
                 this.device.queue.writeBuffer(values, 0, data);
-                return values;
+                return { values, step, shifts };
             });
+            const features = this.scratch(this.training, 'sacFeatures', this.hidden * 2 * 4);
             this.update(pass, undefined, [], (commands, outputGradient, criticHidden) => {
-                const buffer = (name: string, size: number) => this.scratch(this.training, name, size);
-                const features = buffer('sacFeatures', this.hidden * 2 * 4);
                 commands.copyBufferToBuffer(pass.states, pass.steps * 6 * this.hidden * 4, features, 0, this.hidden * 4);
                 const endpoint = nextTarget ?? pass;
                 commands.copyBufferToBuffer(endpoint.states, endpoint.steps * 6 * this.hidden * 4, features, this.hidden * 4, this.hidden * 4);
-                const samples = buffer('sacSamples', 2 * sacPolicySampleFloats * 4), activations = buffer('sacActivations', 14 * this.hidden * 4);
-                const values = buffer('sacValues', 14 * 4), errors = buffer('sacErrors', 2 * 4);
-                for (const transition of transitions) {
-                    this.dispatch(commands, 'sacSample', [pass.outputs, nextPolicy?.outputs ?? pass.outputs, this.logStds, transition, samples], 2);
-                    this.dispatch(commands, 'sacCriticForward', [this.criticWeights, this.targetCriticWeights, features, transition, samples, activations, values], 14);
-                    this.dispatch(commands, 'sacLoss', [transition, samples, values, errors, outputGradient,
-                        buffer('logStdGradient', this.logStds.size), this.criticWeights, activations], 1);
-                    this.dispatch(commands, 'sacCriticWeightGradient', [this.criticWeights, features, transition, samples, activations, errors,
-                        buffer('criticGradient', this.criticWeights.size)], Math.ceil(this.criticWeights.size / (4 * 64)));
-                    this.dispatch(commands, 'sacCriticHiddenGradient', [this.criticWeights, activations, errors, criticHidden], Math.ceil(this.hidden / 64));
+                for (const { values } of transitions) {
+                    this.sacGradients(commands, pass, features, values, outputGradient, criticHidden, nextPolicy);
                 }
             });
             if (nextPolicy) { this.release(nextPolicy); nextPolicy = undefined; }
             if (nextTarget) { this.release(nextTarget); nextTarget = undefined; }
-            if (target.originInput) this.learnForecast(target.originInput, pass, actions);
+            const future = transitions.filter(({ step }) => step > 0);
+            if (future.length) {
+                // Sample each credited head from its original plan input. Score its actions
+                // with the critics at the state reached when that step controlled the car.
+                const origin = target.originInput ? this.forwardPass(target.originInput) : pass;
+                try {
+                    for (const { values, step, shifts } of future) {
+                        this.device.queue.writeBuffer(values, 3 * 4, new Float32Array([step]));
+                        this.device.queue.writeBuffer(values, 7 * 4, new Float32Array([Number(shifts.up), Number(shifts.down)]));
+                    }
+                    this.update(origin, undefined, [], (commands, outputGradient) => {
+                        for (const { values } of future) this.sacGradients(commands, origin, features, values, outputGradient);
+                    }, false);
+                } finally { if (origin !== pass) this.release(origin); }
+            }
             commit = true;
         } finally {
             if (nextPolicy) this.release(nextPolicy);
@@ -431,25 +435,20 @@ export class DrivingGpuModel {
         }
     }
 
-    /** Future plan heads predict the current actor at their later observed state.
-     * The teacher is detached; evaluating old-origin observations never makes a
-     * horizon-specific action into the immediate action at a later observation. */
-    private learnForecast(input: DrivingPolicyInput, teacher: GpuPolicyPass,
-        credits: { step: number; weight: number; shiftWeight?: number; shifts: ShiftAvailability }[]) {
-        const future = credits.filter(({ step }) => step > 0);
-        if (!future.length) return;
-        const data = new Float32Array(this.config.actions.planTimesSeconds.length * 4);
-        for (const { step, weight, shiftWeight = weight, shifts } of future) {
-            data[step * 4] += weight; data[step * 4 + 1] += shiftWeight;
-            data[step * 4 + 2] = Number(shifts.up); data[step * 4 + 3] = Number(shifts.down);
+    private sacGradients(commands: GPUCommandEncoder, actor: GpuPolicyPass, features: GPUBuffer, transition: GPUBuffer,
+        outputGradient: GPUBuffer, criticHidden?: GPUBuffer, nextPolicy?: GpuPolicyPass) {
+        const buffer = (name: string, size: number) => this.scratch(this.training, name, size);
+        const samples = buffer('sacSamples', 2 * sacPolicySampleFloats * 4), activations = buffer('sacActivations', 14 * this.hidden * 4);
+        const values = buffer('sacValues', 14 * 4), errors = buffer('sacErrors', 2 * 4);
+        this.dispatch(commands, 'sacSample', [actor.outputs, nextPolicy?.outputs ?? actor.outputs, this.logStds, transition, samples], criticHidden ? 2 : 1);
+        this.dispatch(commands, 'sacCriticForward', [this.criticWeights, this.targetCriticWeights, features, transition, samples, activations, values], criticHidden ? 14 : 8);
+        this.dispatch(commands, 'sacLoss', [transition, samples, values, errors, outputGradient,
+            buffer('logStdGradient', this.logStds.size), this.criticWeights, activations], 1);
+        if (criticHidden) {
+            this.dispatch(commands, 'sacCriticWeightGradient', [this.criticWeights, features, transition, samples, activations, errors,
+                buffer('criticGradient', this.criticWeights.size)], Math.ceil(this.criticWeights.size / (4 * 64)));
+            this.dispatch(commands, 'sacCriticHiddenGradient', [this.criticWeights, activations, errors, criticHidden], Math.ceil(this.hidden / 64));
         }
-        const target = this.scratch(this.training, 'sacForecastTargets', data.byteLength);
-        this.device.queue.writeBuffer(target, 0, data);
-        const pass = this.forwardPass(input);
-        try {
-            this.update(pass, 'sacForecastGradient', [pass.outputs, teacher.outputs, target, this.logStds,
-                this.scratch(this.training, 'logStdGradient', this.logStds.size)], undefined, false);
-        } finally { this.release(pass); }
     }
 
     private update(pass: GpuPolicyPass, gradientShader: string | undefined, targets: GPUBuffer[],

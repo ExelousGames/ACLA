@@ -3,6 +3,7 @@ import { cloneConfig } from './driving-model-config';
 import type { DrivingPolicy, PolicyDecision } from './driving-policy';
 import type { DrivingObservation } from './driving-observation';
 import type { DrivingPolicyInput } from './driving-memory';
+import { parseRecordedDrivingSession, readRecordedDrivingObservation } from './recorded-driving-session';
 import { referenceLapFixture, trainingFixture } from './training-fixtures';
 
 function setup(train = true) {
@@ -80,6 +81,35 @@ it('labels each consecutive gear transition and masks ambiguous multi-gear jumps
         { action: expect.objectContaining({ shiftUp: false, shiftDown: false }), shifts: { up: false, down: false } },
         { action: expect.objectContaining({ shiftUp: false, shiftDown: false }), shifts: { up: true, down: true } },
     ]);
+});
+
+it.each([
+    { gears: [3, 0, 0, 4], targets: ['up', 'hold', 'hold'] },
+    { gears: [2, 0, 1], targets: ['down', 'hold'] },
+    { gears: [1, 0, 2], targets: ['up', 'hold'] },
+    { gears: [1, 0, 1], targets: ['hold', 'hold'] },
+    { gears: [3, 0, 5], targets: ['unknown', 'hold'] },
+    { gears: [-1, 0, 1], targets: ['up', 'up'] },
+    { gears: [1, 0, -1], targets: ['down', 'down'] },
+    { gears: [0, 1, 0], targets: ['up', 'down'] },
+    { gears: [1, 0, 2], targets: ['down'], times: [0, 0.1, 2] },
+])('learns $targets from a recording with gears $gears', async ({ gears, targets, times = gears.map((_, i) => i / 10) }) => {
+    const { fake, replay } = setup();
+    const fixture = trainingFixture();
+    const session = parseRecordedDrivingSession(gears.map((gear, index) => JSON.stringify({ ...fixture.live.currentTelemetry,
+        Graphics_analyst_session_time: times[index], Physics_gear: gear + 1 })).join('\n'), 'acc');
+
+    for (let index = 0; index < gears.length; index++) {
+        const result = readRecordedDrivingObservation(session, times[index], fixture.observation.camera,
+            fixture.referenceLap, 50, fake.configuration, fixture.circuitMap);
+        expect(result.observation?.gear).toBe(gears[index]);
+        await replay.consume(result);
+    }
+
+    expect(fake.learnDemonstrationAsync.mock.calls.map(([, action, shifts]) => ({ action, shifts }))).toEqual(
+        targets.map((target) => ({ action: expect.objectContaining({ shiftUp: target === 'up', shiftDown: target === 'down' }),
+            shifts: { up: target !== 'unknown', down: target !== 'unknown' } })));
+    expect(replay.progress.samples).toBe(targets.length);
 });
 
 it.each(['gap', 'session', 'reference', 'position', 'duplicate clock'])(

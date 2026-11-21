@@ -28,8 +28,8 @@ export interface ManualDrivingControlsHandle { read(): Promise<ManualControls | 
 
 const ManualDrivingControls = forwardRef<ManualDrivingControlsHandle, {
     connected: boolean; running: boolean; source: ControlSource | null; onSourceChange(source: ControlSource): void;
-    testing?: boolean; aiActive?: boolean; aiReady?: boolean;
-}>(function ManualDrivingControls({ connected, running, source, onSourceChange, testing = false, aiActive = running, aiReady = true }, ref) {
+    testing?: boolean; aiActive?: boolean; aiReady?: boolean; finishing?: boolean;
+}>(function ManualDrivingControls({ connected, running, source, onSourceChange, testing = false, aiActive = running, aiReady = true, finishing = false }, ref) {
     const [mapping, setMapping] = useState(savedMapping);
     const [enabled, setEnabled] = useState(false);
     const [devices, setDevices] = useState<PhysicalController[]>([]);
@@ -131,7 +131,7 @@ const ManualDrivingControls = forwardRef<ManualDrivingControlsHandle, {
     const liveDevices = !testing && (!running || enabled);
 
     return <section className="driving-card driving-manual" aria-label="Human takeover">
-        <div className="driving-card-title"><h2>Human takeover</h2><span>{takeoverPending ? 'Takeover pending' : running ? humanDriving ? 'You are driving' : 'AI is driving' : enabled && preview ? 'Ready' : 'Set up your controls'}</span></div>
+        <div className="driving-card-title"><h2>Human takeover</h2><span>{finishing ? 'Control released' : takeoverPending ? 'Takeover pending' : running ? humanDriving ? 'You are driving' : 'AI is driving' : enabled && preview ? 'Ready' : 'Set up your controls'}</span></div>
         <p>Drive through the same vJoy wheel as the AI. Human driving works without a model, telemetry or screen capture.</p>
         <div className="driving-buttons">
             <button type="button" className="driving-primary" aria-pressed={enabled}

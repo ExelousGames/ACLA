@@ -12,7 +12,6 @@ const AXES = ${DRIVING_ANALOG_AXES}u;
 const ACTIONS = ${config.actions.outputs.length}u;
 const QCOLS = H + ACTIONS + 1u;
 const QSIZE = H * QCOLS + H + 1u;
-const OUTPUTS = ${config.actions.planTimesSeconds.length * config.actions.outputs.length + 1}u;
 const ALPHA = ${learning.entropyTemperature.toExponential()}f;
 const ACTOR_RATE = ${(learning.actorRate / rate).toExponential()}f;
 const CRITIC_RATE = ${(learning.criticRate / rate).toExponential()}f;
@@ -87,6 +86,14 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         logProbability += logDensity;
     }
     samples[id.x].logProbability = logProbability;
+    // An interpolated future pedal/steering endpoint did not choose the gear.
+    // Evaluate that analog sample under the gear command that actually ran.
+    if (slot > 0u && transition[5] == 0.0) {
+        for (var gear = 0u; gear < 3u; gear++) {
+            samples[id.x].gearProbabilities[gear] = select(0.0, 1.0, gear == u32(transition[11u + AXES]));
+        }
+        return;
+    }
     let mask = select(7u, 9u, next);
     let allowed = array<bool, 3>(true, transition[mask] != 0.0, transition[mask + 1u] != 0.0);
     var maximum = outputValue(next, slot * ACTIONS + AXES);
@@ -161,7 +168,7 @@ fn criticActionGradient(evaluation: u32) -> vec2f {
 
 @compute @workgroup_size(1)
 fn main() {
-    var nextValue = 0.0; var currentValue = 0.0;
+    var currentValue = 0.0;
     var actionGradient = vec2f(0.0);
     var gearObjectives: array<f32, 3>;
     let referenceQ = min(values[2], values[3]);
@@ -174,16 +181,23 @@ fn main() {
         if (probability > 0.0 && transition[4] > 0.0) {
             actionGradient += probability * criticActionGradient(evaluation);
         }
-        let nextProbability = samples[1].gearProbabilities[gear];
-        nextValue += nextProbability * (min(values[(4u + gear) * 2u], values[(4u + gear) * 2u + 1u]) - ALPHA * log(max(nextProbability, 1e-30)));
     }
-    var bellmanTarget = transition[0];
-    if (transition[2] == 0.0 && ${learning.discount.toExponential()}f > 0.0) {
-        bellmanTarget += pow(${learning.discount.toExponential()}f, transition[1] / ${learning.discountIntervalSeconds.toExponential()}f) * (nextValue - ALPHA * samples[1].logProbability);
-    }
-    errors[0] = transition[6] * CRITIC_RATE * clamp(bellmanTarget - values[0], -CRITIC_LIMIT, CRITIC_LIMIT);
-    errors[1] = transition[6] * CRITIC_RATE * clamp(bellmanTarget - values[1], -CRITIC_LIMIT, CRITIC_LIMIT);
     let slot = u32(transition[3]);
+    // Fit the critics once at the execution state. Future-slot passes consume
+    // the same critics for policy improvement and need no bootstrap evaluation.
+    if (slot == 0u) {
+        var bellmanTarget = transition[0];
+        if (transition[2] == 0.0 && ${learning.discount.toExponential()}f > 0.0) {
+            var nextValue = 0.0;
+            for (var gear = 0u; gear < 3u; gear++) {
+                let p = samples[1].gearProbabilities[gear];
+                nextValue += p * (min(values[(4u + gear) * 2u], values[(4u + gear) * 2u + 1u]) - ALPHA * log(max(p, 1e-30)));
+            }
+            bellmanTarget += pow(${learning.discount.toExponential()}f, transition[1] / ${learning.discountIntervalSeconds.toExponential()}f) * (nextValue - ALPHA * samples[1].logProbability);
+        }
+        errors[0] = transition[6] * CRITIC_RATE * clamp(bellmanTarget - values[0], -CRITIC_LIMIT, CRITIC_LIMIT);
+        errors[1] = transition[6] * CRITIC_RATE * clamp(bellmanTarget - values[1], -CRITIC_LIMIT, CRITIC_LIMIT);
+    }
     // Ascend Q minus alpha * log(pi) through the fixed-noise action sample.
     for (var axis = 0u; axis < AXES; axis++) {
         let meanGradient = actionGradient[axis] * samples[0].actionMeanDerivative[axis] - ALPHA * samples[0].logProbabilityMeanGradient[axis];
@@ -238,44 +252,6 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) id: vec3u) {
     if (id.x < H) { upstream[id.x] += critic[id.x]; }
-}`,
-        sacForecastGradient: constants + `
-@group(0) @binding(0) var<storage, read> outputs: array<f32>;
-@group(0) @binding(1) var<storage, read> teacher: array<f32>;
-// Per future slot: analog weight, categorical weight, up allowed, down allowed.
-@group(0) @binding(2) var<storage, read> targets: array<f32>;
-@group(0) @binding(3) var<storage, read> logStds: array<f32>;
-@group(0) @binding(4) var<storage, read_write> stdGradient: array<f32>;
-@group(0) @binding(5) var<storage, read_write> gradient: array<f32>;
-fn probability(offset: u32, gear: u32, allowed: array<bool, 3>, teaching: bool) -> f32 {
-    if (!allowed[gear]) { return 0.0; }
-    var logits: array<f32, 3>;
-    for (var i = 0u; i < 3u; i++) {
-        logits[i] = outputs[offset + i];
-        if (teaching) { logits[i] = teacher[AXES + i]; }
-    }
-    var maximum = logits[0];
-    for (var i = 1u; i < 3u; i++) { if (allowed[i]) { maximum = max(maximum, logits[i]); } }
-    var total = 0.0;
-    for (var i = 0u; i < 3u; i++) { if (allowed[i]) { total += exp((logits[i] - maximum) / TEMPERATURE); } }
-    return exp((logits[gear] - maximum) / TEMPERATURE) / total;
-}
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-    if (id.x >= OUTPUTS) { return; }
-    gradient[id.x] = 0.0;
-    if (id.x == OUTPUTS - 1u) { return; }
-    let slot = id.x / ACTIONS; let axis = id.x % ACTIONS;
-    if (slot == 0u) { return; }
-    let base = slot * 4u;
-    if (axis < AXES) {
-        gradient[id.x] = targets[base] * ACTOR_RATE * clamp(teacher[axis] - outputs[id.x], -POLICY_LIMIT, POLICY_LIMIT);
-        stdGradient[slot * AXES + axis] += targets[base] * ACTOR_RATE * clamp(logStds[axis] - logStds[slot * AXES + axis], -POLICY_LIMIT, POLICY_LIMIT);
-    } else {
-        let allowed = array<bool, 3>(true, targets[base + 2u] != 0.0, targets[base + 3u] != 0.0);
-        let score = (probability(slot * ACTIONS + AXES, axis - AXES, allowed, true) - probability(slot * ACTIONS + AXES, axis - AXES, allowed, false)) / TEMPERATURE;
-        gradient[id.x] = targets[base + 1u] * ACTOR_RATE * clamp(score, -POLICY_LIMIT, POLICY_LIMIT);
-    }
 }`,
         sacApplyLogStd: `
 @group(0) @binding(0) var<storage, read_write> weights: array<f32>;

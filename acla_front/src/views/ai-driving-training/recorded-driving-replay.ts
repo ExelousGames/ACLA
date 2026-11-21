@@ -1,7 +1,8 @@
 import { DrivingMemory, DrivingPolicyInput } from './driving-memory';
-import { DrivingAction, DrivingObservation, DrivingPedalIntent, ObservationResult } from './driving-observation';
+import { DrivingAction, DrivingObservation, DrivingPedalIntent } from './driving-observation';
 import { DrivingPlanTraining } from './driving-plan-training';
 import { DrivingPolicy } from './driving-policy';
+import type { RecordedObservationResult } from './recorded-driving-session';
 
 export interface RecordedReplayProgress {
     samples: number;
@@ -18,7 +19,7 @@ export class RecordedDrivingReplay {
     private memory: DrivingMemory;
     private plans = new DrivingPlanTraining();
     private pedals = new DrivingPedalIntent();
-    private previous?: { observation: DrivingObservation; input: DrivingPolicyInput; action: DrivingAction };
+    private previous?: { observation: DrivingObservation; input: DrivingPolicyInput; action: DrivingAction; shiftGear: number };
 
     constructor(private policy: DrivingPolicy, private train: boolean) {
         this.memory = new DrivingMemory(policy.configuration);
@@ -31,7 +32,7 @@ export class RecordedDrivingReplay {
         this.previous = undefined;
     }
 
-    async consume(result: ObservationResult, active = () => true): Promise<void> {
+    async consume(result: RecordedObservationResult, active = () => true): Promise<void> {
         if (!active()) return;
         const observation = result.observation;
         if (!observation || !this.policy.matches(observation)) {
@@ -53,12 +54,13 @@ export class RecordedDrivingReplay {
         }
         const input = this.memory.encode(observation);
         const pending = this.previous;
-        this.previous = { observation, input, action: this.pedals.action(observation.controls) };
+        const shiftGear = result.shiftGear ?? observation.gear;
+        this.previous = { observation, input, action: this.pedals.action(observation.controls), shiftGear };
         if (!pending) return;
 
         // Telemetry records held axes, not paddle presses. A single subsequent gear
         // change supplies the shift target; ambiguous multi-gear jumps are masked.
-        const gearDelta = observation.gear - pending.observation.gear;
+        const gearDelta = shiftGear - pending.shiftGear;
         const knownShift = Number.isInteger(gearDelta) && Math.abs(gearDelta) <= 1;
         const shifts = { up: knownShift, down: knownShift };
         const action = { ...pending.action, shiftUp: knownShift && gearDelta === 1,

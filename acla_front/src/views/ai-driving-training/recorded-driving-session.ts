@@ -17,6 +17,8 @@ export interface RecordedDrivingRow {
     timeSeconds: number;
     /** Changes when the car, circuit or simulator session changes. */
     segment: number;
+    /** Destination gear and largest telemetry gap in a shift through neutral. */
+    neutralShift?: { gear: number; maxGapSeconds: number };
 }
 export interface RecordedDrivingSession {
     id: string;
@@ -26,6 +28,7 @@ export interface RecordedDrivingSession {
     durationSeconds: number;
     timestampField: RecordedClock;
 }
+export type RecordedObservationResult = ObservationResult & { shiftGear?: number };
 
 let nextSessionId = 0;
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
@@ -68,8 +71,32 @@ export function parseRecordedDrivingSession(text: string, fallbackGame: DesktopG
         previousContext = context;
     });
     if (!rows.length || !game || !timestampField) throw new Error('The telemetry JSONL file contains no samples.');
+    labelNeutralTransitions(rows);
     return { id: `recorded-${++nextSessionId}`, game, rows, startTimeSeconds,
         durationSeconds: rows[rows.length - 1].timeSeconds, timestampField };
+}
+
+function labelNeutralTransitions(rows: RecordedDrivingRow[]) {
+    let engaged: { index: number; segment: number; gear: number } | undefined;
+    let maxGapSeconds = 0;
+    for (const { sample, index, segment, timeSeconds } of rows) {
+        if (!finite(sample.Physics_gear) || sample.Graphics_status !== ACC_STATUS.ACC_LIVE) {
+            engaged = undefined;
+            continue;
+        }
+        const gear = sample.Physics_gear - 1;
+        if (engaged?.segment === segment) maxGapSeconds = Math.max(maxGapSeconds, timeSeconds - rows[index - 1].timeSeconds);
+        if (gear === 0) continue;
+
+        // Preserve neutral as a separate step between reverse and first in either direction.
+        if (engaged?.segment === segment && index > engaged.index + 1 && !(Math.abs(gear) === 1 && engaged.gear === -gear)) {
+            // Use the destination gear when neutral starts so the shift is learned at its onset.
+            const shift = { gear, maxGapSeconds };
+            for (let i = engaged.index + 1; i < index; i++) rows[i].neutralShift = shift;
+        }
+        engaged = { index, segment, gear };
+        maxGapSeconds = 0;
+    }
 }
 
 /** Positive offset means the first telemetry sample occurs later in the video. */
@@ -92,7 +119,7 @@ export function findRecordedTelemetry(session: RecordedDrivingSession, videoSeco
 /** Uses the recording's clock and pixels without touching the live telemetry store. */
 export function readRecordedDrivingObservation(session: RecordedDrivingSession, videoSeconds: number, camera: PolicyCameraImage,
     referenceLap: TopLapReferenceEntry | null, aggression = DEFAULT_DRIVING_CONFIG.aggression,
-    config: DrivingModelConfig = DEFAULT_DRIVING_CONFIG, circuitMap: CircuitMapDto | null = null, offsetSeconds = 0): ObservationResult {
+    config: DrivingModelConfig = DEFAULT_DRIVING_CONFIG, circuitMap: CircuitMapDto | null = null, offsetSeconds = 0): RecordedObservationResult {
     const row = findRecordedTelemetry(session, videoSeconds, offsetSeconds, config.runtime.telemetryMaxAgeMs);
     if (!row) return { error: 'No telemetry close enough to this recorded frame. Check the video offset or choose another frame.' };
     const sample = row.sample;
@@ -111,6 +138,8 @@ export function readRecordedDrivingObservation(session: RecordedDrivingSession, 
     const result = readDrivingObservation(snapshot, { capturedAt, camera, telemetry: snapshot },
         referenceLap, aggression, capturedAt, config, circuitMap);
     if (!result.observation) return { error: result.error.replace(/Live Map/g, 'Reference map').replace(/in Live Session/g, 'for this recording') };
-    return { ...result, observation: { ...result.observation,
+    const shift = row.neutralShift;
+    const shiftGear = shift && shift.maxGapSeconds <= config.runtime.maxTransitionSeconds ? shift.gear : undefined;
+    return { ...result, shiftGear, observation: { ...result.observation,
         session: JSON.stringify([session.id, row.segment, session.game, sample.Static_car_model, sample.Static_track]) } };
 }
