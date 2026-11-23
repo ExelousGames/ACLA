@@ -44,6 +44,24 @@ it('waits for a time slot, tolerates small sampling offsets and skips missing ta
         .some(([, targets]) => targets.some(({ step }) => step === 2 || step === 3))).toBe(false);
 });
 
+it.each([
+    { edge: 'the scheduled time', origin: 481.1, frame: 481.2, boundaryMs: 0, direction: -1 },
+    { edge: 'the late limit', origin: 481.2, frame: 481.35, boundaryMs: 50, direction: 1 },
+])('keeps brake and steering labels when frame time rounds outside $edge', async ({ origin, frame, boundaryMs, direction }) => {
+    const { policy, learn, training, features } = setup();
+    const recordedAt = (seconds: number) => (0.236614 + seconds) * 1000;
+    const originMs = recordedAt(origin), frameMs = recordedAt(frame);
+    expect(Math.sign(frameMs - (originMs + 100) - boundaryMs)).toBe(direction);
+
+    await training.recordAsync(policy, features, neutral, shifts, originMs);
+    const action = { pedal: -0.55, steering: 0.4 };
+    await training.recordAsync(policy, features, action, shifts, frameMs);
+    expect(learn).toHaveBeenCalledWith(features, [{ step: 1, action, shifts }]);
+
+    await training.recordAsync(policy, features, neutral, shifts, frameMs + 1);
+    expect(learn).toHaveBeenCalledTimes(1);
+});
+
 it('discards pending time slots on reset', async () => {
     const { policy, learn, training, features } = setup();
     await training.recordAsync(policy, features, neutral, shifts, 1000);

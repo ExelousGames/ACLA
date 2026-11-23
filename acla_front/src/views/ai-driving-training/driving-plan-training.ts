@@ -25,8 +25,13 @@ export class DrivingPlanTraining {
             const targets: PlannedActionTarget[] = [];
             while (plan.nextStep < policy.planTimes.length) {
                 const due = plan.appliedAt + policy.planTimes[plan.nextStep] * 1000;
-                if (appliedAt < due) break;
-                if (appliedAt - due <= policy.configuration.learning.planTargetToleranceMs) targets.push({ step: plan.nextStep, action, shifts });
+                const delay = appliedAt - due;
+                // Frame and slot timestamps reach the same time through different arithmetic.
+                const roundoff = 4 * Number.EPSILON * Math.max(Math.abs(appliedAt), Math.abs(due));
+                if (delay < -roundoff) break;
+                if (delay <= policy.configuration.learning.planTargetToleranceMs + roundoff) {
+                    targets.push({ step: plan.nextStep, action, shifts });
+                }
                 plan.nextStep++;
             }
             if (targets.length) samples.push({ features: plan.features, targets });
