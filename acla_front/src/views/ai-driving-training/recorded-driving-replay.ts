@@ -1,5 +1,5 @@
 import { DrivingMemory, DrivingPolicyInput } from './driving-memory';
-import { DrivingAction, DrivingObservation, DrivingPedalIntent } from './driving-observation';
+import { DrivingAction, DrivingObservation, encodeDrivingAction } from './driving-observation';
 import { DrivingPlanTraining } from './driving-plan-training';
 import { DrivingPolicy } from './driving-policy';
 import type { RecordedObservationResult } from './recorded-driving-session';
@@ -18,7 +18,6 @@ export class RecordedDrivingReplay {
     readonly progress: RecordedReplayProgress = { samples: 0, skipped: 0, pedalError: 0, steeringError: 0 };
     private memory: DrivingMemory;
     private plans = new DrivingPlanTraining();
-    private pedals = new DrivingPedalIntent();
     private previous?: { observation: DrivingObservation; input: DrivingPolicyInput; action: DrivingAction; shiftGear: number };
 
     constructor(private policy: DrivingPolicy, private train: boolean) {
@@ -28,7 +27,6 @@ export class RecordedDrivingReplay {
     startRange() {
         this.memory.reset();
         this.plans.reset();
-        this.pedals.reset();
         this.previous = undefined;
     }
 
@@ -55,7 +53,7 @@ export class RecordedDrivingReplay {
         const input = this.memory.encode(observation);
         const pending = this.previous;
         const shiftGear = result.shiftGear ?? observation.gear;
-        this.previous = { observation, input, action: this.pedals.action(observation.controls), shiftGear };
+        this.previous = { observation, input, action: encodeDrivingAction(observation.controls), shiftGear };
         if (!pending) return;
 
         // Telemetry records held axes, not paddle presses. A single subsequent gear

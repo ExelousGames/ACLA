@@ -52,23 +52,26 @@ it('learns from earlier held controls with real image history and later action t
     expect(replay.progress.samples).toBe(2);
 });
 
-it('labels immediate and future targets from pedal motion at each recorded frame', async () => {
+it('labels immediate and future recorded targets with brake throughout pedal overlap', async () => {
     const { fake, replay, frame } = setup();
-    const pedals = [[0, 0.9], [0.2, 0.7], [0.2, 0.7], [0.8, 0.1], [0.7, 0.2], [0.7, 0.2]];
+    const pedals = [[0.6, 0], [0.7, 0.2], [0.7, 0.2], [0.8, 0.1], [0.8, 0], [0, 0]];
     for (let i = 0; i < pedals.length; i++) {
         const [throttle, brake] = pedals[i];
         await replay.consume({ observation: frame(1000 + i * 100, { controls: { throttle, brake, steering: 0 } }) });
     }
     expect(fake.learnDemonstrationAsync.mock.calls.map(([, action]) => action)).toEqual(
-        [-0.9, 0.2, 0.2, 0.8, -0.2].map((pedal) => expect.objectContaining({ pedal })));
-    expect(fake.learnPlannedActionsAsync).toHaveBeenCalledWith(fake.learnDemonstrationAsync.mock.calls[3][0], [
+        [0.6, -0.2, -0.2, -0.1, 0.8].map((pedal) => expect.objectContaining({ pedal })));
+    expect(fake.learnPlannedActionsAsync).toHaveBeenCalledWith(fake.learnDemonstrationAsync.mock.calls[0][0], [
         expect.objectContaining({ step: 1, action: expect.objectContaining({ pedal: -0.2 }) }),
+    ]);
+    expect(fake.learnPlannedActionsAsync).toHaveBeenCalledWith(fake.learnDemonstrationAsync.mock.calls[3][0], [
+        expect.objectContaining({ step: 1, action: expect.objectContaining({ pedal: 0.8 }) }),
     ]);
 
     await replay.consume({ error: 'Missing recorded frame.' });
     await replay.consume({ observation: frame(2000, { controls: { throttle: 0.6, brake: 0.1, steering: 0 } }) });
     await replay.consume({ observation: frame(2100) });
-    expect(fake.learnDemonstrationAsync.mock.calls[5][1]).toMatchObject({ pedal: 0.6 });
+    expect(fake.learnDemonstrationAsync.mock.calls[5][1]).toMatchObject({ pedal: -0.1 });
 });
 
 it('labels each consecutive gear transition and masks ambiguous multi-gear jumps', async () => {

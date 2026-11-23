@@ -28,26 +28,9 @@ export function drivingControllerAction({ pedal, ...controls }: DrivingAction): 
     return { ...controls, throttle: Math.max(0, pedal), brake: Math.max(0, -pedal) };
 }
 
-/** Label a chronological run of human controls, keeping the selected pedal through overlap. */
-export class DrivingPedalIntent {
-    private previous?: Pick<ControllerAction, 'throttle' | 'brake'>;
-    private direction = 0;
-
-    reset() {
-        this.previous = undefined;
-        this.direction = 0;
-    }
-
-    action({ throttle, brake, ...controls }: ControllerAction): DrivingAction {
-        const previous = this.previous;
-        if (throttle === 0 || brake === 0) this.direction = Math.sign(throttle - brake);
-        else if (previous && throttle > previous.throttle && brake < previous.brake) this.direction = 1;
-        else if (previous && brake > previous.brake && throttle < previous.throttle) this.direction = -1;
-        else if (!this.direction) this.direction = Math.sign(throttle - brake);
-        this.previous = { throttle, brake };
-        const pedal = this.direction > 0 ? throttle : this.direction < 0 ? -brake : 0;
-        return { ...controls, pedal };
-    }
+/** Encode human controls with brake priority when both pedals are pressed. */
+export function encodeDrivingAction({ throttle, brake, ...controls }: ControllerAction): DrivingAction {
+    return { ...controls, pedal: brake > 0 ? -brake : throttle };
 }
 export const clamp = (value: number, low = -1, high = 1) => Math.max(low, Math.min(high, value));
 export interface DrivingObservation {

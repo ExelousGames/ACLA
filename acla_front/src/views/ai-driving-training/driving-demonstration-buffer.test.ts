@@ -30,20 +30,20 @@ it('collects all 51 timestamps before exposing one grouped demonstration, indepe
     expect(buffer.hasReady).toBe(false);
 });
 
-it('labels releasing brake as throttle intent and releasing throttle as brake intent during overlap', () => {
+it('labels live demonstration targets with brake throughout pedal overlap', () => {
     const config = cloneConfig();
     config.actions.planTimesSeconds = [0, 0.1, 0.2, 0.3, 0.4, 0.5];
     const buffer = new DrivingDemonstrationBuffer(config);
     buffer.addObservation(input(), 1000);
-    [[0, 0], [0, 0.9], [0.2, 0.7], [0.2, 0.7], [0.8, 0.1], [0.7, 0.2]]
+    [[0, 0], [0.8, 0], [0.8, 0.2], [0.8, 0.2], [0.9, 0.1], [0.9, 0]]
         .forEach(([throttle, brake], i) => buffer.recordAction({ throttle, brake, steering: 0 }, shifts, 1000 + i * 100));
     buffer.finish();
-    expect(buffer.take()!.targets.map(({ action }) => action.pedal)).toEqual([0, -0.9, 0.2, 0.2, 0.8, -0.2]);
+    expect(buffer.take()!.targets.map(({ action }) => action.pedal)).toEqual([0, 0.8, -0.2, -0.2, -0.1, 0.9]);
 
     buffer.addObservation(input(), 1600);
     buffer.recordAction({ throttle: 0.6, brake: 0.1, steering: 0 }, shifts, 1600);
     buffer.finish();
-    expect(buffer.take()!.targets[0].action.pedal).toBe(0.6);
+    expect(buffer.take()!.targets[0].action.pedal).toBe(-0.1);
 });
 
 it('retains overlapping origins until consumed and supplies only targets within timestamp tolerance', () => {

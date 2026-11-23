@@ -218,9 +218,10 @@ location (or **Open model** to resume a file). Then select **Start training**. T
 outputs one continuous throttle/brake value from −1 (full brake), through 0 (both
 pedals released), to 1 (full throttle), plus steering and the choice to hold gear,
 shift up or shift down. Positive pedal values apply throttle; negative values apply
-brake, so AI output never presses both pedals together. Human demonstrations and
-future action targets use throttle minus brake. Create and train a new model for
-this output layout; older separate-pedal checkpoints are not converted.
+brake, so AI output never presses both pedals together. Live and recorded demonstrations
+encode an applied brake as negative brake input and use throttle when brake is released.
+Create and train a new model for this output layout; older separate-pedal checkpoints
+are not converted.
 Repositioning and restarting laps are not automated.
 **Run trained model** uses deterministic inference without updating weights.
 

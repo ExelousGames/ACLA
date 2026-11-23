@@ -1973,7 +1973,7 @@ it.each([true, false])('routes manual control through vJoy between images and on
     expect(demonstrate).toHaveBeenCalledTimes(train ? 2 : 0); // Handoff trains the available partial futures.
     if (train) expect(demonstrate.mock.calls[0]).toEqual([
         expect.objectContaining({ features: new DrivingMemory().encode(run.fixture.observation).features }),
-        expect.arrayContaining([expect.objectContaining({ step: 0, action: expect.objectContaining({ pedal: 0.8, steering: -0.6 }) })]),
+        expect.arrayContaining([expect.objectContaining({ step: 0, action: expect.objectContaining({ pedal: -0.1, steering: -0.6 }) })]),
     ]);
     expect(run.loop.state).toMatchObject({ source: 'ai', action: NEUTRAL });
     await tick(1500);
