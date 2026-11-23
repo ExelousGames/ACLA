@@ -4,8 +4,6 @@ import { DrivingPlanTraining } from './driving-plan-training';
 import { DrivingPolicy } from './driving-policy';
 import type { RecordedObservationResult } from './recorded-driving-session';
 
-const RECORDED_FRAME_GAP_ALLOWANCE_MS = 100;
-
 export interface RecordedReplayProgress {
     samples: number;
     skipped: number;
@@ -23,7 +21,7 @@ export class RecordedDrivingReplay {
     private previous?: { observation: DrivingObservation; input: DrivingPolicyInput; action: DrivingAction; shiftGear: number };
 
     constructor(private policy: DrivingPolicy, private train: boolean) {
-        this.memory = new DrivingMemory(policy.configuration, RECORDED_FRAME_GAP_ALLOWANCE_MS);
+        this.memory = new DrivingMemory(policy.configuration);
     }
 
     startRange() {
@@ -43,21 +41,14 @@ export class RecordedDrivingReplay {
         }
         const previous = this.previous;
         if (previous) {
-            const { runtime } = this.policy.configuration;
-            const frameGapMs = observation.capturedAt - previous.observation.capturedAt;
-            const maxFrameGapMs = runtime.maxTransitionSeconds * 1000 + RECORDED_FRAME_GAP_ALLOWANCE_MS;
-            const telemetryGapMs = observation.measuredAt - previous.observation.measuredAt;
+            const elapsed = observation.capturedAt - previous.observation.capturedAt;
             let movement = observation.normalizedPosition - previous.observation.normalizedPosition;
             if (movement < -0.5) movement += 1;
             if (movement > 0.5) movement -= 1;
-            if (frameGapMs <= 0 || frameGapMs > maxFrameGapMs || telemetryGapMs < 0
+            if (elapsed <= 0 || elapsed > this.policy.configuration.runtime.maxTransitionSeconds * 1000
+                || observation.measuredAt <= previous.observation.measuredAt
                 || observation.session !== previous.observation.session || observation.reference !== previous.observation.reference
-                || Math.abs(movement) > runtime.maxPositionJump) {
-                this.startRange();
-            } else if (telemetryGapMs === 0) {
-                // Wait for a new reading while retaining the pending observation and plan targets.
-                return;
-            }
+                || Math.abs(movement) > this.policy.configuration.runtime.maxPositionJump) this.startRange();
         }
         const input = this.memory.encode(observation);
         const pending = this.previous;
