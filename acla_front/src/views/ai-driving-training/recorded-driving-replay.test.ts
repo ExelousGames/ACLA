@@ -52,6 +52,37 @@ it('learns from earlier held controls with real image history and later action t
     expect(replay.progress.samples).toBe(2);
 });
 
+it('keeps history across a frame gap up to 100 ms beyond the configured limit', async () => {
+    const { fake, replay, frame } = setup();
+    fake.configuration.memory.windowMs = 2000;
+    fake.configuration.memory.intervalMs = 500;
+    const first = frame(1000);
+    await replay.consume({ observation: first });
+    await replay.consume({ observation: frame(2600) });
+    await replay.consume({ observation: frame(2700) });
+
+    expect(replay.progress.samples).toBe(2);
+    expect(fake.learnDemonstrationAsync.mock.calls[1][0].cameras[3]).toEqual(first.camera);
+});
+
+it('keeps pending samples when video frames share telemetry and resumes on the next reading', async () => {
+    const { fake, replay } = setup();
+    const fixture = trainingFixture();
+    const session = parseRecordedDrivingSession([0, 0.16, 0.31, 0.45].map((time) => JSON.stringify({
+        ...fixture.live.currentTelemetry, Graphics_analyst_session_time: time,
+    })).join('\n'), 'acc');
+
+    for (const time of [0, 0.1, 0.2, 0.3, 0.4]) {
+        await replay.consume(readRecordedDrivingObservation(session, time, fixture.observation.camera,
+            fixture.referenceLap, 50, fake.configuration, fixture.circuitMap));
+    }
+
+    expect(replay.progress).toMatchObject({ samples: 2, skipped: 0 });
+    const [[firstInput], [secondInput]] = fake.learnDemonstrationAsync.mock.calls;
+    expect(secondInput.features.slice(3, 5)).toEqual([1, 200 / 300]);
+    expect(fake.learnPlannedActionsAsync).toHaveBeenCalledWith(firstInput, [expect.objectContaining({ step: 2 })]);
+});
+
 it('labels immediate and future recorded targets with brake throughout pedal overlap', async () => {
     const { fake, replay, frame } = setup();
     const pedals = [[0.6, 0], [0.7, 0.2], [0.7, 0.2], [0.8, 0.1], [0.8, 0], [0, 0]];
@@ -115,16 +146,17 @@ it.each([
     expect(replay.progress.samples).toBe(targets.length);
 });
 
-it.each(['gap', 'session', 'reference', 'position', 'duplicate clock'])(
+it.each(['gap', 'session', 'reference', 'position', 'duplicate clock', 'backwards telemetry'])(
     'drops history and pending future labels at a %s discontinuity', async (kind) => {
         const { fake, replay, frame } = setup();
         await replay.consume({ observation: frame(1000) });
         await replay.consume({ observation: frame(1100) });
-        const at = kind === 'gap' ? 3000 : kind === 'duplicate clock' ? 1100 : 1200;
+        const at = kind === 'gap' ? 2701 : kind === 'duplicate clock' ? 1100 : 1200;
         const changed = frame(at);
         if (kind === 'session') changed.session = 'new-recorded-session';
         if (kind === 'reference') changed.reference = { ...changed.reference };
         if (kind === 'position') changed.normalizedPosition += 0.3;
+        if (kind === 'backwards telemetry') changed.measuredAt = 1050;
         await replay.consume({ observation: changed });
         expect(fake.learnDemonstrationAsync).toHaveBeenCalledTimes(1);
         await replay.consume({ observation: { ...changed, capturedAt: at + 100, measuredAt: at + 100 } });

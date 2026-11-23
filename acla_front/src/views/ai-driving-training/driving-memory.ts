@@ -22,7 +22,7 @@ export class DrivingMemory {
     private cameraCopies = new WeakMap<PolicyCameraImage, PolicyCameraImage>();
     private last?: DrivingObservation;
 
-    constructor(private config = DEFAULT_DRIVING_CONFIG) {}
+    constructor(private config = DEFAULT_DRIVING_CONFIG, private frameGapAllowanceMs = 0) {}
 
     reset() {
         this.frames = [];
@@ -33,7 +33,7 @@ export class DrivingMemory {
     encode(observation: DrivingObservation): DrivingPolicyInput {
         const previous = this.last;
         if (previous && (observation.capturedAt < previous.capturedAt
-            || observation.capturedAt - previous.capturedAt > this.config.runtime.maxTransitionSeconds * 1000
+            || observation.capturedAt - previous.capturedAt > this.config.runtime.maxTransitionSeconds * 1000 + this.frameGapAllowanceMs
             || observation.session !== previous.session || observation.reference !== previous.reference
             || JSON.stringify(observation.context) !== JSON.stringify(previous.context))) this.reset();
 

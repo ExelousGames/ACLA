@@ -360,10 +360,11 @@ are stored separately from scalar telemetry and shared across pending samples. T
 learned CNN processes current and historical frames. Every decision starts with zero
 recurrent state. Saved configurations declare the history features.
 History resets on start/stop, human/AI handover, invalid inputs, session/reference/context
-changes, backwards timestamps and gaps over 1.5 seconds. The observation panel shows the
-384 × 216 camera resolution. Earlier square-image CNN and pooled-image LSTM checkpoints
-and configurations are incompatible with this architecture. Create a new CNN–LSTM model and retrain
-from scratch; existing files are not automatically migrated.
+changes, backwards timestamps and gaps over 1.5 seconds by default. Recorded replay allows
+an extra 100 ms between frames and waits for fresh telemetry when two frames share a reading.
+The observation panel shows the 384 × 216 camera resolution. Earlier square-image CNN and
+pooled-image LSTM checkpoints and configurations are incompatible with this architecture.
+Create a new CNN–LSTM model and retrain from scratch; existing files are not automatically migrated.
 Heading, pitch and roll angles are not required for training or used as policy features.
 Telemetry is paired with the image before inference;
 stale or mismatched sessions are rejected. New policies have a 128-unit LSTM,
