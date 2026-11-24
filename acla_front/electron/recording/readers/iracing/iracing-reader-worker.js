@@ -101,7 +101,9 @@ function runIRacingReaderWorker(parentPort = process.parentPort) {
         const wait = window.sentFrame();
         for (const port of ports) port.postMessage({ type: 'frame', frame: event.frame });
         return wait;
-      }).then(() => { if (!stopping) send({ type: 'ready' }); }).catch(fatal);
+      }).then(() => {
+        if (!stopping) send({ type: 'ready', startedAt: performance.timeOrigin + reader.startedAt });
+      }).catch(fatal);
     } catch (error) { fatal(error); }
   });
   parentPort.start?.();

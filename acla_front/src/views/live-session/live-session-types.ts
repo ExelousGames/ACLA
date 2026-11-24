@@ -121,6 +121,7 @@ export interface LiveSessionRuntime {
     recordingState: RecordingState;
     recordingMetadata: LiveRecordingMetadata | null;
     recordingFileKey: string | null;
+    telemetryStartedAt: number | null;
     recordingActive: boolean;
     recordingGame: DesktopGame | null;
     restorationStatus: LiveSessionRestorationStatus;

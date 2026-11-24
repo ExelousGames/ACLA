@@ -109,6 +109,7 @@ const baseContext: LiveSessionRuntime = {
     recordingState: RecordingState.CHECKING,
     recordingMetadata: null,
     recordingFileKey: null,
+    telemetryStartedAt: null,
     recordingActive: false,
     recordingGame: null,
     restorationStatus: 'idle',

@@ -316,14 +316,20 @@ describe('iRacing process transport', () => {
     const ports = [makePort(), makePort()];
     let emit;
     let finishCapture;
-    const start = jest.spyOn(IRacingReader.prototype, 'start').mockImplementation((callback) => { emit = callback; return Promise.resolve(); });
+    const readerStartedAt = 42;
+    const start = jest.spyOn(IRacingReader.prototype, 'start').mockImplementation(function (callback) {
+      this.startedAt = readerStartedAt;
+      emit = callback;
+      return Promise.resolve();
+    });
     const stop = jest.spyOn(IRacingReader.prototype, 'stop').mockImplementation(() => new Promise((resolve) => { finishCapture = resolve; }));
     try {
       runIRacingReaderWorker(parent);
       parent.emit('message', { data: { type: 'initialize', game: 'iracing', readerOptions: options,
         portRoles: ['frameToWriter', 'frameToView'] }, ports });
       await Promise.resolve();
-      expect(parent.postMessage).toHaveBeenCalledWith({ type: 'ready', service: 'reader', game: 'iracing' });
+      expect(parent.postMessage).toHaveBeenCalledWith({ type: 'ready', service: 'reader', game: 'iracing',
+        startedAt: performance.timeOrigin + readerStartedAt });
       const frame = { game: 'iracing', sample: { Physics_speed_kmh: 180 } };
       emit({ type: 'frame', frame });
       for (const port of ports) {

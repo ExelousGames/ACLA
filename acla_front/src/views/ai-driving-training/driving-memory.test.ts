@@ -39,11 +39,16 @@ it('uses elapsed time, retains exactly five seconds and expires older samples fr
 it('uses the newest sample in each time bin without treating repeated images as history', () => {
     const { observation } = trainingFixture();
     const memory = new DrivingMemory();
-    const initial = memory.encode(observation).features;
-    expect(memory.encode(observation).features).toEqual(initial);
+    const initial = memory.encode(observation);
+    const repeated = memory.encode(observation);
+    expect(repeated.features).toEqual(initial.features);
+    expect(repeated.recurrent!.episode).toBe(initial.recurrent!.episode);
     const recent = { ...observation, capturedAt: 1050, features: observation.features.map(() => 0.4) };
     memory.encode(recent);
-    const features = memory.encode({ ...observation, capturedAt: 1300 }).features;
+    const { features, recurrent } = memory.encode({ ...observation, capturedAt: 1300 });
+    expect(recurrent!.episode).toBe(initial.recurrent!.episode);
+    expect(recurrent!.capturedAt).toBe(1300);
+    expect(recurrent!.historyTimes).toEqual([1050, ...Array(16).fill(null)]);
     expect(features.slice(0, 6)).toEqual([1, 250 / 5000, 0.4, 0.4, 0.4, 0.4]);
     expect(features.slice(drivingMemorySlotInputs(), drivingMemoryInputs())).toEqual(new Array(drivingMemoryInputs() - drivingMemorySlotInputs()).fill(0));
 });
@@ -83,16 +88,23 @@ it('retains full-resolution camera frames aligned to history and owns their pixe
         .toEqual(new Array(17).fill(null));
 });
 
-it.each(['session', 'reference', 'context', 'gap', 'clock'] as const)('clears history at a %s boundary', (boundary) => {
-    const { observation } = trainingFixture();
-    const memory = new DrivingMemory();
-    memory.encode(observation);
-    memory.encode({ ...observation, capturedAt: 1200 });
-    const next = { ...observation, capturedAt: 1400 };
-    if (boundary === 'session') next.session = 'new-session';
-    if (boundary === 'reference') next.reference = { ...observation.reference };
-    if (boundary === 'context') next.context = { ...observation.context, car: 'different' };
-    if (boundary === 'gap') next.capturedAt = 2701;
-    if (boundary === 'clock') next.capturedAt = 1100;
-    expect(memory.encode(next).features.slice(0, drivingMemoryInputs()).every((value) => value === 0)).toBe(true);
-});
+it.each(['session', 'reference', 'context', 'gap', 'clock', 'telemetry gap', 'telemetry clock', 'explicit reset'] as const)(
+    'clears history and starts a new recurrent episode at a %s boundary', (boundary) => {
+        const { observation } = trainingFixture();
+        const memory = new DrivingMemory();
+        memory.encode(observation);
+        const previous = memory.encode({ ...observation, capturedAt: 1200, measuredAt: 1100 });
+        const next = { ...observation, capturedAt: 1400, measuredAt: 1400 };
+        if (boundary === 'session') next.session = 'new-session';
+        if (boundary === 'reference') next.reference = { ...observation.reference };
+        if (boundary === 'context') next.context = { ...observation.context, car: 'different' };
+        if (boundary === 'gap') next.capturedAt = 2701;
+        if (boundary === 'clock') next.capturedAt = 1100;
+        if (boundary === 'telemetry gap') { next.capturedAt = 2700; next.measuredAt = 2601; }
+        if (boundary === 'telemetry clock') next.measuredAt = 1000;
+        if (boundary === 'explicit reset') memory.reset();
+        const encoded = memory.encode(next);
+        expect(encoded.features.slice(0, drivingMemoryInputs()).every((value) => value === 0)).toBe(true);
+        expect(encoded.recurrent!.episode).not.toBe(previous.recurrent!.episode);
+        expect(encoded.recurrent!.historyTimes).toEqual(new Array(17).fill(null));
+    });

@@ -3,7 +3,7 @@ import type { PolicyWeights } from './driving-policy';
 import { drivingCameraLayers } from './driving-model-config';
 
 /** GPU boundary stub for UI/coordination tests in jsdom. Returns preset output
- * biases and a persistence sentinel; it implements no CNN, LSTM or learning math.
+ * biases and a persistence sentinel; it implements no CNN, GRU or learning math.
  * Actual numerical behavior is tested in scripts/check-driving-gpu.cjs. */
 export function mockDrivingGpu() {
     return jest.spyOn(DrivingGpuModel, 'create').mockImplementation(async (config, state) => {
@@ -11,15 +11,15 @@ export function mockDrivingGpu() {
             cameraWeights: state.cameraWeights,
             cameraProjectionWeights: state.cameraProjectionWeights,
             ...(state.cameraNormWeights && { cameraNormWeights: state.cameraNormWeights }),
-            ...(state.lstmNormWeights && { lstmNormWeights: state.lstmNormWeights }),
-            lstmWeights: state.lstmWeights,
+            ...(state.gruNormWeights && { gruNormWeights: state.gruNormWeights }),
+            gruWeights: state.gruWeights,
             outputWeights: state.outputWeights,
             sac: state.sac,
         };
         let pendingChanges: number | undefined;
         const changed = () => {
             if (pendingChanges !== undefined) pendingChanges++;
-            else weights.lstmWeights[0][0] += 0.00001;
+            else weights.gruWeights[0][0] += 0.00001;
         };
         return {
             inspectCamera: jest.fn(async () => ({ layers: drivingCameraLayers(config).map(({ width, height, channels }, index) =>
@@ -28,10 +28,11 @@ export function mockDrivingGpu() {
                 outputs: weights.outputWeights.map((row) => row[config.network.hiddenUnits]), logStds: weights.sac.logStds.slice() })),
             learnTransition: jest.fn(() => { if (config.learning.actorRate || config.learning.criticRate) changed(); }),
             learnTargets: jest.fn(() => { if (config.learning.demonstrationRate) changed(); }),
+            observeDemonstration: jest.fn(),
             replay: jest.fn(() => ({ released: false } as GpuPolicyPass)),
             beginSequence: jest.fn(() => { pendingChanges = 0; }),
             endSequence: jest.fn((commit: boolean) => {
-                if (commit) weights.lstmWeights[0][0] += (pendingChanges ?? 0) * 0.00001;
+                if (commit) weights.gruWeights[0][0] += (pendingChanges ?? 0) * 0.00001;
                 pendingChanges = undefined;
             }),
             release: jest.fn((pass: GpuPolicyPass) => { pass.released = true; }),

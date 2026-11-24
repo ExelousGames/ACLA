@@ -1,7 +1,8 @@
 import { DrivingMemory, DrivingPolicyInput } from './driving-memory';
-import { DrivingAction, DrivingObservation, encodeDrivingAction } from './driving-observation';
+import { DrivingObservation, encodeDrivingAction } from './driving-observation';
 import { DrivingPlanTraining } from './driving-plan-training';
 import { DrivingPolicy } from './driving-policy';
+import type { DrivingModelConfig } from './driving-model-config';
 import type { RecordedObservationResult } from './recorded-driving-session';
 
 export interface RecordedReplayProgress {
@@ -10,7 +11,23 @@ export interface RecordedReplayProgress {
     /** Mean absolute error of the signed pedal command (0–2). */
     pedalError: number;
     steeringError: number;
+    omittedForBalance?: number;
     lastError?: string;
+}
+
+export function isConsecutiveRecordedObservation(previous: DrivingObservation, current: DrivingObservation,
+    { learning, runtime }: DrivingModelConfig): boolean {
+    const maxTransitionMs = runtime.maxTransitionSeconds * 1000;
+    const maxCaptureGapMs = Math.min(maxTransitionMs, Math.max(100, runtime.controlIntervalMs) + learning.planTargetToleranceMs);
+    const elapsed = current.capturedAt - previous.capturedAt;
+    const telemetryGap = current.measuredAt - previous.measuredAt;
+    const roundoff = 4 * Number.EPSILON * Math.max(Math.abs(current.capturedAt), Math.abs(previous.capturedAt));
+    let movement = current.normalizedPosition - previous.normalizedPosition;
+    if (movement < -0.5) movement += 1;
+    if (movement > 0.5) movement -= 1;
+    return elapsed > 0 && elapsed <= maxCaptureGapMs + roundoff && telemetryGap > 0 && telemetryGap <= maxTransitionMs
+        && current.measuredAt > previous.capturedAt && current.session === previous.session && current.reference === previous.reference
+        && Math.abs(movement) <= runtime.maxPositionJump;
 }
 
 /** Offline demonstration learning/evaluation. This path has no controller dependency. */
@@ -18,9 +35,9 @@ export class RecordedDrivingReplay {
     readonly progress: RecordedReplayProgress = { samples: 0, skipped: 0, pedalError: 0, steeringError: 0 };
     private memory: DrivingMemory;
     private plans = new DrivingPlanTraining();
-    private previous?: { observation: DrivingObservation; input: DrivingPolicyInput; action: DrivingAction; shiftGear: number };
+    private previous?: { observation: DrivingObservation; input: DrivingPolicyInput; shiftGear: number; group?: string };
 
-    constructor(private policy: DrivingPolicy, private train: boolean) {
+    constructor(private policy: DrivingPolicy, private train: boolean, private selectSample?: (group: string) => boolean) {
         this.memory = new DrivingMemory(policy.configuration);
     }
 
@@ -30,7 +47,7 @@ export class RecordedDrivingReplay {
         this.previous = undefined;
     }
 
-    async consume(result: RecordedObservationResult, active = () => true): Promise<void> {
+    async consume(result: RecordedObservationResult, active = () => true, group?: string): Promise<void> {
         if (!active()) return;
         const observation = result.observation;
         if (!observation || !this.policy.matches(observation)) {
@@ -39,21 +56,13 @@ export class RecordedDrivingReplay {
             this.startRange();
             return;
         }
-        const previous = this.previous;
-        if (previous) {
-            const elapsed = observation.capturedAt - previous.observation.capturedAt;
-            let movement = observation.normalizedPosition - previous.observation.normalizedPosition;
-            if (movement < -0.5) movement += 1;
-            if (movement > 0.5) movement -= 1;
-            if (elapsed <= 0 || elapsed > this.policy.configuration.runtime.maxTransitionSeconds * 1000
-                || observation.measuredAt <= previous.observation.measuredAt
-                || observation.session !== previous.observation.session || observation.reference !== previous.observation.reference
-                || Math.abs(movement) > this.policy.configuration.runtime.maxPositionJump) this.startRange();
+        if (this.previous && !isConsecutiveRecordedObservation(this.previous.observation, observation, this.policy.configuration)) {
+            this.startRange();
         }
         const input = this.memory.encode(observation);
         const pending = this.previous;
         const shiftGear = result.shiftGear ?? observation.gear;
-        this.previous = { observation, input, action: encodeDrivingAction(observation.controls), shiftGear };
+        this.previous = { observation, input, shiftGear, group };
         if (!pending) return;
 
         // Telemetry records held axes, not paddle presses. A single subsequent gear
@@ -61,15 +70,23 @@ export class RecordedDrivingReplay {
         const gearDelta = shiftGear - pending.shiftGear;
         const knownShift = Number.isInteger(gearDelta) && Math.abs(gearDelta) <= 1;
         const shifts = { up: knownShift, down: knownShift };
-        const action = { ...pending.action, shiftUp: knownShift && gearDelta === 1,
+        // Keep the earlier observation as the plan origin and supervise it with
+        // the next sample's axes, which were unavailable at that origin.
+        const action = { ...encodeDrivingAction(observation.controls), shiftUp: knownShift && gearDelta === 1,
             shiftDown: knownShift && gearDelta === -1 };
         if (this.train) {
+            const selected = !this.selectSample || (pending.group !== undefined && this.selectSample(pending.group));
             await this.policy.trainBatchAsync(async () => {
                 if (!active()) return;
-                await this.policy.learnDemonstrationAsync(pending.input, action, shifts);
-                if (active()) await this.plans.recordAsync(this.policy, pending.input, action, shifts,
+                if (selected) await this.policy.learnDemonstrationAsync(pending.input, action, shifts);
+                else this.policy.observeDemonstration(pending.input);
+                if (active()) await this.plans.recordAsync(this.policy, selected ? pending.input : undefined, action, shifts,
                     pending.observation.capturedAt, active);
             });
+            if (!selected) {
+                if (active()) this.progress.omittedForBalance = (this.progress.omittedForBalance ?? 0) + 1;
+                return;
+            }
         } else {
             const decision = await this.policy.decideAsync(pending.input, false, shifts);
             try {

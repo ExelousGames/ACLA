@@ -1592,7 +1592,7 @@ it.each([0, 49])('automatically saves when a completed consequence window reache
     const saved = JSON.parse(files.get(MODEL_PATH)!);
     expect(saved.model.steps).toBeGreaterThan(initialSteps);
     expect(saved.model.steps).toBeGreaterThanOrEqual(checkpoint.configuration.runtime.saveEverySteps);
-    expect(saved.model.lstmWeights).not.toEqual(checkpoint.model.lstmWeights);
+    expect(saved.model.gruWeights).not.toEqual(checkpoint.model.gruWeights);
     expect(window.drivingModelFiles!.write).toHaveBeenCalledWith(MODEL_PATH, expect.any(String));
     expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
     expect(localStorage.getItem('acla.self-driving.model')).toBeNull();
@@ -1629,7 +1629,7 @@ it.each([false, true])('saves the final partial training window after Stop relea
     finishUpdate(); await flush();
     const saved = JSON.parse(files.get(MODEL_PATH)!).model;
     expect(saved.steps).toBeGreaterThan(0);
-    expect(saved.lstmWeights).not.toEqual(checkpoint.model.lstmWeights);
+    expect(saved.gruWeights).not.toEqual(checkpoint.model.gruWeights);
     expect(screen.getByRole('button', { name: 'Open model' })).toBeEnabled();
     expect(screen.getByLabelText('Current control owner')).toHaveTextContent('No driver');
     if (!remount) expect(screen.getByText('Training finished. Controller released.')).toBeInTheDocument();

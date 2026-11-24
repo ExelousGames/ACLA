@@ -6,6 +6,12 @@ export interface DrivingPolicyInput {
     features: number[];
     /** Historical images in bin order, followed by the current full-resolution image. */
     cameras: (PolicyCameraImage | null)[];
+    /** Capture timestamps and episode identity used to advance recurrent state. */
+    recurrent?: {
+        readonly episode: object;
+        readonly capturedAt: number;
+        readonly historyTimes: readonly (number | null)[];
+    };
 }
 
 export const drivingMemorySlotInputs = (config = DEFAULT_DRIVING_CONFIG) => {
@@ -21,6 +27,7 @@ export class DrivingMemory {
     private frames: { capturedAt: number; features: number[]; camera: PolicyCameraImage }[] = [];
     private cameraCopies = new WeakMap<PolicyCameraImage, PolicyCameraImage>();
     private last?: DrivingObservation;
+    private episode = {};
 
     constructor(private config = DEFAULT_DRIVING_CONFIG) {}
 
@@ -28,30 +35,39 @@ export class DrivingMemory {
         this.frames = [];
         this.last = undefined;
         this.cameraCopies = new WeakMap();
+        this.episode = {};
     }
 
     encode(observation: DrivingObservation): DrivingPolicyInput {
         const previous = this.last;
-        if (previous && (observation.capturedAt < previous.capturedAt
-            || observation.capturedAt - previous.capturedAt > this.config.runtime.maxTransitionSeconds * 1000
-            || observation.session !== previous.session || observation.reference !== previous.reference
-            || JSON.stringify(observation.context) !== JSON.stringify(previous.context))) this.reset();
+        if (previous) {
+            const captureGap = observation.capturedAt - previous.capturedAt;
+            const telemetryGap = observation.measuredAt - previous.measuredAt;
+            const maxGap = this.config.runtime.maxTransitionSeconds * 1000;
+            if (captureGap < 0 || captureGap > maxGap || (captureGap > 0 && (telemetryGap < 0 || telemetryGap > maxGap))
+                || observation.session !== previous.session || observation.reference !== previous.reference
+                || JSON.stringify(observation.context) !== JSON.stringify(previous.context)) this.reset();
+        }
 
         this.frames = this.frames.filter((frame) => observation.capturedAt - frame.capturedAt <= this.config.memory.windowMs);
         const slotInputs = drivingMemorySlotInputs(this.config);
         const history = new Array(drivingMemoryInputs(this.config)).fill(0);
-        const cameras: (PolicyCameraImage | null)[] = new Array(drivingMemorySlots(this.config)).fill(null);
+        const slots = drivingMemorySlots(this.config);
+        const cameras: (PolicyCameraImage | null)[] = new Array(slots).fill(null);
+        const historyTimes: (number | null)[] = new Array(slots).fill(null);
         // Newest sample per elapsed-time bin; missing bins stay explicitly absent.
         for (let i = this.frames.length - 1; i >= 0; i--) {
             const frame = this.frames[i];
             const age = observation.capturedAt - frame.capturedAt;
             if (age <= 0) continue;
-            const offset = (Math.ceil(age / this.config.memory.intervalMs) - 1) * slotInputs;
+            const bin = Math.ceil(age / this.config.memory.intervalMs) - 1;
+            const offset = bin * slotInputs;
             if (history[offset]) continue;
             history[offset] = 1;
             history[offset + 1] = age / this.config.memory.windowMs;
+            historyTimes[bin] = frame.capturedAt;
             frame.features.forEach((value, j) => { history[offset + 2 + j] = value; });
-            if (this.config.memory.features.includes('camera')) cameras[offset / slotInputs] = frame.camera;
+            if (this.config.memory.features.includes('camera')) cameras[bin] = frame.camera;
         }
         // Own one immutable copy per capture, shared by every history/plan that needs it.
         let camera = this.cameraCopies.get(observation.camera);
@@ -72,6 +88,7 @@ export class DrivingMemory {
                 features: this.config.memory.features.flatMap((name) => groups[name]) });
             this.last = observation;
         }
-        return { features: [...history, ...observation.features], cameras: [...cameras, camera] };
+        return { features: [...history, ...observation.features], cameras: [...cameras, camera],
+            recurrent: { episode: this.episode, capturedAt: observation.capturedAt, historyTimes } };
     }
 }

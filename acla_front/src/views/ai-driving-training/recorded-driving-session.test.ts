@@ -53,18 +53,18 @@ it('pairs causally, selects the latest duplicate, and rejects stale gaps and out
     expect(findRecordedTelemetry(session, 1, Infinity)).toBeNull();
 });
 
-it('aligns both directions of video offset without clamping into unmatched telemetry', () => {
+it('matches a frame by telemetry clock time even when the video starts after the first row', () => {
     const session = parseRecordedDrivingSession(jsonl(sample(10), sample(11)), 'acc');
-    expect(findRecordedTelemetry(session, 2, 2)).toBe(session.rows[0]);
-    expect(findRecordedTelemetry(session, 1.9, 2)).toBeNull();
-    expect(findRecordedTelemetry(session, 0, -1)).toBe(session.rows[1]);
+    expect(findRecordedTelemetry(session, 10)).toBe(session.rows[0]);
+    expect(findRecordedTelemetry(session, 9.9)).toBeNull();
+    expect(findRecordedTelemetry(session, 11)).toBe(session.rows[1]);
 });
 
 it('does not select the previous sample because of timestamp subtraction rounding', () => {
     const session = parseRecordedDrivingSession(jsonl(sample(100), sample(100.1)), 'acc');
-    expect(findRecordedTelemetry(session, 0.1)).toBe(session.rows[1]);
+    expect(findRecordedTelemetry(session, 100.05 + 0.05)).toBe(session.rows[1]);
     const fixture = trainingFixture();
-    expect(readRecordedDrivingObservation(session, 0.1, fixture.observation.camera, fixture.referenceLap,
+    expect(readRecordedDrivingObservation(session, 100.1, fixture.observation.camera, fixture.referenceLap,
         50, cloneConfig(), fixture.circuitMap).observation?.measuredAt).toBe(100100);
 });
 
@@ -72,8 +72,8 @@ it('builds the same observation features with recorded clocks and leaves live da
     const fixture = trainingFixture();
     const session = parseRecordedDrivingSession(jsonl(sample(10), sample(10.2)), 'acc');
     const before = liveTelemetryStore.getSnapshot();
-    const result = readRecordedDrivingObservation(session, 2.25, fixture.observation.camera,
-        fixture.referenceLap, 50, cloneConfig(), fixture.circuitMap, 2);
+    const result = readRecordedDrivingObservation(session, 10.25, fixture.observation.camera,
+        fixture.referenceLap, 50, cloneConfig(), fixture.circuitMap);
     expect(result.observation?.features).toEqual(fixture.observation.features);
     expect(result.observation?.capturedAt).toBe(10250);
     expect(result.observation?.measuredAt).toBe(10200);

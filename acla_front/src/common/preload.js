@@ -25,7 +25,7 @@ contextBridge.exposeInMainWorld('screenCapture', {
 contextBridge.exposeInMainWorld('sessionVideo', {
     create: (filePath) => ipcRenderer.invoke('session-video-create', filePath),
     append: (filePath, bytes) => ipcRenderer.invoke('session-video-append', filePath, bytes),
-    finish: (filePath) => ipcRenderer.invoke('session-video-finish', filePath),
+    finish: (filePath, videoTelemetryStartSeconds) => ipcRenderer.invoke('session-video-finish', filePath, videoTelemetryStartSeconds),
     list: (filePath) => ipcRenderer.invoke('session-video-list', filePath),
     read: (filePath, offset) => ipcRenderer.invoke('session-video-read', filePath, offset),
     delete: (filePath) => ipcRenderer.invoke('session-video-delete', filePath),

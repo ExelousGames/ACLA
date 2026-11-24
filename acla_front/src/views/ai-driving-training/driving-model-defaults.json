@@ -1,6 +1,6 @@
 {
   "network": {
-    "type": "cnn-lstm",
+    "type": "cnn-gru",
     "cameraActivation": "leaky-relu-0.01",
     "cameraLayers": [
       { "kernelSize": 5, "stride": 2, "padding": 2, "channels": 16 },
@@ -11,7 +11,7 @@
     "cameraPooling": { "type": "adaptive-average", "width": 8, "height": 4 },
     "cameraProjectionUnits": 256,
     "cameraLayerNorm": true,
-    "lstmLayerNorm": true,
+    "gruLayerNorm": true,
     "layerNormEpsilon": 0.00001,
     "hiddenUnits": 128,
     "activation": "tanh",

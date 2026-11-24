@@ -346,8 +346,8 @@ it('sends raw demonstration and delayed targets straight to GPU learning without
     await policy.learnDemonstrationAsync(input, action, shifts);
     const targets = [{ step: 6, action, shifts }];
     await policy.learnPlannedActionsAsync(input, targets);
-    expect(gpu.learnTargets).toHaveBeenNthCalledWith(1, input, [{ step: 0, action, shifts }]);
-    expect(gpu.learnTargets).toHaveBeenNthCalledWith(2, input, targets);
+    expect(gpu.learnTargets).toHaveBeenNthCalledWith(1, input, [{ step: 0, action, shifts }], true);
+    expect(gpu.learnTargets).toHaveBeenNthCalledWith(2, input, targets, false);
     expect(gpu.forward).not.toHaveBeenCalled();
     expect(gpu.weights).not.toHaveBeenCalled();
     expect(policy.steps).toBe(1);
@@ -362,12 +362,12 @@ it('trains all available outputs of a demonstrated future together and counts th
     }, shifts: { up: true, down: true } }));
     await policy.learnDemonstratedPlanAsync(input, targets);
     expect(gpu.learnTargets).toHaveBeenCalledTimes(1);
-    expect(gpu.learnTargets).toHaveBeenLastCalledWith(input, targets);
+    expect(gpu.learnTargets).toHaveBeenLastCalledWith(input, targets, true);
     expect(policy.steps).toBe(1);
     const available = targets.filter(({ step }) => [0, 2, 9].includes(step));
     await policy.learnDemonstratedPlanAsync(input, available);
     expect(gpu.learnTargets).toHaveBeenCalledTimes(2);
-    expect(gpu.learnTargets).toHaveBeenLastCalledWith(input, available);
+    expect(gpu.learnTargets).toHaveBeenLastCalledWith(input, available, true);
     expect(policy.steps).toBe(2);
     await policy.learnDemonstratedPlanAsync(input, []);
     expect(gpu.learnTargets).toHaveBeenCalledTimes(2);
@@ -479,8 +479,8 @@ it('matches checkpoint context regardless of key order and isolates exported see
     const restored = DrivingPolicy.restore(saved);
     expect(restored.matches(observation)).toBe(true);
     expect(restored.checkpoint()).toEqual(saved);
-    saved.model.lstmWeights[0][0] = 4;
-    expect(restored.checkpoint().model.lstmWeights[0][0]).not.toBe(4);
+    saved.model.gruWeights[0][0] = 4;
+    expect(restored.checkpoint().model.gruWeights[0][0]).not.toBe(4);
 });
 
 it.each([

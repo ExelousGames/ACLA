@@ -4,7 +4,7 @@ import type { PolicyCameraImage } from 'views/live-session/live-session-recordin
 
 /** Assemble present observations oldest first, in one shared feature layout.
  * Missing history bins are skipped; features omitted from history are zeroed. */
-export function assembleDrivingInput(input: DrivingPolicyInput, config: DrivingModelConfig) {
+export function assembleDrivingInput(input: DrivingPolicyInput, config: DrivingModelConfig, after = -Infinity) {
     const bins = drivingMemorySlots(config);
     if (!input?.features || input.features.length !== drivingObservationInputs(config) + drivingMemoryInputs(config)
         || !input.features.every(Number.isFinite) || input.cameras?.length !== bins + 1
@@ -37,8 +37,12 @@ export function assembleDrivingInput(input: DrivingPolicyInput, config: DrivingM
             || Boolean(input.cameras[bin]) !== Boolean(present && config.memory.features.includes('camera'))) {
             throw new Error('Invalid policy camera history.');
         }
-        if (present) append(config.memory.features, offset + 2, input.cameras[bin], age);
+        if (present && (input.recurrent?.historyTimes[bin] ?? Infinity) > after) {
+            append(config.memory.features, offset + 2, input.cameras[bin], age);
+        }
     }
-    append(config.observation.features, drivingMemoryInputs(config), input.cameras[bins], 0);
+    if ((input.recurrent?.capturedAt ?? Infinity) > after) {
+        append(config.observation.features, drivingMemoryInputs(config), input.cameras[bins], 0);
+    }
     return { features, cameras, steps: features.length / inputs };
 }

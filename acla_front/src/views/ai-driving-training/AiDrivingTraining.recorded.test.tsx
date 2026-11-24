@@ -4,13 +4,14 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import AiDrivingTraining from './AiDrivingTraining';
 import { emptyTrainingDocument } from './driving-policy';
 import { cloneConfig } from './driving-model-config';
-import { trainingFixture } from './training-fixtures';
+import { circuitMapFixture, trainingFixture } from './training-fixtures';
 import { parseRecordedDrivingSession } from './recorded-driving-session';
 import type { RecordedDrivingFrame, RecordedFrameViewerHandle } from './RecordedFrameViewer';
 import { loadRecordedDrivingReferences } from './recorded-driving-reference';
 
 let mockFrames: RecordedDrivingFrame[] = [];
 let mockWaitForCancel = false;
+let mockReplayTimeOffset = 0;
 jest.mock('contexts/OperationComponentRefContext', () => ({ useOptionalOperationComponentRefDirectory: () => null }));
 jest.mock('./recorded-driving-reference', () => ({
     ...jest.requireActual('./recorded-driving-reference'), loadRecordedDrivingReferences: jest.fn(),
@@ -24,13 +25,20 @@ jest.mock('./RecordedFrameViewer', () => {
             onProgress?.({ recordingNumber: 1, recordingCount: 1, processedFrames, totalFrames });
             for (const frame of mockFrames) {
                 if (signal.aborted) return;
-                await consume(frame);
+                const session = frame.recordingId ? { ...frame.session, id: `${frame.session.id}-replay` } : frame.session;
+                await consume({ ...frame, session, telemetrySeconds: frame.telemetrySeconds + mockReplayTimeOffset });
                 processedFrames++;
                 onProgress?.({ recordingNumber: 1, recordingCount: 1, processedFrames, totalFrames });
             }
             if (mockWaitForCancel && !signal.aborted) await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
         };
-        React.useImperativeHandle(ref, () => ({ replay }));
+        const measure: RecordedFrameViewerHandle['measure'] = async (consume, signal) => {
+            for (const { camera: _camera, ...frame } of mockFrames) {
+                if (signal.aborted) return;
+                await consume(frame);
+            }
+        };
+        React.useImperativeHandle(ref, () => ({ replay, measure }));
         return <button disabled={props.disabled} onClick={() => {
             props.onFrame(mockFrames[0]); props.onReplayReadyChange(true);
         }}>Load test recording</button>;
@@ -40,11 +48,12 @@ const flush = async () => { await act(async () => { for (let i = 0; i < 80; i++)
 let savedJson: string;
 
 beforeEach(() => {
-    jest.useFakeTimers(); mockDrivingGpu(); mockWaitForCancel = false;
+    jest.useFakeTimers(); mockDrivingGpu(); mockWaitForCancel = false; mockReplayTimeOffset = 0;
     const fixture = trainingFixture(1000);
     const session = parseRecordedDrivingSession([0, 0.1, 0.2].map((time) => JSON.stringify({ ...fixture.live.currentTelemetry,
         Graphics_analyst_session_time: time, Graphics_status: 2 })).join('\n'), 'acc');
-    mockFrames = session.rows.map((row) => ({ session, videoSeconds: row.timeSeconds, offsetSeconds: 0, camera: fixture.observation.camera }));
+    mockFrames = session.rows.map((row) => ({ session, videoSeconds: row.timeSeconds,
+        telemetrySeconds: session.startTimeSeconds + row.timeSeconds, camera: fixture.observation.camera }));
     (loadRecordedDrivingReferences as jest.Mock).mockResolvedValue({ laps: [fixture.referenceLap], maps: new Map([['monza', fixture.circuitMap]]) });
     const config = cloneConfig(); config.network.hiddenUnits = 2; config.network.cameraProjectionUnits = 2;
     config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
@@ -166,4 +175,71 @@ it('trains one model across recordings and clears imitation history between clos
     expect(JSON.parse(savedJson).model.steps).toBe(3);
     expect(loadRecordedDrivingReferences).toHaveBeenCalledWith(secondSession);
     expect(screen.getByText(/Completed\. Learning from recording · second\.mp4.*3 samples/)).toBeInTheDocument();
+});
+
+it('uses balanced labeled clip samples for training and evaluates every aligned pair', async () => {
+    const { session: source, camera } = mockFrames[0];
+    const session = parseRecordedDrivingSession(Array.from({ length: 10 }, (_, index) => JSON.stringify({
+        ...source.rows[0].sample, Graphics_analyst_session_time: index / 10,
+    })).join('\n'), 'acc');
+    mockFrames = session.rows.map((row, index) => ({ session, videoSeconds: row.timeSeconds, telemetrySeconds: row.timeSeconds,
+        camera, startsRange: index === 0 || index === 7, clipLabel: index < 7 ? 'Race pace' : 'Recovery' }));
+    await loadRecording();
+    fireEvent.click(screen.getByRole('button', { name: 'Train from annotations' })); await flush();
+    expect(screen.getByText(/Completed\. Learning from recording.*4 samples.*4 set aside for balance/)).toBeInTheDocument();
+    expect(JSON.parse(savedJson).model.steps).toBe(4);
+    fireEvent.click(screen.getByRole('button', { name: 'Evaluate annotations' })); await flush();
+    expect(screen.getByText(/Completed\. Evaluating recording.*8 samples/)).toBeInTheDocument();
+    expect(JSON.parse(savedJson).model.steps).toBe(4);
+});
+
+it('balances saved centerline ranges using the same telemetry times in both passes', async () => {
+    const fixture = trainingFixture();
+    const map = { ...fixture.circuitMap, centerline_segments: [
+        { id: 'entry', start_position: 0.2, end_position: 0.27, tags: ['corner'] },
+        { id: 'exit', start_position: 0.27, end_position: 0.35, tags: ['corner'] },
+    ] };
+    jest.mocked(loadRecordedDrivingReferences).mockResolvedValue({ laps: [fixture.referenceLap], maps: new Map([['monza', map]]) });
+    const positions = [0.21, 0.22, 0.23, 0.24, 0.25, 0.26, 0.28, 0.3, 0.31, 0.32];
+    const session = parseRecordedDrivingSession(positions.map((position, index) => JSON.stringify({
+        ...fixture.live.currentTelemetry, Graphics_analyst_session_time: index / 10, Graphics_normalized_car_position: position,
+    })).join('\n'), 'acc');
+    mockFrames = session.rows.map(({ timeSeconds }) => ({ session, videoSeconds: timeSeconds, telemetrySeconds: timeSeconds,
+        camera: fixture.observation.camera, clipLabel: 'Race pace' }));
+    mockReplayTimeOffset = -0.015;
+
+    await loadRecording();
+    fireEvent.click(screen.getByRole('button', { name: 'Train from annotations' })); await flush();
+
+    expect(screen.getByText(/Completed\. Learning from recording.*6 samples.*3 set aside for balance/)).toBeInTheDocument();
+    expect(JSON.parse(savedJson).model.steps).toBe(6);
+});
+
+it('balances across simulators and tracks and reuses the measured recording references', async () => {
+    const fixture = trainingFixture();
+    const references = jest.mocked(loadRecordedDrivingReferences);
+    references.mockClear().mockImplementation(async ({ game, rows }) => {
+        const track = rows[0].sample.Static_track!;
+        const lap = { ...fixture.referenceLap, game, track };
+        return { laps: [lap], maps: new Map([[track, circuitMapFixture(lap)]]) };
+    });
+    const recordings = [
+        { game: 'acc', track: 'monza', frames: 7 },
+        { game: 'acc', track: 'spa', frames: 3 },
+        { game: 'iracing', track: 'monza', frames: 5 },
+    ] as const;
+    mockFrames = recordings.flatMap(({ game, track, frames }) => {
+        const session = parseRecordedDrivingSession(Array.from({ length: frames }, (_, index) => JSON.stringify({
+            ...fixture.live.currentTelemetry, Static_track: track, Graphics_analyst_session_time: index / 10,
+        })).join('\n'), game);
+        return session.rows.map(({ timeSeconds }, index) => ({ session, recordingId: session.id, startsRange: index === 0,
+            videoSeconds: timeSeconds, telemetrySeconds: timeSeconds, camera: fixture.observation.camera, clipLabel: 'Race pace' }));
+    });
+
+    await loadRecording();
+    fireEvent.click(screen.getByRole('button', { name: 'Train from annotations' })); await flush();
+
+    expect(screen.getByText(/Completed\. Learning from recording.*6 samples.*6 set aside for balance/)).toBeInTheDocument();
+    expect(JSON.parse(savedJson).model.steps).toBe(6);
+    expect(references).toHaveBeenCalledTimes(recordings.length);
 });

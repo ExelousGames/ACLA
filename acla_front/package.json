@@ -23,6 +23,7 @@
     "js-yaml": "4.1.1",
     "jsonata": "2.2.2",
     "konva": "9.3.20",
+    "mediabunny": "1.66.4",
     "onnxruntime-web": "1.22.0",
     "python-shell": "5.0.0",
     "radix-ui": "1.4.2",
@@ -106,6 +107,8 @@
       "public/desktop-game-detection.js",
       "src/common/preload.js",
       "src/data/live-telemetry-dataset.js",
+      "src/data/recorded-training-labels.json",
+      "src/data/session-video-timing.js",
       "electron/**/*"
     ],
     "extraResources": [

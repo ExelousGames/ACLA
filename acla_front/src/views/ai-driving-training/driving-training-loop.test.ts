@@ -549,7 +549,7 @@ it.each([true, false])('reuses learned weights in a new game, car and map after 
     expect(run.loop.state.reward).not.toBeNull();
     await run.loop.stop();
     const continued = await run.policy.checkpointAsync();
-    expect(continued.model.lstmWeights).toEqual(train ? expect.not.arrayContaining(saved.model.lstmWeights) : saved.model.lstmWeights);
+    expect(continued.model.gruWeights).toEqual(train ? expect.not.arrayContaining(saved.model.gruWeights) : saved.model.gruWeights);
     const reopened = DrivingPolicy.restore(JSON.parse(JSON.stringify(continued)));
     expect(reopened.matches(run.fixture.observation)).toBe(true);
     expect(reopened.matches(input.observation!)).toBe(true);
@@ -2211,7 +2211,7 @@ it('learns a human shift acknowledged between images, after the pulse has releas
     expect(demonstrate).not.toHaveBeenCalled();
     expect(run.loop.state.action.shiftDown).toBe(false);
     run.loop.setControlSource('ai'); await flush();
-    expect(demonstrate.mock.calls[0]).toEqual([new DrivingMemory().encode(run.fixture.observation),
+    expect(demonstrate.mock.calls[0]).toEqual([new DrivingMemory().encode({ ...run.fixture.observation, capturedAt: 1100 }),
         expect.arrayContaining([expect.objectContaining({ step: 1, action: expect.objectContaining({ shiftDown: true }) })])]);
     await run.loop.stop();
 });

@@ -99,12 +99,12 @@ function labelNeutralTransitions(rows: RecordedDrivingRow[]) {
     }
 }
 
-/** Positive offset means the first telemetry sample occurs later in the video. */
-export function findRecordedTelemetry(session: RecordedDrivingSession, videoSeconds: number, offsetSeconds = 0,
+/** Finds the most recent sample at the frame's time on the telemetry clock. */
+export function findRecordedTelemetry(session: RecordedDrivingSession, telemetrySeconds: number,
     maxAgeMs = DEFAULT_DRIVING_CONFIG.runtime.telemetryMaxAgeMs): RecordedDrivingRow | null {
-    if (!finite(videoSeconds) || videoSeconds < 0 || !finite(offsetSeconds) || !finite(maxAgeMs) || maxAgeMs < 0) return null;
-    const time = videoSeconds - offsetSeconds;
-    if (time < 0 || !session.rows.length) return null;
+    if (!finite(telemetrySeconds) || !finite(maxAgeMs) || maxAgeMs < 0) return null;
+    const time = telemetrySeconds - session.startTimeSeconds;
+    if (time < -1e-9 || !session.rows.length) return null;
     let low = 0, high = session.rows.length;
     // Upper bound chooses the last sample at/before the image, never a future row.
     while (low < high) {
@@ -117,18 +117,18 @@ export function findRecordedTelemetry(session: RecordedDrivingSession, videoSeco
 }
 
 /** Uses the recording's clock and pixels without touching the live telemetry store. */
-export function readRecordedDrivingObservation(session: RecordedDrivingSession, videoSeconds: number, camera: PolicyCameraImage,
+export function readRecordedDrivingObservation(session: RecordedDrivingSession, telemetrySeconds: number, camera: PolicyCameraImage,
     referenceLap: TopLapReferenceEntry | null, aggression = DEFAULT_DRIVING_CONFIG.aggression,
-    config: DrivingModelConfig = DEFAULT_DRIVING_CONFIG, circuitMap: CircuitMapDto | null = null, offsetSeconds = 0): RecordedObservationResult {
-    const row = findRecordedTelemetry(session, videoSeconds, offsetSeconds, config.runtime.telemetryMaxAgeMs);
-    if (!row) return { error: 'No telemetry close enough to this recorded frame. Check the video offset or choose another frame.' };
+    config: DrivingModelConfig = DEFAULT_DRIVING_CONFIG, circuitMap: CircuitMapDto | null = null): RecordedObservationResult {
+    const row = findRecordedTelemetry(session, telemetrySeconds, config.runtime.telemetryMaxAgeMs);
+    if (!row) return { error: 'No telemetry close enough to this recorded frame. Choose another frame.' };
     const sample = row.sample;
     if (sample.Graphics_status !== ACC_STATUS.ACC_LIVE) {
         return { error: 'This recorded telemetry sample is not marked as running (Graphics_status = 2).' };
     }
     const measuredAt = (session.startTimeSeconds + row.timeSeconds) * 1000;
     // Clock subtraction can differ by a fraction of a microsecond at an exact match.
-    const capturedAt = Math.max(measuredAt, (session.startTimeSeconds + videoSeconds - offsetSeconds) * 1000);
+    const capturedAt = Math.max(measuredAt, telemetrySeconds * 1000);
     const snapshot: LiveTelemetrySnapshot = {
         game: session.game, receivedAt: measuredAt,
         currentTelemetry: sample, graphicsTelemetry: sample, physicsTelemetry: sample,

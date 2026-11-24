@@ -1,7 +1,7 @@
 import type { PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
 import type { DrivingPolicyInput } from './driving-memory';
-import { DRIVING_ANALOG_AXES, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingMemorySlots, drivingPolicyInputs } from './driving-model-config';
-import { drivingLstmShaders } from './driving-lstm-shaders';
+import { DRIVING_ANALOG_AXES, DRIVING_DEMONSTRATION_BACKLOG, DRIVING_GRU_GATES, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingMemorySlots, drivingPolicyInputs } from './driving-model-config';
+import { drivingGruDeltaWidth, drivingGruShaders, drivingGruStateWidth } from './driving-gru-shaders';
 import { drivingCameraShaders } from './driving-camera-shaders';
 import { drivingLearningShaders } from './driving-learning-shaders';
 import { drivingSacShaders, sacPolicySampleFloats } from './driving-sac-shaders';
@@ -24,8 +24,9 @@ export interface GpuPolicyPass {
 }
 
 type GpuWorkspace = Map<string, GPUBuffer>;
+type RecurrentPoint = Pick<NonNullable<DrivingPolicyInput['recurrent']>, 'episode' | 'capturedAt'>;
 
-/** GPU-resident CNN/LSTM inference and backpropagation through each replayed sequence. */
+/** GPU-resident CNN/GRU inference and backpropagation through each replayed sequence. */
 export class DrivingGpuModel {
     private pipelines: Record<string, GPUComputePipeline> = {};
     private buffers = new Set<GPUBuffer>();
@@ -36,21 +37,25 @@ export class DrivingGpuModel {
     private passWorkspaces = new WeakMap<GpuPolicyPass, GpuWorkspace>();
     private training: GpuWorkspace = new Map();
     private sequence?: { samples: number };
+    private recurrentStates?: GPUBuffer;
+    private readonly recurrentSnapshots: (RecurrentPoint | undefined)[];
+    private recurrentCursor = 0;
+    private readonly pendingPredictions = new WeakMap<object, Promise<void>>();
     private random: () => number = Math.random;
     private readbacks = new Map<number, GPUBuffer>();
     private failure?: string;
     private disposed = false;
-    private lstmWeights: GPUBuffer;
+    private gruWeights: GPUBuffer;
     private outputWeights: GPUBuffer;
     private cameraWeights: GPUBuffer[];
     private cameraProjectionWeights: GPUBuffer;
     private cameraNormWeights?: GPUBuffer;
-    private lstmNormWeights?: GPUBuffer;
+    private gruNormWeights?: GPUBuffer;
     private logStds: GPUBuffer;
     private criticWeights: GPUBuffer;
     private targetCriticWeights: GPUBuffer;
     private targetEncoder: { cameraWeights: GPUBuffer[]; cameraProjectionWeights: GPUBuffer;
-        lstmWeights: GPUBuffer; cameraNormWeights?: GPUBuffer; lstmNormWeights?: GPUBuffer };
+        gruWeights: GPUBuffer; cameraNormWeights?: GPUBuffer; gruNormWeights?: GPUBuffer };
     private layers;
     private times: GPUBuffer[];
     private readonly inputs: number;
@@ -65,22 +70,24 @@ export class DrivingGpuModel {
         this.outputs = config.actions.planTimesSeconds.length * config.actions.outputs.length + 1;
         this.cameraInputs = drivingCameraInputs(config);
         this.pooledInputs = drivingCameraPooledInputs(config);
+        // Include the demonstration backlog, replay transitions and the history bins.
+        this.recurrentSnapshots = new Array(DRIVING_DEMONSTRATION_BACKLOG + config.learning.replayCapacity + drivingMemorySlots(config));
         this.layers = drivingCameraLayers(config);
         this.cameraWeights = state.cameraWeights.map((rows) => this.upload(rows.flat()));
         this.cameraProjectionWeights = this.upload(state.cameraProjectionWeights.flat());
-        this.lstmWeights = this.upload(state.lstmWeights.flat());
+        this.gruWeights = this.upload(state.gruWeights.flat());
         this.outputWeights = this.upload(state.outputWeights.flat());
         if (config.network.cameraLayerNorm) this.cameraNormWeights = this.upload(state.cameraNormWeights!.flat());
-        if (config.network.lstmLayerNorm) this.lstmNormWeights = this.upload(state.lstmNormWeights!.flat());
+        if (config.network.gruLayerNorm) this.gruNormWeights = this.upload(state.gruNormWeights!.flat());
         this.logStds = this.upload(state.sac.logStds);
         this.criticWeights = this.upload(state.sac.criticWeights.flat());
         this.targetCriticWeights = this.upload(state.sac.targetCriticWeights.flat());
         const target = state.sac.targetEncoder;
         this.targetEncoder = { cameraWeights: target.cameraWeights.map((rows) => this.upload(rows.flat())),
             cameraProjectionWeights: this.upload(target.cameraProjectionWeights.flat()),
-            lstmWeights: this.upload(target.lstmWeights.flat()),
+            gruWeights: this.upload(target.gruWeights.flat()),
             ...(target.cameraNormWeights && { cameraNormWeights: this.upload(target.cameraNormWeights.flat()) }),
-            ...(target.lstmNormWeights && { lstmNormWeights: this.upload(target.lstmNormWeights.flat()) }) };
+            ...(target.gruNormWeights && { gruNormWeights: this.upload(target.gruNormWeights.flat()) }) };
         this.times = Array.from({ length: drivingMemorySlots(config) + 1 },
             (_, t) => this.upload(new Uint32Array([t])));
         device.lost.then((info) => { if (!this.disposed) this.failure = `Training GPU lost: ${info.message || info.reason}. Restart training.`; });
@@ -153,11 +160,11 @@ export class DrivingGpuModel {
     }
 
     private async compile() {
-        const shaders = { ...drivingLstmShaders(this.config), ...drivingCameraShaders(this.config),
+        const shaders = { ...drivingGruShaders(this.config), ...drivingCameraShaders(this.config),
             ...drivingLearningShaders(this.config), ...drivingSacShaders(this.config), ...drivingUpdateShaders(this.config),
             ...(this.cameraNormWeights ? drivingNormalizationShaders(this.config) : {}) };
-        if (!this.lstmNormWeights) {
-            ['gateSums', 'normalizedForward', 'gateNormBackward'].forEach((name) => { delete shaders[name]; });
+        if (!this.gruNormWeights) {
+            ['gateSums', 'normalizedForward', 'candidateNormBackward', 'gateNormBackward'].forEach((name) => { delete shaders[name]; });
         } else delete shaders.forward;
         await Promise.all(Object.entries(shaders).map(async ([name, shader]) => {
             try {
@@ -223,34 +230,76 @@ export class DrivingGpuModel {
         }
     }
 
-    async forward(input: DrivingPolicyInput): Promise<{ pass: GpuPolicyPass; outputs: number[]; logStds: number[] }> {
-        const pass = this.forwardPass(input);
+    forward(input: DrivingPolicyInput): Promise<{ pass: GpuPolicyPass; outputs: number[]; logStds: number[] }> {
+        const episode = input.recurrent?.episode;
+        if (!episode) return this.predict(input);
+        const prior = this.pendingPredictions.get(episode);
+        const prediction = prior ? prior.then(() => this.predict(input)) : this.predict(input);
+        this.pendingPredictions.set(episode, prediction.then(() => undefined, () => undefined));
+        return prediction;
+    }
+
+    private async predict(input: DrivingPolicyInput) {
+        const pass = this.forwardPass(input, false, true);
         try {
             const values = await this.download([pass.outputs, this.logStds]);
             if (!values.every(Number.isFinite)) throw new Error('The training GPU produced invalid model outputs.');
+            this.rememberRecurrentState(input, pass);
             return { pass, outputs: Array.from(values.subarray(0, this.outputs)), logStds: Array.from(values.subarray(this.outputs)) };
         } catch (error) { this.release(pass); throw error; }
     }
 
+    private recurrentStateBefore(point: RecurrentPoint, before: number, includeCutoff = false) {
+        const capacity = this.recurrentSnapshots.length;
+        for (let i = 1; i <= capacity; i++) {
+            const slot = (this.recurrentCursor + capacity - i) % capacity;
+            const saved = this.recurrentSnapshots[slot];
+            if (saved?.episode === point.episode
+                && (saved.capturedAt < before || (includeCutoff && saved.capturedAt === before))) {
+                return { slot, capturedAt: saved.capturedAt };
+            }
+        }
+        return undefined;
+    }
+
+    private rememberRecurrentState(input: DrivingPolicyInput, pass: GpuPolicyPass) {
+        const point = input.recurrent;
+        if (!point) return;
+        const latest = this.recurrentStateBefore(point, Infinity);
+        if (latest && latest.capturedAt >= point.capturedAt) return;
+        const width = this.hidden * 4, slot = this.recurrentCursor;
+        const states = this.recurrentStates ??= this.buffer(this.recurrentSnapshots.length * width);
+        const commands = this.device.createCommandEncoder();
+        commands.copyBufferToBuffer(pass.states, pass.steps * drivingGruStateWidth * width, states, slot * width, width);
+        this.device.queue.submit([commands.finish()]);
+        this.recurrentSnapshots[slot] = { episode: point.episode, capturedAt: point.capturedAt };
+        this.recurrentCursor = (slot + 1) % this.recurrentSnapshots.length;
+    }
+
     /** Queue a prediction without mapping it back to the CPU. Sequence replays
      * use frozen weights; other replays see the preceding training update. */
-    private forwardPass(input: DrivingPolicyInput, target = false): GpuPolicyPass {
+    private forwardPass(input: DrivingPolicyInput, target = false, continueEpisode = false): GpuPolicyPass {
         this.assertReady();
-        const weights = target ? this.targetEncoder : { lstmWeights: this.lstmWeights, lstmNormWeights: this.lstmNormWeights };
-        const assembled = assembleDrivingInput(input, this.config);
+        const weights = target ? this.targetEncoder : { gruWeights: this.gruWeights, gruNormWeights: this.gruNormWeights };
+        const point = input.recurrent;
+        // Live prediction advances from the latest state, or reuses it for a
+        // repeated capture. Replay starts strictly before the available history.
+        const seed = point && this.recurrentStateBefore(point, continueEpisode ? point.capturedAt
+            : Math.min(point.capturedAt, ...point.historyTimes.map((time) => time ?? Infinity)), continueEpisode);
+        const assembled = assembleDrivingInput(input, this.config, seed?.capturedAt);
         const workspace = this.idlePasses.pop() ?? new Map<string, GPUBuffer>();
         try {
             const commands = this.device.createCommandEncoder(), capacity = this.times.length;
             const pass: GpuPolicyPass = { features: this.scratch(workspace, 'features', capacity * this.inputs * 4),
-                states: this.scratch(workspace, 'states', (capacity + 1) * 6 * this.hidden * 4),
+                states: this.scratch(workspace, 'states', (capacity + 1) * drivingGruStateWidth * this.hidden * 4),
                 count: this.scratch(workspace, 'count', 4), steps: assembled.steps, released: false,
                 outputs: this.scratch(workspace, 'outputs', this.outputs * 4), cameras: [] };
-            if (this.lstmNormWeights) pass.gateCache = this.scratch(workspace, 'gateCache', capacity * (4 * this.hidden + 4) * 4);
-            this.device.queue.writeBuffer(pass.features, 0, new Float32Array(assembled.features));
+            if (this.gruNormWeights) pass.gateCache = this.scratch(workspace, 'gateCache', capacity * DRIVING_GRU_GATES * (this.hidden + 1) * 4);
+            if (pass.steps) this.device.queue.writeBuffer(pass.features, 0, new Float32Array(assembled.features));
             this.device.queue.writeBuffer(pass.count, 0, new Uint32Array([assembled.steps]));
-            // All subsequent states are overwritten; only the initial hidden/cell
-            // state is read before being written on a reused workspace.
-            commands.clearBuffer(pass.states, 0, 2 * this.hidden * 4);
+            const width = this.hidden * 4;
+            if (seed) commands.copyBufferToBuffer(this.recurrentStates!, seed.slot * width, pass.states, 0, width);
+            else commands.clearBuffer(pass.states, 0, width);
             // Share repeated captures only inside this pass. A later forward must
             // use the latest CNN weights, and pending decisions own their activations.
             const encoded = new Map<PolicyCameraImage, GPUBuffer[]>();
@@ -264,10 +313,10 @@ export class DrivingGpuModel {
                 commands.copyBufferToBuffer(activations[activations.length - 1], 0, pass.features, offset * 4, this.cameraInputs * 4);
             }
             for (let t = 0; t < pass.steps; t++) {
-                if (weights.lstmNormWeights) {
-                    this.dispatch(commands, 'gateSums', [weights.lstmWeights, pass.features, pass.states, this.times[t], pass.gateCache!], this.hidden);
-                    this.dispatch(commands, 'normalizedForward', [pass.gateCache!, weights.lstmNormWeights, pass.states, this.times[t]], 1);
-                } else this.dispatch(commands, 'forward', [weights.lstmWeights, pass.features, pass.states, this.times[t]], this.hidden);
+                if (weights.gruNormWeights) {
+                    this.dispatch(commands, 'gateSums', [weights.gruWeights, pass.features, pass.states, this.times[t], pass.gateCache!], this.hidden);
+                    this.dispatch(commands, 'normalizedForward', [pass.gateCache!, weights.gruNormWeights, pass.states, this.times[t]], 1);
+                } else this.dispatch(commands, 'forward', [weights.gruWeights, pass.features, pass.states, this.times[t]], this.hidden);
             }
             this.dispatch(commands, 'output', [this.outputWeights, pass.states, pass.count, pass.outputs], Math.ceil(this.outputs / 64));
             this.device.queue.submit([commands.finish()]);
@@ -304,11 +353,11 @@ export class DrivingGpuModel {
         const entries: [string, GPUBuffer, boolean][] = [
             ...this.cameraWeights.map((weights, i): [string, GPUBuffer, boolean] => [`cameraGradient${i}`, weights, false]),
             ['projectionGradient', this.cameraProjectionWeights, false],
-            ['lstmGradient', this.lstmWeights, false], ['headGradient', this.outputWeights, false],
+            ['gruGradient', this.gruWeights, false], ['headGradient', this.outputWeights, false],
             ['criticGradient', this.criticWeights, false], ['logStdGradient', this.logStds, false],
         ];
         if (this.cameraNormWeights) entries.push(['cameraNormGradient', this.cameraNormWeights, true]);
-        if (this.lstmNormWeights) entries.push(['lstmNormGradient', this.lstmNormWeights, true]);
+        if (this.gruNormWeights) entries.push(['gruNormGradient', this.gruNormWeights, true]);
         return entries.map(([name, weights, normalized]) => ({ weights, normalized,
             gradient: this.scratch(this.training, name, weights.size) }));
     }
@@ -335,10 +384,10 @@ export class DrivingGpuModel {
         const targets: [GPUBuffer, GPUBuffer][] = [
             ...this.cameraWeights.map((weights, index): [GPUBuffer, GPUBuffer] => [weights, this.targetEncoder.cameraWeights[index]]),
             [this.cameraProjectionWeights, this.targetEncoder.cameraProjectionWeights],
-            [this.lstmWeights, this.targetEncoder.lstmWeights], [this.criticWeights, this.targetCriticWeights],
+            [this.gruWeights, this.targetEncoder.gruWeights], [this.criticWeights, this.targetCriticWeights],
         ];
         if (this.cameraNormWeights) targets.push([this.cameraNormWeights, this.targetEncoder.cameraNormWeights!]);
-        if (this.lstmNormWeights) targets.push([this.lstmNormWeights, this.targetEncoder.lstmNormWeights!]);
+        if (this.gruNormWeights) targets.push([this.gruNormWeights, this.targetEncoder.gruNormWeights!]);
         targets.forEach(([weights, target]) => this.dispatch(commands, 'sacTargetUpdate', [weights, target, stats], Math.ceil(weights.size / (4 * 64))));
     }
 
@@ -351,7 +400,14 @@ export class DrivingGpuModel {
         return { gradientNorm, clipScale, updateNorm, learningRate, samples, finite: valid === 1 };
     }
 
-    learnTargets(input: DrivingPolicyInput, targets: PlannedActionTarget[]) {
+    /** Keep the recurrent history of a demonstration origin without updating weights. */
+    observeDemonstration(input: DrivingPolicyInput) {
+        const pass = this.forwardPass(input);
+        try { this.rememberRecurrentState(input, pass); }
+        finally { this.release(pass); }
+    }
+
+    learnTargets(input: DrivingPolicyInput, targets: PlannedActionTarget[], rememberState = false) {
         const stride = DRIVING_ANALOG_AXES + 4;
         const values = new Array(this.config.actions.planTimesSeconds.length * stride).fill(0);
         for (const { step, action, shifts } of targets) {
@@ -363,6 +419,7 @@ export class DrivingGpuModel {
             const target = this.scratch(this.training, 'demonstrationTarget', values.length * 4);
             this.device.queue.writeBuffer(target, 0, new Float32Array(values));
             this.update(pass, 'demonstrationGradient', [pass.outputs, target]);
+            if (rememberState) this.rememberRecurrentState(input, pass);
         } finally { this.release(pass); }
     }
 
@@ -403,9 +460,10 @@ export class DrivingGpuModel {
             });
             const features = this.scratch(this.training, 'sacFeatures', this.hidden * 2 * 4);
             this.update(pass, undefined, [], (commands, outputGradient, criticHidden) => {
-                commands.copyBufferToBuffer(pass.states, pass.steps * 6 * this.hidden * 4, features, 0, this.hidden * 4);
+                const stateStride = drivingGruStateWidth * this.hidden * 4;
+                commands.copyBufferToBuffer(pass.states, pass.steps * stateStride, features, 0, this.hidden * 4);
                 const endpoint = nextTarget ?? pass;
-                commands.copyBufferToBuffer(endpoint.states, endpoint.steps * 6 * this.hidden * 4, features, this.hidden * 4, this.hidden * 4);
+                commands.copyBufferToBuffer(endpoint.states, endpoint.steps * stateStride, features, this.hidden * 4, this.hidden * 4);
                 for (const { values } of transitions) {
                     this.sacGradients(commands, pass, features, values, outputGradient, criticHidden, nextPolicy);
                 }
@@ -459,14 +517,14 @@ export class DrivingGpuModel {
         // the same queue execute after this update, even while it is in flight.
         const buffer = (name: string, size: number) => this.scratch(this.training, name, size);
         const commands = this.device.createCommandEncoder(), outputGradient = buffer('outputGradient', this.outputs * 4);
-        const upstream = buffer('upstream', 2 * this.hidden * 4), deltas = buffer('deltas', this.times.length * 4 * this.hidden * 4);
+        const upstream = buffer('upstream', this.hidden * 4);
+        const deltas = buffer('deltas', this.times.length * drivingGruDeltaWidth * this.hidden * 4);
+        const normWeights = this.gruNormWeights;
+        const normGradient = normWeights && buffer('gruNormGradient', normWeights.size);
         const cameraGradients = this.layers.map((layer, l) => buffer(`cameraGradient${l}`, layer.channels * layer.columns * 4));
         const cameraDeltas = this.layers.map((layer, l) => buffer(`cameraDelta${l}`, layer.width * layer.height * layer.channels * 4));
         const projectionGradient = buffer('projectionGradient', this.cameraInputs * (this.pooledInputs + 1) * 4);
         const projectionDelta = buffer('projectionDelta', this.cameraInputs * 4), pooledDelta = buffer('pooledDelta', this.pooledInputs * 4);
-        // Hidden gradients and deltas are overwritten. Cell gradients and weight
-        // accumulators must start at zero on every update, including reuse.
-        commands.clearBuffer(upstream, this.hidden * 4, this.hidden * 4);
         if (!this.sequence) this.parameters().forEach(({ gradient }) => commands.clearBuffer(gradient));
         const criticHidden = buffer('criticHidden', this.hidden * 4);
         if (sac) {
@@ -476,14 +534,18 @@ export class DrivingGpuModel {
         } else this.dispatch(commands, gradientShader!, [...targets, outputGradient], Math.ceil(this.outputs / 64));
         this.dispatch(commands, 'hiddenGradient', [this.outputWeights, outputGradient, upstream], Math.ceil(this.hidden / 64));
         if (sac) this.dispatch(commands, 'sacAddHidden', [criticHidden, upstream], Math.ceil(this.hidden / 64));
+        const hiddenGroups = Math.ceil(this.hidden / 64);
         for (let t = pass.steps - 1; t >= 0; t--) {
-            this.dispatch(commands, 'gateGradient', [pass.states, upstream, deltas, this.times[t]], Math.ceil(this.hidden / 64));
-            if (this.lstmNormWeights) this.dispatch(commands, 'gateNormBackward',
-                [pass.gateCache!, this.lstmNormWeights, deltas, this.times[t], buffer('lstmNormGradient', this.lstmNormWeights.size)], 4);
-            if (t > 0) this.dispatch(commands, 'recurrentGradient', [this.lstmWeights, deltas, upstream, this.times[t]], Math.ceil(this.hidden / 64));
+            const time = this.times[t];
+            const normBuffers = normWeights && normGradient && [pass.gateCache!, normWeights, deltas, time, normGradient];
+            this.dispatch(commands, 'gateGradient', [pass.states, upstream, deltas, time], hiddenGroups);
+            if (normBuffers) this.dispatch(commands, 'candidateNormBackward', normBuffers, 1);
+            this.dispatch(commands, 'resetGradient', [pass.states, deltas, time], hiddenGroups);
+            if (normBuffers) this.dispatch(commands, 'gateNormBackward', normBuffers, 2);
+            if (t > 0) this.dispatch(commands, 'recurrentGradient', [this.gruWeights, deltas, upstream, time], hiddenGroups);
         }
         for (const camera of pass.cameras) {
-            this.dispatch(commands, 'cameraGradient', [this.lstmWeights, deltas, camera.offset, projectionDelta],
+            this.dispatch(commands, 'cameraGradient', [this.gruWeights, deltas, camera.offset, projectionDelta],
                 Math.ceil(this.cameraInputs / 64));
             if (this.cameraNormWeights) this.dispatch(commands, 'cameraNormalizeBackward',
                 [camera.activations[this.layers.length + 3], this.cameraNormWeights, projectionDelta,
@@ -507,8 +569,8 @@ export class DrivingGpuModel {
         }
         // History sums follow BPTT's chain rule. Replay samples accumulate into
         // a mean gradient, clipped only when the entire batch is committed.
-        this.dispatch(commands, 'lstmWeightGradient', [buffer('lstmGradient', this.lstmWeights.size), pass.features, pass.states, deltas, pass.count],
-            Math.ceil(4 * this.hidden * (this.inputs + this.hidden + 1) / 64));
+        this.dispatch(commands, 'gruWeightGradient', [buffer('gruGradient', this.gruWeights.size), pass.features, pass.states, deltas, pass.count],
+            Math.ceil(this.gruWeights.size / (4 * 64)));
         this.dispatch(commands, 'outputWeightGradient', [buffer('headGradient', this.outputWeights.size), pass.states, outputGradient, pass.count], Math.ceil(this.outputs * (this.hidden + 1) / 64));
         if (this.sequence) { if (countSample) this.sequence.samples++; }
         else this.applyGradients(commands, 1);
@@ -559,11 +621,11 @@ export class DrivingGpuModel {
 
     async weights(): Promise<PolicyWeights> {
         const target = this.targetEncoder;
-        const values = await this.download([...this.cameraWeights, this.cameraProjectionWeights, this.lstmWeights, this.outputWeights,
-            ...(this.cameraNormWeights ? [this.cameraNormWeights] : []), ...(this.lstmNormWeights ? [this.lstmNormWeights] : []),
+        const values = await this.download([...this.cameraWeights, this.cameraProjectionWeights, this.gruWeights, this.outputWeights,
+            ...(this.cameraNormWeights ? [this.cameraNormWeights] : []), ...(this.gruNormWeights ? [this.gruNormWeights] : []),
             this.logStds, this.criticWeights, this.targetCriticWeights,
-            ...target.cameraWeights, target.cameraProjectionWeights, target.lstmWeights,
-            ...(target.cameraNormWeights ? [target.cameraNormWeights] : []), ...(target.lstmNormWeights ? [target.lstmNormWeights] : [])]);
+            ...target.cameraWeights, target.cameraProjectionWeights, target.gruWeights,
+            ...(target.cameraNormWeights ? [target.cameraNormWeights] : []), ...(target.gruNormWeights ? [target.gruNormWeights] : [])]);
         if (!values.every(Number.isFinite)) throw new Error('Invalid GPU model weights; the checkpoint was not saved.');
         let offset = 0;
         const matrix = (rows: number, columns: number, limit = this.config.learning.weightLimit) => Array.from({ length: rows }, () => {
@@ -572,18 +634,18 @@ export class DrivingGpuModel {
         });
         const encoder = { cameraWeights: this.layers.map((layer) => matrix(layer.channels, layer.columns)),
             cameraProjectionWeights: matrix(this.cameraInputs, this.pooledInputs + 1),
-            lstmWeights: matrix(4 * this.hidden, this.inputs + this.hidden + 1),
+            gruWeights: matrix(DRIVING_GRU_GATES * this.hidden, this.inputs + this.hidden + 1),
             outputWeights: matrix(this.outputs, this.hidden + 1),
             ...(this.cameraNormWeights ? { cameraNormWeights: matrix(2, this.cameraInputs, Math.max(1, this.config.learning.weightLimit)) } : {}),
-            ...(this.lstmNormWeights ? { lstmNormWeights: matrix(2, 4 * this.hidden, Math.max(1, this.config.learning.weightLimit)) } : {}) };
+            ...(this.gruNormWeights ? { gruNormWeights: matrix(2, DRIVING_GRU_GATES * this.hidden, Math.max(1, this.config.learning.weightLimit)) } : {}) };
         const logStds = Array.from(values.subarray(offset, offset + this.logStds.size / 4)); offset += logStds.length;
         const criticSize = this.criticWeights.size / 8;
         return { ...encoder, sac: { logStds, criticWeights: matrix(2, criticSize), targetCriticWeights: matrix(2, criticSize),
             targetEncoder: { cameraWeights: this.layers.map((layer) => matrix(layer.channels, layer.columns)),
                 cameraProjectionWeights: matrix(this.cameraInputs, this.pooledInputs + 1),
-                lstmWeights: matrix(4 * this.hidden, this.inputs + this.hidden + 1),
+                gruWeights: matrix(DRIVING_GRU_GATES * this.hidden, this.inputs + this.hidden + 1),
                 ...(target.cameraNormWeights ? { cameraNormWeights: matrix(2, this.cameraInputs, Math.max(1, this.config.learning.weightLimit)) } : {}),
-                ...(target.lstmNormWeights ? { lstmNormWeights: matrix(2, 4 * this.hidden, Math.max(1, this.config.learning.weightLimit)) } : {}) } } };
+                ...(target.gruNormWeights ? { gruNormWeights: matrix(2, DRIVING_GRU_GATES * this.hidden, Math.max(1, this.config.learning.weightLimit)) } : {}) } } };
     }
 
     dispose() {
@@ -592,6 +654,8 @@ export class DrivingGpuModel {
         this.buffers.forEach((buffer) => buffer.destroy()); this.buffers.clear();
         this.bindGroups.clear(); this.idlePasses = []; this.training.clear(); this.readbacks.clear();
         this.passWorkspaces = new WeakMap();
+        this.recurrentSnapshots.fill(undefined);
+        this.recurrentStates = undefined;
         this.sequence = undefined;
         this.device.destroy();
     }

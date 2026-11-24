@@ -16,7 +16,8 @@ import { DrivingImpactMonitor } from './driving-impact-monitor';
 import type { AccControlPreset, ControllerAction, VirtualController } from './virtual-controller';
 import ManualDrivingControls, { ManualDrivingControlsHandle } from './ManualDrivingControls';
 import ObservationInputDelays, { ObservationDelaySnapshot } from './ObservationInputDelays';
-import RecordedFrameViewer, { RecordedDrivingFrame, RecordedFrameViewerHandle, RecordedReplayPosition } from './RecordedFrameViewer';
+import RecordedFrameViewer, { RecordedDrivingFrame, RecordedFrameViewerHandle, RecordedReplayFrame, RecordedReplayPosition } from './RecordedFrameViewer';
+import { RecordedDrivingBalance, recordedSampleGroup } from './recorded-driving-balance';
 import { findRecordedTelemetry, readRecordedDrivingObservation, type RecordedObservationResult } from './recorded-driving-session';
 import { loadRecordedDrivingReferences, RecordedDrivingReferences, recordedTrackKey } from './recorded-driving-reference';
 import { RecordedDrivingReplay, RecordedReplayProgress } from './recorded-driving-replay';
@@ -154,8 +155,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             return { error: references?.sessionId === frame.session.id && references.error
                 ? references.error : 'Loading matching circuit maps and reference laps for this recording…' };
         }
-        const row = findRecordedTelemetry(frame.session, frame.videoSeconds, frame.offsetSeconds,
-            configuration.current.runtime.telemetryMaxAgeMs);
+        const row = findRecordedTelemetry(frame.session, frame.telemetrySeconds, configuration.current.runtime.telemetryMaxAgeMs);
         const sample = row?.sample;
         const lap = selectLiveMapReference(references.data.laps, frame.session.game, sample?.Static_track,
             sample?.Static_car_model, sample?.Graphics_track_grip_status);
@@ -163,8 +163,8 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             ? references.data.maps.get(recordedTrackKey(frame.session.game, sample.Static_track)) ?? null : null;
         if (row && !lap) return { error: 'No reference lap matches this recording’s game, car and circuit.' };
         if (row && !map) return { error: 'No saved circuit map matches this recording. Add its centerline in Circuit Maps.' };
-        return readRecordedDrivingObservation(frame.session, frame.videoSeconds, frame.camera, lap,
-            aggressionRef.current, configuration.current, map, frame.offsetSeconds);
+        return readRecordedDrivingObservation(frame.session, frame.telemetrySeconds, frame.camera, lap,
+            aggressionRef.current, configuration.current, map);
     };
     const readLive = (): ObservationResult & { delays?: ObservationDelaySnapshot } => {
         const session = directoryRef.current?.findComponentRef<LiveSessionHandle>(OPERATION_COMPONENT_NAMES.LIVE_SESSION)?.current;
@@ -424,8 +424,9 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         finally { if (mounted.current) setInitializingGpu(false); }
     };
     const startRecorded = async (train: boolean) => {
+        const viewer = recordedViewer.current;
         if (inputSourceRef.current !== 'recorded' || running || replayAbort.current || viewerBusy
-            || initializingGpu || fileBusy || !replayReady || !modelPath.current || !recordedViewer.current) return;
+            || initializingGpu || fileBusy || !replayReady || !modelPath.current || !viewer) return;
         const abort = new AbortController();
         replayAbort.current = abort;
         const active = () => mounted.current && !abort.signal.aborted;
@@ -438,20 +439,63 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             if (!active()) return;
             activateDocument(document);
             if (!train && !policy.current?.steps) throw new Error('Train a model before evaluation.');
-            let references: RecordingReferences | null = null;
+            const referencesByRecording = new Map<string, RecordingReferences>();
+            const getReferences = async (frame: RecordedReplayFrame) => {
+                const { session, recordingId } = frame;
+                const key = recordingId ?? session.id;
+                let references = referencesByRecording.get(key);
+                if (!references) {
+                    const preview = recordedReferences.current;
+                    references = preview?.sessionId === session.id && preview.data ? preview : await resolveRecordingReferences(session);
+                }
+                if (references.sessionId !== session.id) references = { ...references, sessionId: session.id };
+                referencesByRecording.set(key, references);
+                return references;
+            };
+            const sampleGroup = (frame: RecordedReplayFrame, result: RecordedObservationResult, references: RecordingReferences) => {
+                const observation = result.observation;
+                if (!observation) return undefined;
+                const { game, map: track } = observation.context;
+                return recordedSampleGroup(observation, frame.clipLabel,
+                    references.data?.maps.get(recordedTrackKey(game, track)) ?? null);
+            };
+            const balance = train ? new RecordedDrivingBalance(configuration.current) : null;
+            const measuredTimes: number[] = [];
+            let replayedFrames = 0;
+            const reportProgress = (position: RecordedReplayPosition) => { if (active()) setAnnotationProgress(position); };
+            if (balance) {
+                const { cameraWidth: width, cameraHeight: height } = configuration.current.observation;
+                // Only the image shape is needed to check that an aligned origin can train.
+                const camera = { width, height, rgb: new Uint8Array(width * height * 3) };
+                setReplayStatus('Counting aligned samples for balanced training…');
+                await viewer.measure(async (frame) => {
+                    if (!active()) return;
+                    measuredTimes.push(frame.telemetrySeconds);
+                    const references = await getReferences(frame);
+                    if (!active()) return;
+                    const result = readRecorded({ ...frame, camera }, references);
+                    const observation = result.observation;
+                    if (observation && (!policy.current || policy.current.matches(observation))) {
+                        balance.count(observation, sampleGroup(frame, result, references), frame.startsRange);
+                    } else balance.count(undefined, undefined);
+                }, abort.signal, reportProgress);
+                if (!active()) return;
+                balance.prepare();
+                setReplayStatus('Preparing balanced training…');
+                setAnnotationProgress('preparing');
+            }
             let replay: RecordedDrivingReplay | undefined;
             let progress: RecordedReplayProgress = { samples: 0, skipped: 0, pedalError: 0, steeringError: 0 };
             let savedAt = policy.current?.steps ?? 0;
-            await recordedViewer.current!.replay(async (frame) => {
+            await viewer.replay(async (frame) => {
                 if (!active()) return;
-                const sessionId = frame.session.id;
-                if (references?.sessionId !== sessionId) {
-                    const preview = recordedReferences.current;
-                    if (preview?.sessionId === sessionId && preview.data) references = preview;
-                    else references = await resolveRecordingReferences(frame.session);
-                }
+                // Both walks seek the same positions. Use the measured clock even
+                // when a video frame callback arrives at a different point in replay.
+                const telemetrySeconds = balance ? measuredTimes[replayedFrames++] : frame.telemetrySeconds;
+                if (telemetrySeconds === undefined) throw new Error('The recording changed after counting aligned samples.');
+                const references = await getReferences(frame);
                 if (!active()) return;
-                const result = readRecorded(frame, references);
+                const result = readRecorded({ ...frame, telemetrySeconds }, references);
                 sampledInputs.current = result;
                 setInputs(result);
                 const observation = result.observation;
@@ -462,13 +506,13 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     await policy.current.initializeGpu();
                     if (!active()) return;
                     setInitializingGpu(false);
-                    replay = new RecordedDrivingReplay(policy.current, train);
+                    replay = new RecordedDrivingReplay(policy.current, train, balance ? (group) => balance.select(group) : undefined);
                     Object.assign(replay.progress, progress);
                     progress = replay.progress;
                 }
                 if (replay) {
                     if (frame.startsRange) replay.startRange();
-                    await replay.consume(result, active);
+                    await replay.consume(result, active, balance ? sampleGroup(frame, result, references) : undefined);
                 } else {
                     progress.skipped++;
                     progress.lastError = result.error || 'Recorded inputs do not match this model.';
@@ -478,14 +522,16 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 setModelSteps(policy.current?.steps ?? null);
                 if (train && replay) setSaved(false);
                 setReplayStatus(`${train ? 'Learning from' : 'Evaluating'} recording${frame.recordingName ? ` · ${frame.recordingName}` : ''} · ${frame.videoSeconds.toFixed(1)} s · ${progress.samples} samples · ${progress.skipped} skipped`
+                    + (progress.omittedForBalance ? ` · ${progress.omittedForBalance} set aside for balance` : '')
                     + (train ? '' : ` · pedal MAE ${progress.pedalError.toFixed(3)} · steering MAE ${progress.steeringError.toFixed(3)}`)
                     + (progress.lastError ? ` · Last skipped frame: ${progress.lastError}` : ''));
                 if (train && steps - savedAt >= configuration.current.runtime.saveEverySteps) {
                     if (!await save()) throw new Error('Recorded training stopped because the model could not be saved.');
                     savedAt = steps;
                 }
-            }, abort.signal, train ? (position) => { if (active()) setAnnotationProgress(position); } : undefined);
+            }, abort.signal, train ? reportProgress : undefined);
             if (active()) {
+                if (balance && replayedFrames !== measuredTimes.length) throw new Error('The recording changed after counting aligned samples.');
                 if (!progress.samples) throw new Error(progress.lastError || 'No consecutive aligned samples were available for replay.');
                 setReplayStatus((status) => `Completed. ${status}`);
             }
@@ -659,7 +705,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     : finishing || (aiActive && !state.source) ? 'Finishing learning' : aiActive ? state.source === 'ai' ? 'Driving' : 'Human has control' : 'Not started'}</span></div>
                 <p>{inputSource === 'live' ? 'Start AI training or evaluation when live inputs are ready. If you are already driving, you keep control until Return to AI.'
                     : 'Recorded training learns signed pedal intent, steering values plus single gear changes from aligned telemetry. Evaluation compares the fixed model with recorded controls. Gaps reset observation history.'}</p>
-                <p>CNN–LSTM soft actor–critic · {config.network.hiddenUnits} recurrent units · continuous throttle/brake and steering, plus learned hold gear, shift up and shift down. Throttle/brake ranges from −1 (full brake) through 0 (both released) to 1 (full throttle).</p>
+                <p>CNN–GRU soft actor–critic · {config.network.hiddenUnits} recurrent units · continuous throttle/brake and steering, plus learned hold gear, shift up and shift down. Throttle/brake ranges from −1 (full brake) through 0 (both released) to 1 (full throttle).</p>
                 <p>{config.memory.windowMs / 1000}-second observation history covers {fullObservationHistory ? 'all AI observation inputs' : 'the observation inputs selected in this saved model'} during training and evaluation, sampled in {config.memory.intervalMs} ms bins. Memory starts fresh after stopping, changing drivers or interrupted inputs.</p>
                 {inputSource === 'live' && <p>During training, SAC uses up to {config.learning.sequenceSeconds} seconds of recorded rewards to learn how earlier controls affect later outcomes. The current plan keeps running as the model learns.</p>}
                 <p>One action plan predicts {config.actions.planTimesSeconds.length} control steps from 0 to {planEnd} seconds. The AI smoothly blends the signed pedal command and steering between steps while computing. Gear shifts occur at their scheduled steps. The remaining plan continues when fresh inference agrees, and is replaced when it disagrees or expires. During training, each step that contributes to a command learns which controls are likely to earn more reward after penalties. Exploration adds random variation around those choices. Human driving teaches future steps from demonstrated actions.</p>
@@ -786,7 +832,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 </div>
                 <p className="driving-note" role="status">{saving ? 'Saving model…' : saved ? 'Model saved to file.' : 'Model not saved.'} The complete model saves to the selected file every {config.runtime.saveEverySteps} learning steps and when stopped.</p>
                 {inputSource === 'live' ? <p className="driving-note">Training explores controls; use a practice session and reposition the car between episodes. A new policy starts untrained.</p>
-                    : <p className="driving-note">Replay samples every {Math.max(100, config.runtime.controlIntervalMs)} ms of video. Pedal MAE measures error on the signed throttle/brake command. Steering MAE measures steering error. Both use normalized controls and do not measure image recognition accuracy. A new policy starts untrained.</p>}
+                    : <p className="driving-note">Replay samples every {Math.max(100, config.runtime.controlIntervalMs)} ms of video. Training and evaluation pair each observation with the next sample’s pedal and steering commands. Pedal MAE and steering MAE measure error on those normalized controls. A new policy starts untrained.</p>}
             </section>
             {inputSource === 'live' && <section className="driving-card driving-shared-output" aria-label="Shared vJoy output">
                 <div className="driving-card-title"><h2>Steering wheel (vJoy)</h2><span>{connected ? 'Connected' : 'Disconnected'}</span></div>
@@ -878,7 +924,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     <dt>Gear / RPM</dt><dd>{observation ? `${observation.gear < 0 ? 'R' : observation.gear === 0 ? 'N' : observation.gear} / ${observation.rpm}` : '—'}</dd>
                     <dt>Lap position</dt><dd>{observation ? `${(observation.normalizedPosition * 100).toFixed(1)}%` : '—'}</dd>
                     <dt>Camera image</dt><dd>{config.observation.cameraWidth} × {config.observation.cameraHeight} RGB{observation ? '' : ' · Waiting'}</dd>
-                    <dt>Model compute</dt><dd>{initializingGpu ? 'Preparing GPU…' : 'WebGPU · CNN, LSTM and training'}</dd>
+                    <dt>Model compute</dt><dd>{initializingGpu ? 'Preparing GPU…' : 'WebGPU · CNN, GRU and training'}</dd>
                 </dl>
                 <p className="driving-note">The policy uses car-local velocity XYZ, g-force XYZ, yaw rate, speed, current gear, engine RPM, game, car, map, normalized position, current controls, camera pixels, relative centerline XYZ, aggression, reference speed and target speed. Centerline input covers 50 map steps behind and 50 ahead, relative to the centerline at the current lap position, wrapping at start/finish. Speed targets follow the Live Phrases calculation up to aggression 50, then increase reference speed linearly up to 50% at aggression 100. The policy generates the pedal commands. Aggression applies during training and evaluation; further training teaches its response. Evaluation does not update weights. Models saved with a different observation input set or aggression calculation need to be trained again.</p>
             </section>

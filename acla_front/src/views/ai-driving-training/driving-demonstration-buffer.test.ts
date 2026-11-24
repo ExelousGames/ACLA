@@ -12,7 +12,8 @@ const telemetry = (measuredAt: number): DrivingTelemetrySample => ({ measuredAt,
 
 it('collects all 51 timestamps before exposing one grouped demonstration, independent of training', () => {
     const buffer = new DrivingDemonstrationBuffer();
-    const features = input();
+    const recurrent = { episode: {}, capturedAt: 1000, historyTimes: [] };
+    const features = { ...input(), recurrent };
     buffer.addObservation(features, 1000);
     features.features[0] = 2;
     for (let step = 0; step <= 50; step++) {
@@ -25,6 +26,7 @@ it('collects all 51 timestamps before exposing one grouped demonstration, indepe
     buffer.advance(6050);
     const sample = buffer.take()!;
     expect(sample.input.features).toEqual([1]);
+    expect(sample.input.recurrent).toBe(recurrent);
     expect(sample.targets).toEqual(Array.from({ length: 51 }, (_, step) => ({ step,
         action: { pedal: step / 50, steering: -step / 50, shiftUp: false, shiftDown: false }, shifts })));
     expect(buffer.hasReady).toBe(false);

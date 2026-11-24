@@ -1,7 +1,7 @@
 import { DrivingAction, DrivingTelemetrySample, encodeDrivingAction } from './driving-observation';
 import type { DrivingPolicyInput } from './driving-memory';
 import type { PlannedActionTarget, ShiftAvailability } from './driving-policy';
-import { DEFAULT_DRIVING_CONFIG } from './driving-model-config';
+import { DEFAULT_DRIVING_CONFIG, DRIVING_DEMONSTRATION_BACKLOG } from './driving-model-config';
 import type { ControllerAction } from './virtual-controller';
 
 export interface DrivingDemonstrationSample {
@@ -60,8 +60,8 @@ export class DrivingDemonstrationBuffer {
     }
 
     addObservation(input: DrivingPolicyInput, capturedAt: number) {
-        this.pending.push({ capturedAt, input: { features: input.features.slice(), cameras: input.cameras.slice() } });
-        if (this.pending.length + this.ready.length > 512) {
+        this.pending.push({ capturedAt, input: { ...input, features: input.features.slice(), cameras: input.cameras.slice() } });
+        if (this.pending.length + this.ready.length > DRIVING_DEMONSTRATION_BACKLOG) {
             if (this.ready.length) this.ready.shift();
             else this.pending.shift();
             this.droppedSamples++;

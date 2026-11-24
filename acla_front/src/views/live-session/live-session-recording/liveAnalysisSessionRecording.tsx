@@ -64,7 +64,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
     const videoStartLocked = isStarting || analysisContext.recordingActive || Boolean(analysisContext.recordingFileKey)
         || (state !== RecordingState.READY && state !== RecordingState.CHECKING);
     const captureStarting = capture?.state === 'starting';
-    const video = useSessionVideo(capture?.stream ?? null, analysisContext.recordingFileKey,
+    const video = useSessionVideo(capture?.stream ?? null, analysisContext.recordingFileKey, analysisContext.telemetryStartedAt,
         state === RecordingState.RECORDING && !isUploading && uploadProgress < 100);
     const { stop: stopVideo, refresh: refreshVideos } = video;
     const [uploadStatus, setUploadStatus] = useState('');

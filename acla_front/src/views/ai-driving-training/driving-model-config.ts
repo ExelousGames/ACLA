@@ -6,6 +6,8 @@ export const DEFAULT_DRIVING_CONFIG: DrivingModelConfig = defaults;
 export const cloneConfig = (config = DEFAULT_DRIVING_CONFIG): DrivingModelConfig => JSON.parse(JSON.stringify(config));
 
 export const DRIVING_ANALOG_AXES = 2;
+export const DRIVING_GRU_GATES = 3;
+export const DRIVING_DEMONSTRATION_BACKLOG = 512;
 export const MAX_EXPLORATION_GEAR = 10;
 
 /** Match the signed pedal and steering output order. */
@@ -84,7 +86,7 @@ export function drivingCameraLayers(config = DEFAULT_DRIVING_CONFIG) {
     });
 }
 
-/** A single LSTM timestep, including presence and normalized age. */
+/** A single GRU timestep, including presence and normalized age. */
 export function drivingPolicyInputs(config = DEFAULT_DRIVING_CONFIG): number {
     const sizes: Record<string, number> = { ...drivingFeatureSizes(config), camera: drivingCameraInputs(config) };
     return 2 + config.observation.features.reduce((sum, name) => sum + sizes[name], 0);
@@ -134,7 +136,7 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
         || c.network.layerNormEpsilon < 1e-9 || c.network.layerNormEpsilon > 0.01) return invalid();
     if (!integer(c.network.hiddenUnits, 1, 256) || !integer(o.categoryBits, 1, 32)
         || o.cameraWidth !== POLICY_CAMERA_WIDTH || o.cameraHeight !== POLICY_CAMERA_HEIGHT
-        || 4 * c.network.hiddenUnits * (drivingPolicyInputs(c) + c.network.hiddenUnits + 1) > 2000000
+        || DRIVING_GRU_GATES * c.network.hiddenUnits * (drivingPolicyInputs(c) + c.network.hiddenUnits + 1) > 2000000
         || !o.features.includes('camera') || !o.features.includes('centerline')
         || o.centerlineStepsPerSide !== defaults.observation.centerlineStepsPerSide
         || ![o.velocityScale, o.speedScale, o.gearScale, o.rpmScale, o.yawRateScale, o.gForceScale, o.centerlineScale,

@@ -1,10 +1,18 @@
 import React, { useState } from 'react';
+import type { DesktopGame } from 'contexts/DesktopGameContext';
+import trainingLabels from 'data/recorded-training-labels.json';
 
-export interface TrainingRange { start: number; end: number }
-interface TrainingSelectionData {
-    offsetSeconds: number;
+export interface TrainingRange { start: number; end: number; label?: string }
+export interface TrainingRangeDraft {
     /** Null uses the full overlap. An empty list selects no footage. */
     ranges: TrainingRange[] | null;
+    fullRecordingLabel?: string;
+    /** Null clears a saved simulator override. */
+    game?: DesktopGame | null;
+}
+interface TrainingSelectionData extends TrainingRangeDraft {
+    /** Read for compatibility with annotations saved before video timing was recorded. */
+    readonly offsetSeconds?: number;
 }
 interface SavedTrainingSelection extends TrainingSelectionData {
     version: 2;
@@ -18,6 +26,7 @@ export interface TrainingAnnotation {
     selection: SavedTrainingSelection;
     videoUrl: string;
     telemetryUrl: string;
+    videoTelemetryStartSeconds?: number;
 }
 
 declare global {
@@ -26,8 +35,8 @@ declare global {
             read(file: File): Promise<TrainingSelection | null>;
             open(file: File): Promise<TrainingAnnotation>;
             scan(files: File[]): Promise<Array<TrainingAnnotation | { error: string } | null>>;
-            update(id: string, selection: TrainingSelection): Promise<TrainingAnnotation>;
-            write(video: File, telemetry: File, selection: TrainingSelection): Promise<TrainingAnnotation>;
+            update(id: string, draft: TrainingRangeDraft): Promise<TrainingAnnotation>;
+            write(video: File, telemetry: File, draft: TrainingRangeDraft): Promise<TrainingAnnotation>;
         };
     }
 }
@@ -36,6 +45,14 @@ export const timestamp = (seconds: number) => {
     const centiseconds = Math.round(seconds * 100);
     return `${Math.floor(centiseconds / 6000)}:${((centiseconds % 6000) / 100).toFixed(2).padStart(5, '0')}`;
 };
+
+function TrainingLabelOptions({ value }: { value?: string }) {
+    return <>
+        <option value="">Unlabeled</option>
+        {value && !trainingLabels.includes(value) && <option value={value} disabled>{value} (legacy)</option>}
+        {trainingLabels.map((label) => <option key={label} value={label}>{label}</option>)}
+    </>;
+}
 
 interface Props {
     selection: TrainingSelection;
@@ -48,7 +65,7 @@ interface Props {
     canSave: boolean;
     playhead(): number;
     seek(seconds: number): void;
-    change(ranges: TrainingSelection['ranges']): void;
+    change(draft: TrainingRangeDraft): void;
     save(): void;
 }
 
@@ -56,15 +73,17 @@ export default function RecordedTrainingRanges({ selection, duration, time, step
     const ranges = selection.ranges ?? [];
     const [start, setStart] = useState('');
     const [end, setEnd] = useState('');
+    const [label, setLabel] = useState('');
     const [editing, setEditing] = useState<number | null>(null);
     const [error, setError] = useState('');
-    const reset = () => { setStart(''); setEnd(''); setEditing(null); setError(''); };
+    const reset = () => { setStart(''); setEnd(''); setLabel(''); setEditing(null); setError(''); };
     const mark = (set: (value: string) => void) => {
         set(String(Math.min(duration, Math.round(playhead() * 100) / 100)));
         setError('');
     };
     const commit = () => {
-        const range = { start: Number(start), end: Number(end) };
+        const name = label.trim();
+        const range = { start: Number(start), end: Number(end), ...(name ? { label: name } : {}) };
         if (!start || !end || !Number.isFinite(range.start) || !Number.isFinite(range.end)
             || range.start < 0 || range.end > duration || range.end - range.start < step - 1e-7) {
             setError(`Choose a start and end inside the video, at least ${step} s apart.`);
@@ -75,7 +94,7 @@ export default function RecordedTrainingRanges({ selection, duration, time, step
             setError('This range touches another range. Edit that range or leave a gap between them.');
             return;
         }
-        change([...others, range].sort((a, b) => a.start - b.start));
+        change({ ranges: [...others, range].sort((a, b) => a.start - b.start) });
         reset();
     };
 
@@ -94,11 +113,20 @@ export default function RecordedTrainingRanges({ selection, duration, time, step
                 : ranges.length ? `${ranges.length} selected ${ranges.length === 1 ? 'range' : 'ranges'} · ${timestamp(ranges.reduce((total, range) => total + range.end - range.start, 0))} of footage`
                     : 'No footage selected.'}
         </p>
+        {selection.ranges === null && <label className="recorded-setting">Full recording label (optional)
+            <select value={selection.fullRecordingLabel ?? ''} disabled={disabled}
+                onChange={(event) => change({ ranges: null, fullRecordingLabel: event.target.value })}>
+                <TrainingLabelOptions value={selection.fullRecordingLabel} />
+            </select>
+        </label>}
         <div className="recorded-settings">
             <label>Range start (seconds)<input type="number" min="0" max={duration} step="0.01" value={start}
                 disabled={disabled} onChange={(event) => { setStart(event.target.value); setError(''); }} /></label>
             <label>Range end (seconds)<input type="number" min="0" max={duration} step="0.01" value={end}
                 disabled={disabled} onChange={(event) => { setEnd(event.target.value); setError(''); }} /></label>
+            <label>Clip label (optional)<select value={label} disabled={disabled} onChange={(event) => setLabel(event.target.value)}>
+                <TrainingLabelOptions value={label} />
+            </select></label>
         </div>
         <div className="driving-buttons">
             <button disabled={disabled} onClick={() => mark(setStart)}>Mark start here</button>
@@ -109,19 +137,19 @@ export default function RecordedTrainingRanges({ selection, duration, time, step
         {error && <p className="driving-error" role="alert">{error}</p>}
         {ranges.length > 0 && <ol className="recorded-range-list">
             {ranges.map((range, index) => <li key={range.start}>
-                <span>{timestamp(range.start)} – {timestamp(range.end)}</span>
+                <span>{timestamp(range.start)} – {timestamp(range.end)}{range.label && ` · ${range.label}`}</span>
                 <button disabled={disabled} aria-label={`Jump to start of range ${index + 1}`} onClick={() => seek(range.start)}>Start</button>
                 <button disabled={disabled} aria-label={`Jump to end of range ${index + 1}`} onClick={() => seek(range.end)}>End</button>
                 <button disabled={disabled} aria-label={`Edit range ${index + 1}`} onClick={() => {
-                    setStart(String(range.start)); setEnd(String(range.end)); setEditing(index); setError('');
+                    setStart(String(range.start)); setEnd(String(range.end)); setLabel(range.label ?? ''); setEditing(index); setError('');
                 }}>Edit</button>
                 <button disabled={disabled} aria-label={`Remove range ${index + 1}`} onClick={() => {
-                    change(ranges.filter((_, item) => item !== index)); reset();
+                    change({ ranges: ranges.filter((_, item) => item !== index) }); reset();
                 }}>Remove</button>
             </li>)}
         </ol>}
         <div className="driving-buttons">
-            {selection.ranges !== null && <button disabled={disabled} onClick={() => { change(null); reset(); }}>Use full recording</button>}
+            {selection.ranges !== null && <button disabled={disabled} onClick={() => { change({ ranges: null }); reset(); }}>Use full recording</button>}
             <button className="driving-primary" disabled={disabled || !canSave}
                 onClick={save}>Save training annotation</button>
             {dirty && <span role="status">Unsaved annotation changes</span>}

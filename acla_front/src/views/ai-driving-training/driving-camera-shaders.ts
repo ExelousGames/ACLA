@@ -1,5 +1,6 @@
-import { DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingPolicyInputs } from './driving-model-config';
+import { DRIVING_GRU_GATES, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingPolicyInputs } from './driving-model-config';
 import { drivingCameraProjectionShaders } from './driving-camera-projection-shaders';
+import { drivingGruDeltaWidth } from './driving-gru-shaders';
 
 /** Shared filters, channel-last activations and explicit convolution backpropagation. */
 export function drivingCameraShaders(config: DrivingModelConfig): Record<string, string> {
@@ -16,9 +17,9 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let t = offset[0] / ${drivingPolicyInputs(config)}u;
     let column = offset[0] % ${drivingPolicyInputs(config)}u + id.x;
     var sum = 0.0;
-    for (var row = 0u; row < ${4 * config.network.hiddenUnits}u; row++) {
+    for (var row = 0u; row < ${DRIVING_GRU_GATES * config.network.hiddenUnits}u; row++) {
         sum += weights[row * ${drivingPolicyInputs(config) + config.network.hiddenUnits + 1}u + column]
-            * deltas[t * ${4 * config.network.hiddenUnits}u + row];
+            * deltas[t * ${drivingGruDeltaWidth * config.network.hiddenUnits}u + row];
     }
     gradient[id.x] = sum;
 }`,

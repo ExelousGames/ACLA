@@ -129,7 +129,7 @@ it.each([3, 4, 5])('waits for the %s-second return and frees GPU samples', async
         expect(run.controller.apply).toHaveBeenCalledWith(drivingControllerAction(credit.action!));
     }
     expect(run.policy.steps).toBe(1);
-    expect((await run.policy.checkpointAsync()).model.lstmWeights).not.toEqual(before.model.lstmWeights);
+    expect((await run.policy.checkpointAsync()).model.gruWeights).not.toEqual(before.model.gruWeights);
     const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
     expect(gpu.beginSequence).toHaveBeenCalledTimes(1);
     expect(gpu.endSequence).toHaveBeenCalledWith(true);
@@ -232,7 +232,7 @@ it.each(['ui', 'controller'] as const)('updates partial AI and final human sampl
     expect(learn.mock.calls[0][0].map(({ startedAt, endedAt }) => [startedAt, endedAt])).toEqual([[1000, 2000], [2000, 3000]]);
     expect(learn.mock.calls[0][1]).toBe(endpoint);
     expect(run.policy.steps).toBe(2);
-    expect((await run.policy.checkpointAsync()).model.lstmWeights).not.toEqual(before.model.lstmWeights);
+    expect((await run.policy.checkpointAsync()).model.gruWeights).not.toEqual(before.model.gruWeights);
 
     run.manual.mockResolvedValue({ action: drivingControllerAction(action), toggleControl: false });
     await run.frame(4000); await run.frame(4500);
@@ -246,7 +246,7 @@ it.each(['ui', 'controller'] as const)('updates partial AI and final human sampl
     expect(demonstrate).toHaveBeenLastCalledWith(expect.anything(), expect.arrayContaining([
         expect.objectContaining({ step: 0, action: expect.objectContaining(action), shifts: { up: true, down: true } }),
     ]));
-    expect((await run.policy.checkpointAsync()).model.lstmWeights).not.toEqual(beforeReturn.model.lstmWeights);
+    expect((await run.policy.checkpointAsync()).model.gruWeights).not.toEqual(beforeReturn.model.gruWeights);
     expect(run.loop.state.steps).toBe(run.policy.steps);
     // The next rollout starts under AI ownership, with no human reward interval.
     run.manual.mockResolvedValue({ action: drivingControllerAction(action), toggleControl: false });
@@ -278,7 +278,7 @@ it.each(['partial', 'full'] as const)('finishes a pending %s AI batch before hum
     const checkpoint = run.policy.checkpointAsync().then((value) => { saved = true; return value; });
     await flush(); expect(saved).toBe(false);
     finish(); await flush();
-    expect((await checkpoint).model.lstmWeights).not.toEqual(before.model.lstmWeights);
+    expect((await checkpoint).model.gruWeights).not.toEqual(before.model.gruWeights);
     expect(learning).toHaveBeenCalledTimes(batch === 'full' ? 5 : 2);
     const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
     expect(gpu.endSequence).toHaveBeenCalledWith(true);

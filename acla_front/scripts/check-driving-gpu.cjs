@@ -40,7 +40,7 @@ async function checks(soakIterations) {
     // Exercise the optional unnormalized encoder as well as the default encoder.
     const unnormalizedConfig = (source) => {
         const config = cloneConfig(source);
-        config.network.cameraLayerNorm = config.network.lstmLayerNorm = false;
+        config.network.cameraLayerNorm = config.network.gruLayerNorm = false;
         config.learning.gradientNormLimit = 1e6;
         return config;
     };
@@ -70,7 +70,7 @@ async function checks(soakIterations) {
     };
     const compare = (a, b, label) => {
         assert(a.model.steps === b.model.steps, `${label}: steps`);
-        for (const key of ['cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'lstmWeights', 'lstmNormWeights', 'outputWeights']) {
+        for (const key of ['cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'gruWeights', 'gruNormWeights', 'outputWeights']) {
             if (!a.model[key] && !b.model[key]) continue;
             close(a.model[key].flat(2), b.model[key].flat(2), `${label}/${key}`);
         }
@@ -79,7 +79,7 @@ async function checks(soakIterations) {
     };
     const changed = (a, b) => a.flat(2).some((value, i) => value !== b.flat(2)[i]);
     const finite = (checkpoint) => {
-        for (const key of ['cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'lstmWeights', 'lstmNormWeights', 'outputWeights']) {
+        for (const key of ['cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'gruWeights', 'gruNormWeights', 'outputWeights']) {
             if (!checkpoint.model[key]) continue;
             assert(checkpoint.model[key].flat(2).every(Number.isFinite), `Finite ${key}`);
         }
@@ -96,9 +96,9 @@ async function checks(soakIterations) {
         after.model.cameraWeights.forEach((rows, l) => assert(changed(rows, before.model.cameraWeights[l]), `${label}: CNN layer ${l}`));
         assert(changed(before.model.cameraProjectionWeights, after.model.cameraProjectionWeights), `${label}: spatial projection`);
         const h = after.configuration.network.hiddenUnits;
-        for (let gate = 0; gate < 4; gate++) {
-            assert(changed(before.model.lstmWeights.slice(gate * h, (gate + 1) * h),
-                after.model.lstmWeights.slice(gate * h, (gate + 1) * h)), `${label}: LSTM gate ${gate}`);
+        for (let gate = 0; gate < 3; gate++) {
+            assert(changed(before.model.gruWeights.slice(gate * h, (gate + 1) * h),
+                after.model.gruWeights.slice(gate * h, (gate + 1) * h)), `${label}: GRU gate ${gate}`);
         }
         finite(after);
     };
@@ -150,40 +150,51 @@ async function checks(soakIterations) {
     freshExploration.releaseDecision(freshPlan); restoredExploration.releaseDecision(restoredPlan);
     freshExploration.dispose(); restoredExploration.dispose();
 
-    // Exercise the production forward/backward kernels against independent CPU
-    // expectations. Finite gate sums can exceed the GPU tanh overflow threshold;
-    // cell states can also exceed it with the supported 101-observation history.
+    // Check the production kernels against a CPU oracle, including gate inputs
+    // beyond the GPU tanh overflow threshold and a nonzero previous hidden state.
     const activationConfig = unnormalizedConfig();
     activationConfig.network.hiddenUnits = 1;
     activationConfig.network.cameraLayers.forEach(layer => { layer.channels = 1; });
     activationConfig.network.cameraProjectionUnits = 1;
     const activationPolicy = await create(activationConfig), activationGpu = activationPolicy.gpu;
     const activationInputs = drivingPolicyInputs(activationConfig), columns = activationInputs + 2;
-    const gateWeights = new Array(4 * columns).fill(0);
-    for (let gate = 0; gate < 4; gate++) gateWeights[gate * columns] = 1;
+    const gateWeights = new Array(3 * columns).fill(0);
+    for (let gate = 0; gate < 3; gate++) gateWeights[gate * columns] = 1;
+    const hiddenWeights = [0.25, -0.5, 0.75];
+    hiddenWeights.forEach((weight, gate) => { gateWeights[gate * columns + activationInputs] = weight; });
     const weights = activationGpu.upload(gateWeights), features = activationGpu.buffer(activationInputs * 4);
-    const states = activationGpu.buffer(12 * 4), upstream = activationGpu.buffer(2 * 4), deltas = activationGpu.buffer(4 * 4);
+    const states = activationGpu.buffer(10 * 4), upstream = activationGpu.buffer(4), deltas = activationGpu.buffer(4 * 4);
+    const sigmoid = x => 1 / (1 + Math.exp(-x));
     const activationValues = [-1e30, -1000, -100, -89, -88, -50, -10, -1, -0.001, 0, 0.001, 1, 10, 50, 88, 89, 100, 1000, 1e30];
     let activationCases = 0;
     for (const value of activationValues) {
-        for (const previousCell of [-100, 0, 100]) {
-            const initial = new Float32Array(12); initial[1] = previousCell;
+        for (const previousHidden of [-1, 0, 1]) {
+            const initial = new Float32Array(10); initial[0] = previousHidden;
+            const dh = 0.125;
             activationGpu.device.queue.writeBuffer(features, 0, new Float32Array([value]));
             activationGpu.device.queue.writeBuffer(states, 0, initial);
-            activationGpu.device.queue.writeBuffer(upstream, 0, new Float32Array([0.125, 0.25]));
+            activationGpu.device.queue.writeBuffer(upstream, 0, new Float32Array([dh]));
             const commands = activationGpu.device.createCommandEncoder();
             activationGpu.dispatch(commands, 'forward', [weights, features, states, activationGpu.times[0]], 1);
             activationGpu.dispatch(commands, 'gateGradient', [states, upstream, deltas, activationGpu.times[0]], 1);
+            activationGpu.dispatch(commands, 'resetGradient', [states, deltas, activationGpu.times[0]], 1);
+            activationGpu.dispatch(commands, 'recurrentGradient', [weights, deltas, upstream, activationGpu.times[0]], 1);
             activationGpu.device.queue.submit([commands.finish()]);
-            const actual = await activationGpu.download([states, deltas]);
-            const x = Math.fround(value), sigmoid = 1 / (1 + Math.exp(-x)), candidate = Math.tanh(x);
-            const cell = sigmoid * previousCell + sigmoid * candidate, activatedCell = Math.tanh(cell);
-            close(Array.from(actual.slice(6, 12)), [sigmoid * activatedCell, cell, sigmoid, sigmoid, candidate, sigmoid],
-                `Finite LSTM activations at input ${value}, cell ${previousCell}`);
-            const dc = 0.25 + 0.125 * sigmoid * (1 - activatedCell * activatedCell);
-            close(Array.from(actual.slice(12)), [dc * candidate * sigmoid * (1 - sigmoid),
-                dc * previousCell * sigmoid * (1 - sigmoid), dc * sigmoid * (1 - candidate * candidate),
-                0.125 * activatedCell * sigmoid * (1 - sigmoid)], `Finite LSTM gradients at input ${value}, cell ${previousCell}`);
+            const actual = await activationGpu.download([states, deltas, upstream]);
+            const x = Math.fround(value);
+            const update = sigmoid(x + hiddenWeights[0] * previousHidden);
+            const reset = sigmoid(x + hiddenWeights[1] * previousHidden);
+            const recurrence = hiddenWeights[2] * previousHidden;
+            const candidate = Math.tanh(x + reset * recurrence);
+            close(Array.from(actual.slice(5, 10)), [update * previousHidden + (1 - update) * candidate,
+                update, reset, candidate, recurrence], `Finite GRU activations at input ${value}, previous hidden ${previousHidden}`);
+            const dUpdate = dh * (previousHidden - candidate) * update * (1 - update);
+            const dCandidate = dh * (1 - update) * (1 - candidate * candidate);
+            const dReset = dCandidate * recurrence * reset * (1 - reset);
+            const dRecurrence = dCandidate * reset;
+            const dHidden = dh * update + hiddenWeights[0] * dUpdate + hiddenWeights[1] * dReset + hiddenWeights[2] * dRecurrence;
+            close(Array.from(actual.slice(10)), [dUpdate, dReset, dCandidate, dRecurrence, dHidden],
+                `Finite GRU gradients at input ${value}, previous hidden ${previousHidden}`);
             activationCases++;
         }
     }
@@ -219,7 +230,7 @@ async function checks(soakIterations) {
         const gpu = await create(config), input = makeInput(config), next = makeInput(config, 1);
         const initial = await gpu.checkpointAsync();
         gpu.gpu.device.pushErrorScope('validation');
-        for (const retired of ['decide', 'learn', 'learnDemonstration', 'learnPlannedActions', 'lstm', 'cameraEncoder']) {
+        for (const retired of ['decide', 'learn', 'learnDemonstration', 'learnPlannedActions', 'gru', 'cameraEncoder']) {
             assert(!(retired in gpu), `Retired CPU implementation must be absent: ${retired}`);
         }
         for (const sample of [makeInput(config, 3, false), input]) {
@@ -589,10 +600,10 @@ async function checks(soakIterations) {
             buffer: gpu.gpu.cameraProjectionWeights, index: row * 33 + column, value: before.model.cameraProjectionWeights[row][column] });
     }
     const inputs = drivingPolicyInputs(config), h = config.network.hiddenUnits;
-    for (let gate = 0; gate < 4; gate++) {
+    for (let gate = 0; gate < 3; gate++) {
         const row = gate * h;
-        for (const column of [0, inputs, inputs + h]) coordinates.push({ key: 'lstmWeights', row, column,
-            buffer: gpu.gpu.lstmWeights, index: row * (inputs + h + 1) + column, value: before.model.lstmWeights[row][column] });
+        for (const column of [0, inputs, inputs + 1, inputs + h]) coordinates.push({ key: 'gruWeights', row, column,
+            buffer: gpu.gpu.gruWeights, index: row * (inputs + h + 1) + column, value: before.model.gruWeights[row][column] });
     }
     // Include all gear logits so the temperature's chain-rule factor is checked directly.
     for (let row = 0; row < actionOutputs; row++) for (const column of [0, h]) coordinates.push({ key: 'outputWeights', row, column,
@@ -662,11 +673,11 @@ async function checks(soakIterations) {
     close([rampDeltas[0], rampDeltas[3 * 24], rampDeltas[10 * 24], rampDeltas[13 * 24]],
         [1 / 12, 1 / 6, 1 / 6, 1 / 12], 'Overlapping pooling gradients accumulate');
     [ramp, pooled, poolDeltas, rampGradient].forEach(buffer => spatial.gpu.destroy(buffer));
-    spatialSeed.model.lstmWeights.forEach(row => row.fill(0));
-    spatialSeed.model.lstmWeights[2 * h][2 + drivingCameraInputs(config)] = 1;
+    spatialSeed.model.gruWeights.forEach(row => row.fill(0));
+    spatialSeed.model.gruWeights[2 * h][2 + drivingCameraInputs(config)] = 1;
     spatialSeed.model.outputWeights.forEach(row => row.fill(0));
     spatialSeed.model.outputWeights[0][0] = 1;
-    spatial.gpu.device.queue.writeBuffer(spatial.gpu.lstmWeights, 0, new Float32Array(spatialSeed.model.lstmWeights.flat()));
+    spatial.gpu.device.queue.writeBuffer(spatial.gpu.gruWeights, 0, new Float32Array(spatialSeed.model.gruWeights.flat()));
     spatial.gpu.device.queue.writeBuffer(spatial.gpu.outputWeights, 0, new Float32Array(spatialSeed.model.outputWeights.flat()));
     const temporal = makeInput(config), slotSize = drivingMemorySlotInputs(config);
     temporal.features[2] = 0.8; temporal.features[slotSize + 2] = 0.1;
@@ -676,7 +687,58 @@ async function checks(soakIterations) {
     assert(Math.abs((await predict(spatial, temporal)).plan[0].means[0] - first) > 0.001,
         'Prediction depends on historical order with identical current observations');
     temporal.features[2] = 0.8; temporal.features[slotSize + 2] = 0.1;
-    close([first], [(await predict(spatial, temporal)).plan[0].means[0]], 'Recurrent state resets between predictions');
+    close([first], [(await predict(spatial, temporal)).plan[0].means[0]], 'Predictions without timestamps are independent');
+
+    // This fixture reads only speed, with update = 0.5 and candidate = tanh(speed).
+    const advanceHidden = (previous, speed) => (previous + Math.tanh(speed)) / 2;
+    const episode = {};
+    const recurrentSample = (capturedAt, speed, history = [], sampleEpisode = episode) => {
+        const sample = makeInput(config, 0, false);
+        const historyTimes = new Array(drivingMemorySlots(config)).fill(null);
+        sample.features.fill(0);
+        sample.features[drivingMemoryInputs(config)] = speed;
+        for (const [time, historicalSpeed] of history) {
+            const age = capturedAt - time;
+            const bin = Math.ceil(age / config.memory.intervalMs) - 1;
+            const offset = bin * slotSize;
+            historyTimes[bin] = time;
+            sample.features[offset] = 1;
+            sample.features[offset + 1] = age / config.memory.windowMs;
+            sample.features[offset + 2] = historicalSpeed;
+            sample.cameras[bin] = sample.cameras[historyTimes.length];
+        }
+        return { ...sample, recurrent: { episode: sampleEpisode, capturedAt, historyTimes } };
+    };
+    const liveOutput = async sample => {
+        const { pass, outputs } = await spatial.gpu.forward(sample);
+        spatial.gpu.release(pass);
+        return outputs[0];
+    };
+    const checkReplay = async (sample, initial, speeds, label) => {
+        const pass = spatial.gpu.replay(sample);
+        try {
+            assert(pass.steps === speeds.length, `${label} processes the full replay sequence`);
+            const [seed] = await spatial.gpu.download([pass.states]);
+            const [output] = await spatial.gpu.download([pass.outputs]);
+            close([seed, output], [initial, speeds.reduce(advanceHidden, initial)], label);
+        } finally { spatial.gpu.release(pass); }
+    };
+    const firstHidden = advanceHidden(0, 0.2);
+    close([await liveOutput(recurrentSample(1000, 0.2))], [firstHidden], 'First live observation starts from zero');
+    close([await liveOutput(recurrentSample(1000, -0.8))], [firstHidden], 'Duplicates preserve the existing live hidden state');
+    const nextHidden = advanceHidden(firstHidden, 0.4);
+    close([await liveOutput(recurrentSample(1300, 0.4, [[1000, 0.7]]))], [nextHidden],
+        'Live observations carry state and skip history already represented by that state');
+    await liveOutput(recurrentSample(1000, -0.6));
+    await checkReplay(recurrentSample(1300, 0.3, [[1000, 0.6]]), 0, [0.6, 0.3],
+        'Replay does not use a snapshot at the oldest sample');
+    await checkReplay(recurrentSample(1900, 0.8, [[1600, 0.7]]), nextHidden, [0.7, 0.8],
+        'Replay uses the nearest state before the oldest sample');
+    const finalHidden = [-0.4, 0.9].reduce(advanceHidden, nextHidden);
+    close([await liveOutput(recurrentSample(1900, 0.9, [[1600, -0.4]]))], [finalHidden],
+        'Training replay and out-of-order observations leave live state intact and new history is processed');
+    close([await liveOutput(recurrentSample(1900, 0.9, [], {}))], [advanceHidden(0, 0.9)],
+        'A distinct episode clears the previous live state');
     spatial.dispose();
 
     for (const cameraHistory of [true, false]) {
@@ -708,7 +770,7 @@ async function checks(soakIterations) {
         }
         const finish = await policy.checkpointAsync(); finite(finish);
         if (variant === 'zero-rates') {
-            for (const key of ['cameraWeights', 'cameraProjectionWeights', 'lstmWeights', 'outputWeights']) close(start.model[key].flat(2), finish.model[key].flat(2), 'Zero learning rates', 1e-12);
+            for (const key of ['cameraWeights', 'cameraProjectionWeights', 'gruWeights', 'outputWeights']) close(start.model[key].flat(2), finish.model[key].flat(2), 'Zero learning rates', 1e-12);
             assert(finish.model.steps === 2, 'Count completed transitions with zero rates');
         } else close(start.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), finish.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), 'Masked large logits');
         policy.dispose();
@@ -724,11 +786,18 @@ async function checks(soakIterations) {
     normalizedConfig.actions.planTimesSeconds = [0, 0.1, 0.2];
     normalizedConfig.learning.demonstrationRate = 0.05;
     normalizedConfig.learning.gradientNormLimit = 1e6;
+    const normH = normalizedConfig.network.hiddenUnits, normInputs = drivingPolicyInputs(normalizedConfig);
     const normalized = await create(normalizedConfig);
     const normalizedSeed = await normalized.checkpointAsync();
     normalizedSeed.model.outputWeights.forEach((row, r) => row.forEach((_value, c) => {
-        if (c < normalizedConfig.network.hiddenUnits) row[c] = Math.sin(1 + r * 0.7 + c) * 0.2;
+        if (c < normH) row[c] = Math.sin(1 + r * 0.7 + c) * 0.2;
     }));
+    // Give the reset gate a visible effect and start both encoders at the same weights.
+    for (let unit = 0; unit < normH; unit++) {
+        const row = 2 * normH + unit, column = normInputs + (unit + 1) % normH;
+        normalizedSeed.model.gruWeights[row][column] = 0.25;
+        normalizedSeed.model.sac.targetEncoder.gruWeights[row][column] = 0.25;
+    }
     normalized.dispose();
     const normalizedPolicy = await create(normalizedConfig, normalizedSeed);
     const normalizedInput = makeInput(normalizedConfig, 2, true, true);
@@ -745,23 +814,28 @@ async function checks(soakIterations) {
         close(Array.from(normalizedFeatures.slice(offset, offset + raw.length)),
             norm(Array.from(raw), ...normalizedSeed.model.cameraNormWeights), 'Camera LayerNorm CPU oracle', 0.00003);
     }
-    const normH = normalizedConfig.network.hiddenUnits, normInputs = drivingPolicyInputs(normalizedConfig);
-    let oracleHidden = new Array(normH).fill(0), oracleCell = new Array(normH).fill(0);
+    const normGate = (sums, gate) => norm(sums,
+        ...normalizedSeed.model.gruNormWeights.map(row => row.slice(gate * normH, (gate + 1) * normH)));
+    const [updateRows, resetRows, candidateRows] = [0, 1, 2].map(gate =>
+        normalizedSeed.model.gruWeights.slice(gate * normH, (gate + 1) * normH));
+    const dot = (row, vector) => vector.reduce((sum, value, i) => sum + value * row[i], 0);
+    const gpuStates = await normalizedPolicy.gpu.download([normalizedPass.pass.states]);
+    let oracleHidden = new Array(normH).fill(0);
     for (let t = 0; t < normalizedPass.pass.steps; t++) {
-        const vector = [...normalizedFeatures.slice(t * normInputs, (t + 1) * normInputs), ...oracleHidden, 1];
-        const sums = normalizedSeed.model.lstmWeights.map(row => row.reduce((sum, weight, i) => sum + weight * vector[i], 0));
-        const gates = [];
-        for (let gate = 0; gate < 4; gate++) gates.push(norm(sums.slice(gate * normH, (gate + 1) * normH),
-            ...normalizedSeed.model.lstmNormWeights.map(row => row.slice(gate * normH, (gate + 1) * normH))));
-        for (let i = 0; i < normH; i++) {
-            const sigmoid = x => 1 / (1 + Math.exp(-x));
-            oracleCell[i] = sigmoid(gates[1][i]) * oracleCell[i] + sigmoid(gates[0][i]) * Math.tanh(gates[2][i]);
-            oracleHidden[i] = sigmoid(gates[3][i]) * Math.tanh(oracleCell[i]);
-        }
+        const features = normalizedFeatures.slice(t * normInputs, (t + 1) * normInputs);
+        const vector = [...features, ...oracleHidden, 1];
+        const update = normGate(updateRows.map(row => dot(row, vector)), 0).map(sigmoid);
+        const reset = normGate(resetRows.map(row => dot(row, vector)), 1).map(sigmoid);
+        const recurrence = candidateRows.map(row => dot(row.slice(normInputs, normInputs + normH), oracleHidden));
+        const candidate = normGate(candidateRows.map((row, unit) =>
+            dot(row, features) + row[normInputs + normH] + reset[unit] * recurrence[unit]), 2).map(Math.tanh);
+        oracleHidden = oracleHidden.map((value, unit) => update[unit] * value + (1 - update[unit]) * candidate[unit]);
+        const stateOffset = (t + 1) * 5 * normH;
+        close(gpuStates.slice(stateOffset, stateOffset + 5 * normH),
+            [...oracleHidden, ...update, ...reset, ...candidate, ...recurrence], `Normalized GRU CPU oracle at step ${t}`);
     }
-    const expectedOutputs = normalizedSeed.model.outputWeights.map(row => row[normH]
-        + oracleHidden.reduce((sum, value, i) => sum + value * row[i], 0));
-    close(normalizedPass.outputs, expectedOutputs, 'Gate-wise LayerNorm recurrent CPU oracle', 0.00003);
+    const expectedOutputs = normalizedSeed.model.outputWeights.map(row => dot(row, [...oracleHidden, 1]));
+    close(normalizedPass.outputs, expectedOutputs, 'Normalized GRU output CPU oracle');
     normalizedPolicy.gpu.release(normalizedPass.pass);
     const normalizedTarget = { pedal: Math.tanh(0.4), steering: Math.tanh(-0.2) };
     const noShifts = { up: false, down: false };
@@ -778,10 +852,10 @@ async function checks(soakIterations) {
         normalizedPolicy.gpu.cameraWeights[layer], [0, 1], [0, rows[0].length - 1], layer));
     addCoordinates('cameraProjectionWeights', normBefore.model.cameraProjectionWeights, normalizedPolicy.gpu.cameraProjectionWeights,
         [0, 15], [0, 17, normBefore.model.cameraProjectionWeights[0].length - 1]);
-    for (let gate = 0; gate < 4; gate++) addCoordinates('lstmWeights', normBefore.model.lstmWeights,
-        normalizedPolicy.gpu.lstmWeights, [gate * normH], [2, normInputs, normInputs + normH]);
-    for (const key of ['cameraNormWeights', 'lstmNormWeights']) addCoordinates(key, normBefore.model[key], normalizedPolicy.gpu[key],
-        [0, 1], key === 'cameraNormWeights' ? [0, 7, 15] : [0, 4, 8, 12]);
+    for (let gate = 0; gate < 3; gate++) addCoordinates('gruWeights', normBefore.model.gruWeights,
+        normalizedPolicy.gpu.gruWeights, [gate * normH], [2, normInputs, normInputs + 1, normInputs + normH]);
+    for (const key of ['cameraNormWeights', 'gruNormWeights']) addCoordinates(key, normBefore.model[key], normalizedPolicy.gpu[key],
+        [0, 1], key === 'cameraNormWeights' ? [0, 7, 15] : [0, normH, 2 * normH]);
     addCoordinates('outputWeights', normBefore.model.outputWeights, normalizedPolicy.gpu.outputWeights, [0, 1, 2], [0, normH]);
     for (const coordinate of normCoordinates) {
         const epsilon = 0.002;
@@ -803,17 +877,22 @@ async function checks(soakIterations) {
             `Normalized finite differences ${coordinate.key}/${coordinate.layer ?? ''}/${coordinate.row}/${coordinate.column}: ${actual} vs ${coordinate.derivative}`);
         normalizedDerivativeError = Math.max(normalizedDerivativeError, error);
     }
-    for (const key of ['cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'lstmWeights', 'lstmNormWeights', 'outputWeights']) {
+    for (const key of ['cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'gruWeights', 'gruNormWeights', 'outputWeights']) {
         assert(normCoordinates.some(coordinate => coordinate.key === key && Math.abs(coordinate.derivative) > 1e-5),
             `Normalized derivative fixture exercises ${key}`);
         assert(changed(normBefore.model[key], normAfter.model[key]), `Normalized update trains ${key}`);
     }
+    assert(normCoordinates.some(({ key, column, derivative }) => key === 'gruNormWeights'
+        && column === normH && Math.abs(derivative) > 1e-5), 'Normalized finite differences exercise the reset gate');
+    assert(normCoordinates.some(({ key, row, column, derivative }) => key === 'gruWeights'
+        && row === 2 * normH && column === normInputs + 1 && Math.abs(derivative) > 1e-5),
+        'Normalized finite differences exercise cross-unit candidate recurrence');
     const normalizedReload = await create(normalizedConfig, JSON.parse(JSON.stringify(normAfter)));
     close((await predict(normalizedPolicy, normalizedInput)).plan.flatMap(point => point.means),
         (await predict(normalizedReload, normalizedInput)).plan.flatMap(point => point.means), 'Normalized checkpoint reload');
     normalizedReload.dispose(); normalizedPolicy.dispose();
 
-    const allWeightKeys = ['cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'lstmWeights', 'lstmNormWeights', 'outputWeights'];
+    const allWeightKeys = ['cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'gruWeights', 'gruNormWeights', 'outputWeights'];
     const flattenWeights = checkpoint => [...allWeightKeys.flatMap(key => checkpoint.model[key]?.flat(2) ?? []),
         ...checkpoint.model.sac.criticWeights.flat(), ...checkpoint.model.sac.logStds];
     const normOf = values => Math.sqrt(values.reduce((sum, value) => sum + value * value, 0));
@@ -905,7 +984,7 @@ async function checks(soakIterations) {
         clipping: clippedDiagnostics, sequenceClipping: sequenceDiagnostics };
     const constantSeed = JSON.parse(JSON.stringify(normBefore));
     constantSeed.configuration.learning.weightLimit = 2000;
-    for (const key of ['cameraProjectionWeights', 'lstmWeights']) constantSeed.model[key].forEach(row => {
+    for (const key of ['cameraProjectionWeights', 'gruWeights']) constantSeed.model[key].forEach(row => {
         row.fill(0); row[row.length - 1] = 1000;
     });
     const constantPolicy = await create(constantSeed.configuration, constantSeed);
@@ -917,7 +996,7 @@ async function checks(soakIterations) {
     constantPolicy.gpu.release(constantPass.pass);
     await withoutReadbacks('Zero-variance normalization backward', () => constantPolicy.learnDemonstrationAsync(normalizedInput, normalizedTarget, noShifts));
     const constantAfter = await constantPolicy.checkpointAsync(); finite(constantAfter);
-    assert(changed(constantSeed.model.lstmNormWeights, constantAfter.model.lstmNormWeights), 'Zero-variance gates retain trainable bias gradients');
+    assert(changed(constantSeed.model.gruNormWeights, constantAfter.model.gruNormWeights), 'Zero-variance gates retain trainable bias gradients');
     constantPolicy.dispose();
 
     const productionConfig = cloneConfig(), productionPolicy = await create(productionConfig);
@@ -925,15 +1004,14 @@ async function checks(soakIterations) {
     await withoutReadbacks('Default 256-feature normalized training', () => productionPolicy.learnDemonstrationAsync(productionSample, action, shifts));
     const productionAfter = await productionPolicy.checkpointAsync();
     assertTrained(productionBefore, productionAfter, 'Default normalized model');
-    for (const key of ['cameraNormWeights', 'lstmNormWeights']) assert(changed(productionBefore.model[key], productionAfter.model[key]), `Default normalized model trains ${key}`);
+    for (const key of ['cameraNormWeights', 'gruNormWeights']) assert(changed(productionBefore.model[key], productionAfter.model[key]), `Default normalized model trains ${key}`);
     normalization.defaultClipping = await productionPolicy.gpu.trainingDiagnostics();
     productionPolicy.dispose();
     const soak = [];
     if (soakIterations) for (const variant of ['default', 'saturated-long-history']) {
         const c = cloneConfig();
         if (variant === 'saturated-long-history') {
-            // Retain the original saturated baseline alongside the normalized default soak.
-            c.network.cameraLayerNorm = c.network.lstmLayerNorm = false;
+            c.network.cameraLayerNorm = c.network.gruLayerNorm = false;
             c.network.cameraLayers.forEach(layer => { layer.channels = 1; });
             c.network.cameraProjectionUnits = 32; c.network.hiddenUnits = 2;
             c.observation.features = ['camera', 'speed', 'centerline']; c.memory.features = ['camera', 'speed', 'centerline'];
@@ -942,18 +1020,20 @@ async function checks(soakIterations) {
         let policy = await create(c);
         if (variant === 'saturated-long-history') {
             const saturated = await policy.checkpointAsync(); policy.dispose();
-            // Legal, finite weights amplify camera features beyond the tanh
-            // overflow range and accumulate cells near +/-101 across history.
+            // Amplify camera features beyond the tanh overflow threshold. With
+            // update gates at 0.5, the long history drives hidden values to ±1.
             saturated.model.cameraWeights.forEach(rows => rows.forEach(row => row.fill(0.25)));
             saturated.model.cameraProjectionWeights.forEach(row => row.fill(1));
-            saturated.model.lstmWeights.forEach((row, index) => {
-                row.fill(0); row[2] = index === 5 ? -1 : 1;
-            });
+            saturated.model.gruWeights.forEach(row => row.fill(0));
+            saturated.model.gruWeights[2][2] = -1;
+            saturated.model.gruWeights[3][2] = 1;
+            saturated.model.gruWeights[4][2] = 1;
+            saturated.model.gruWeights[5][2] = -1;
             policy = await create(c, saturated);
         }
         const samples = Array.from({ length: 6 }, (_, i) => makeInput(c, i, true, i % 2 === 1 && variant === 'default'));
         const initial = await policy.checkpointAsync(), started = performance.now();
-        let checkpointReloads = 0, checkedDecisions = 0, maxCameraFeature = 0, maxCell = 0;
+        let checkpointReloads = 0, checkedDecisions = 0, maxCameraFeature = 0, maxHidden = 0;
         const checkDecision = async (sample) => {
             const decision = await policy.decideAsync(sample, true);
             assert([decision.value, ...decision.plan.flatMap(step => [...step.means, ...step.latent, ...step.shiftProbabilities,
@@ -970,10 +1050,11 @@ async function checks(soakIterations) {
                 maxCameraFeature = Math.max(...features.map(Math.abs));
                 for (let t = 1; t <= decision.gpu.steps; t++) {
                     for (let unit = 0; unit < c.network.hiddenUnits; unit++) {
-                        maxCell = Math.max(maxCell, Math.abs(states[t * 6 * c.network.hiddenUnits + c.network.hiddenUnits + unit]));
+                        maxHidden = Math.max(maxHidden, Math.abs(states[t * 5 * c.network.hiddenUnits + unit]));
                     }
                 }
-                assert(maxCameraFeature > 100 && maxCell > 89, 'Stress fixture must reach large camera features and cell states');
+                assert(maxCameraFeature > 100 && maxHidden > 0.99 && maxHidden <= 1,
+                    'Stress fixture reaches large camera features and bounded saturated GRU hidden states');
             }
             const target = { pedal: iteration % 3 ? 1 : -1,
                 steering: Math.sin(iteration * 0.1), shiftUp: iteration % 3 === 0, shiftDown: iteration % 3 === 1 };
@@ -1002,13 +1083,13 @@ async function checks(soakIterations) {
         if (variant === 'default') assertTrained(initial, final, 'Default soak trains every layer');
         else assert(changed(initial.model.outputWeights, final.model.outputWeights), 'Saturated model continues learning');
         soak.push({ variant, cycles: soakIterations, trainingUpdates: soakIterations * 3, checkedDecisions, checkpointReloads,
-            maxCameraFeature, maxCell, seconds: (performance.now() - started) / 1000 });
+            maxCameraFeature, maxHidden, seconds: (performance.now() - started) / 1000 });
         policy.dispose();
     }
     assert(errors.length === 0, errors.join('\n'));
     return { adapter: { vendor: adapter.info.vendor, architecture: adapter.info.architecture },
-        checks: 'GPU-only prediction and learning, zero intermediate readbacks, CNN/projection/LSTM/output finite differences, padded borders, spatial ordering and adaptive pooling gradients, all layers and gates train, historical camera gradients, masks, terminal/clipped transitions, delayed plans, checkpoint reload/synchronization, custom layouts/rates, allocation-free warmed ticks, reused versus fresh workspaces, bounded buffers and device loss passed',
-        activationCases, sequenceChecks: 'Adjacent-state replay, clipped double-Q Bellman targets, elapsed discount, terminal masks, Polyak targets, current-policy actor samples, learned entropy, and interrupted-batch rollback passed',
+        checks: 'GPU-only prediction and learning, zero intermediate readbacks, CNN/projection/GRU/output finite differences, padded borders, spatial ordering and adaptive pooling gradients, all layers and gates train, historical camera gradients, masks, terminal/clipped transitions, delayed plans, checkpoint reload/synchronization, custom layouts/rates, allocation-free warmed ticks, reused versus fresh workspaces, bounded buffers and device loss passed',
+        activationCases, sequenceChecks: 'Episode-scoped GRU state carry, duplicate and out-of-order observations, seeded training replay, adjacent-state replay, clipped double-Q Bellman targets, elapsed discount, terminal masks, Polyak targets, current-policy actor samples, learned entropy, and interrupted-batch rollback passed',
         normalization, soak, finiteDifferences: { weightsChecked: coordinates.length, maxDerivativeError }, results };
 }
 

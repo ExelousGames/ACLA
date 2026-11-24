@@ -1,93 +1,177 @@
+import { ReadableStream, WritableStream } from 'stream/web';
 import { recordSessionVideo } from './session-video';
 
-let recorder: any;
-const deferred = () => {
-    let resolve!: (value?: any) => void;
-    const promise = new Promise<any>(done => { resolve = done; });
+function deferred<T = void>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>(done => { resolve = done; });
     return { promise, resolve };
-};
-const emit = (values: number[]) => recorder.ondataavailable({ data: {
-    size: values.length,
-    slice: () => ({ arrayBuffer: async () => Uint8Array.from(values).buffer }),
-} });
+}
+
+const mockStart = jest.fn();
+const mockFinalize = jest.fn();
+const mockCancel = jest.fn();
+const mockAdd = jest.fn();
+const mockAddVideoTrack = jest.fn();
+const mockMp4Format = jest.fn();
+let mockTarget: WritableStream<Uint8Array>;
+
+jest.mock('mediabunny', () => ({
+    AppendOnlyStreamTarget: class {
+        constructor(target: typeof mockTarget) { mockTarget = target; }
+    },
+    Mp4OutputFormat: class {
+        constructor(options: unknown) { mockMp4Format(options); }
+    },
+    Output: class {
+        start = mockStart;
+        finalize = mockFinalize;
+        cancel = mockCancel;
+        addVideoTrack = mockAddVideoTrack;
+    },
+    VideoSampleSource: class { add = mockAdd; },
+    VideoSample: class {
+        constructor(frame: VideoFrame, timing: { timestamp: number; duration: number }) {
+            Object.assign(this, { close: () => frame.close(), ...timing });
+        }
+    },
+}));
+
+let sourceReady: ReturnType<typeof deferred<void>>;
+let sourceController: ReadableStreamDefaultController<VideoFrame>;
+const mockTrack = { getSettings: () => ({ frameRate: 20 }) };
+const stream = { getVideoTracks: () => [mockTrack] } as unknown as MediaStream;
+
+function frame(timestamp: number, duration?: number) {
+    return { timestamp, duration, close: jest.fn() } as unknown as VideoFrame;
+}
+
+function capture(onError = jest.fn()) {
+    return recordSessionVideo(stream, 'telemetry.jsonl', performance.timeOrigin + 1000, onError);
+}
 
 beforeEach(() => {
+    jest.clearAllMocks();
+    jest.spyOn(performance, 'now').mockReturnValue(1250);
+    mockStart.mockResolvedValue(undefined);
+    mockFinalize.mockResolvedValue(undefined);
+    mockCancel.mockResolvedValue(undefined);
+    mockAdd.mockResolvedValue(undefined);
     window.sessionVideo = {
         create: jest.fn().mockResolvedValue({ filePath: 'video.mp4', startedAt: 1 }),
         append: jest.fn().mockResolvedValue(undefined), finish: jest.fn().mockResolvedValue(undefined),
         list: jest.fn().mockResolvedValue([]), read: jest.fn(), delete: jest.fn(), reveal: jest.fn(),
     };
-    const MockRecorder = jest.fn().mockImplementation(() => {
-        recorder = { state: 'inactive', start: jest.fn(() => { recorder.state = 'recording'; }),
-            stop: jest.fn(() => { recorder.state = 'inactive'; }) };
-        return recorder;
-    });
-    Object.assign(MockRecorder, { isTypeSupported: jest.fn(() => true) });
-    Object.defineProperty(window, 'MediaRecorder', { configurable: true, value: MockRecorder });
-});
-afterEach(() => { delete window.sessionVideo; Reflect.deleteProperty(window, 'MediaRecorder'); });
 
-it.each(['video/mp4;codecs=avc1', 'video/mp4'])('records using supported MP4 type %s', async (mimeType) => {
-    (MediaRecorder.isTypeSupported as jest.Mock).mockImplementation(type => type === mimeType || type === 'video/webm');
-    const stream = {} as MediaStream;
-    const capture = recordSessionVideo(stream, 'telemetry.jsonl', jest.fn());
-    expect(MediaRecorder).toHaveBeenCalledWith(stream, { mimeType, videoBitsPerSecond: 2500000 });
-    await Promise.resolve();
-    const stopped = capture.stop();
-    await Promise.resolve();
-    recorder.onstop();
-    await stopped;
+    sourceReady = deferred();
+    Object.defineProperty(window, 'WritableStream', { configurable: true, value: WritableStream });
+    Object.defineProperty(window, 'VideoEncoder', { configurable: true, value: jest.fn() });
+    Object.defineProperty(window, 'MediaStreamTrackProcessor', { configurable: true, value: jest.fn(() => ({
+        readable: new ReadableStream<VideoFrame>({ start(controller) {
+            sourceController = controller as unknown as ReadableStreamDefaultController<VideoFrame>;
+            sourceReady.resolve();
+        } }),
+    })) });
 });
 
-it('reports unsupported MP4 without creating a file or falling back to WebM', () => {
-    (MediaRecorder.isTypeSupported as jest.Mock).mockImplementation(type => type.startsWith('video/webm'));
-    expect(() => recordSessionVideo({} as MediaStream, 'telemetry.jsonl', jest.fn())).toThrow('MP4 recording is unavailable');
-    expect(MediaRecorder).not.toHaveBeenCalled();
+afterEach(() => {
+    delete window.sessionVideo;
+    for (const name of ['MediaStreamTrackProcessor', 'VideoEncoder', 'WritableStream']) Reflect.deleteProperty(window, name);
+    jest.restoreAllMocks();
+});
+
+it('encodes the actual capture frame times relative to the first frame and saves its telemetry time', async () => {
+    const first = frame(2200000);
+    const second = frame(2265000, 42000);
+    const pending = capture();
+    await sourceReady.promise;
+    sourceController.enqueue(first);
+    sourceController.enqueue(second);
+    sourceController.close();
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    await pending.stop();
+
+    expect(MediaStreamTrackProcessor).toHaveBeenCalledWith({ track: mockTrack, maxBufferSize: 8 });
+    expect(mockMp4Format).toHaveBeenCalledWith({ fastStart: 'fragmented', minimumFragmentDuration: 1 });
+    expect(mockAdd).toHaveBeenNthCalledWith(1, expect.objectContaining({ timestamp: 0, duration: 0.05 }));
+    expect(mockAdd).toHaveBeenNthCalledWith(2, expect.objectContaining({ timestamp: 0.065, duration: 0.042 }));
+    expect(first.close).toHaveBeenCalledTimes(1);
+    expect(second.close).toHaveBeenCalledTimes(1);
+    expect(window.sessionVideo!.finish).toHaveBeenCalledWith('video.mp4', 0.25);
+});
+
+it('reports unavailable recording without creating a file', () => {
+    Reflect.deleteProperty(window, 'VideoEncoder');
+    expect(() => capture()).toThrow('Local video recording is unavailable');
     expect(window.sessionVideo!.create).not.toHaveBeenCalled();
 });
 
-it('waits for the final media event and all disk writes before completing', async () => {
-    const write = deferred();
-    (window.sessionVideo!.append as jest.Mock).mockReturnValueOnce(write.promise);
-    const capture = recordSessionVideo({} as MediaStream, 'telemetry.jsonl', jest.fn());
-    await Promise.resolve();
-    emit([1, 2]);
-    const stopped = capture.stop();
-    let complete = false;
-    void stopped.then(() => { complete = true; });
-    await Promise.resolve();
-    emit([3, 4]);
-    recorder.onstop();
-    await Promise.resolve();
-    expect(complete).toBe(false);
+it('waits for pending MP4 bytes before saving synchronization and splits writes at the bridge limit', async () => {
+    const adding = deferred();
+    const writing = deferred();
+    const append = window.sessionVideo!.append as jest.Mock;
+    append.mockImplementationOnce(() => { writing.resolve(); return appending.promise; });
+    const appending = deferred();
+    mockAdd.mockImplementationOnce(() => { adding.resolve(); return Promise.resolve(); });
+    mockFinalize.mockImplementationOnce(async () => {
+        const writer = mockTarget.getWriter();
+        await writer.write(new Uint8Array(512 * 1024 + 5));
+        await writer.close();
+    });
+    const pending = capture();
+    await sourceReady.promise;
+    sourceController.enqueue(frame(10000));
+    await adding.promise;
+    const stopping = pending.stop();
+    await writing.promise;
     expect(window.sessionVideo!.finish).not.toHaveBeenCalled();
-    write.resolve();
-    await stopped;
-    expect((window.sessionVideo!.append as jest.Mock).mock.calls.map(([, bytes]) => Array.from(bytes))).toEqual([[1, 2], [3, 4]]);
-    expect(window.sessionVideo!.finish).toHaveBeenCalledWith('video.mp4');
+    appending.resolve();
+    await stopping;
+
+    expect(append.mock.calls.map(([, bytes]) => bytes.byteLength)).toEqual([512 * 1024, 5]);
+    expect(window.sessionVideo!.finish).toHaveBeenCalledWith('video.mp4', 0.25);
 });
 
-it('cancels a pending start without starting MediaRecorder', async () => {
-    const creating = deferred();
-    (window.sessionVideo!.create as jest.Mock).mockReturnValue(creating.promise);
-    const capture = recordSessionVideo({} as MediaStream, 'telemetry.jsonl', jest.fn());
-    const stopped = capture.stop();
+it('cancels a pending start without opening the encoder or writing sync metadata', async () => {
+    const creating = deferred<{ filePath: string }>();
+    const requested = deferred();
+    (window.sessionVideo!.create as jest.Mock).mockImplementationOnce(() => {
+        requested.resolve();
+        return creating.promise;
+    });
+    const pending = capture();
+    await requested.promise;
+    const stopping = pending.stop();
     creating.resolve({ filePath: 'video.mp4' });
-    await stopped;
-    expect(recorder.start).not.toHaveBeenCalled();
+    await stopping;
+
+    expect(MediaStreamTrackProcessor).not.toHaveBeenCalled();
+    expect(mockStart).not.toHaveBeenCalled();
     expect(window.sessionVideo!.finish).toHaveBeenCalledWith('video.mp4');
 });
 
-it('surfaces disk errors and releases the file while preserving saved bytes', async () => {
-    (window.sessionVideo!.append as jest.Mock).mockRejectedValue(new Error('Disk full'));
+it('finishes an empty recording without writing sync metadata', async () => {
+    const pending = capture();
+    await sourceReady.promise;
+    await pending.stop();
+
+    expect(mockStart).not.toHaveBeenCalled();
+    expect(mockFinalize).not.toHaveBeenCalled();
+    expect(mockCancel).toHaveBeenCalledTimes(1);
+    expect(window.sessionVideo!.finish).toHaveBeenCalledWith('video.mp4');
+});
+
+it('surfaces errors and releases the file while preserving saved bytes', async () => {
     const error = jest.fn();
-    const capture = recordSessionVideo({} as MediaStream, 'telemetry.jsonl', error);
-    await Promise.resolve();
-    emit([1]);
-    const stopped = capture.stop();
-    recorder.onstop();
-    await expect(stopped).rejects.toThrow('Disk full');
+    const adding = deferred();
+    mockAdd.mockImplementationOnce(() => { adding.resolve(); return Promise.resolve(); });
+    mockFinalize.mockRejectedValueOnce(new Error('Disk full'));
+    const pending = capture(error);
+    await sourceReady.promise;
+    sourceController.enqueue(frame(10000));
+    await adding.promise;
+    await expect(pending.stop()).rejects.toThrow('Disk full');
+
     expect(error).toHaveBeenCalledWith(expect.objectContaining({ message: 'Disk full' }));
-    expect(window.sessionVideo!.finish).toHaveBeenCalled();
+    expect(window.sessionVideo!.finish).toHaveBeenCalledWith('video.mp4');
     expect(window.sessionVideo!.delete).not.toHaveBeenCalled();
 });

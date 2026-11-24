@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { recordSessionVideo, SessionVideoClip } from './session-video';
 
-export function useSessionVideo(stream: MediaStream | null, filePath: string | null, recording: boolean) {
+export function useSessionVideo(stream: MediaStream | null, filePath: string | null, telemetryStartedAt: number | null, recording: boolean) {
     const active = useRef<ReturnType<typeof recordSessionVideo> | null>(null);
     const pending = useRef<Promise<void>>(Promise.resolve());
     // A mounted recorder belongs to one live session. Existing/restored recordings
@@ -37,15 +37,15 @@ export function useSessionVideo(stream: MediaStream | null, filePath: string | n
     useEffect(() => { void refresh().catch(report); }, [refresh, report]);
     useEffect(() => {
         const canStart = recording && !startHandled.current;
-        if (recording || filePath) startHandled.current = true;
-        if (canStart && stream && filePath) {
+        if (recording || (filePath && telemetryStartedAt === null)) startHandled.current = true;
+        if (canStart && stream && filePath && telemetryStartedAt !== null) {
             try {
                 setError('');
-                active.current = recordSessionVideo(stream, filePath, report);
+                active.current = recordSessionVideo(stream, filePath, telemetryStartedAt, report);
                 setSaving(true);
             } catch (error) { report(error); }
         }
         return () => { void stop().catch(report).then(refresh).catch(report); };
-    }, [stream, filePath, recording, stop, refresh, report]);
+    }, [stream, filePath, telemetryStartedAt, recording, stop, refresh, report]);
     return { clips, error, saving, stop, refresh };
 }

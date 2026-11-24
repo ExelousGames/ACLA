@@ -30,7 +30,7 @@ it('processes sparse history chronologically, aligning custom feature layouts an
     expect(assembleDrivingInput(memory.encode(frame(1800, 0.4)), config).steps).toBe(1);
 });
 
-it('assembles all 17 history bins and the current observation into 18 chronological LSTM steps', () => {
+it('assembles all 17 history bins and the current observation into 18 chronological GRU steps', () => {
     const config = cloneConfig(), { observation } = trainingFixture();
     const memory = new DrivingMemory(config);
     for (let capturedAt = 1000; capturedAt <= 5800; capturedAt += 300) memory.encode({ ...observation, capturedAt });
@@ -42,12 +42,12 @@ it('assembles all 17 history bins and the current observation into 18 chronologi
         .toEqual([...Array.from({ length: 17 }, (_, i) => (5000 - i * 300) / 5000), 0]);
 });
 
-it('rejects old configurations and missing or malformed CNN/projection/LSTM weights without migration', () => {
+it('rejects old configurations and missing or malformed CNN/projection/GRU weights without migration', () => {
     const { observation } = trainingFixture(), config = cloneConfig();
     config.network.hiddenUnits = 2;
     const saved = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
-    for (const lstmWeights of [undefined, [], [[NaN]], saved.model.lstmWeights.slice(1), saved.model.lstmWeights.map((row) => row.slice(1))]) {
-        expect(() => DrivingPolicy.restore({ ...saved, model: { ...saved.model, lstmWeights } })).toThrow(/checkpoint/);
+    for (const gruWeights of [undefined, [], [[NaN]], saved.model.gruWeights.slice(1), saved.model.gruWeights.map((row) => row.slice(1))]) {
+        expect(() => DrivingPolicy.restore({ ...saved, model: { ...saved.model, gruWeights } })).toThrow(/checkpoint/);
     }
     expect(() => DrivingPolicy.restore({ ...saved, model: { ...saved.model, cameraWeights: [] } })).toThrow(/checkpoint/);
     for (const cameraWeights of [undefined, [[[NaN]]], saved.model.cameraWeights.slice(1),
@@ -66,6 +66,9 @@ it('rejects old configurations and missing or malformed CNN/projection/LSTM weig
     ];
     expect(() => readTrainingDocument(square)).toThrow(/configuration/);
     const old: any = emptyTrainingDocument();
+    old.configuration.network.type = 'cnn-lstm';
+    expect(() => readTrainingDocument(old)).toThrow(/configuration/);
+    expect(() => DrivingPolicy.restore({ ...saved, configuration: old.configuration })).toThrow(/configuration/);
     old.configuration.network.type = 'lstm';
     old.configuration.observation.cameraEncoding = 'rgb-bytes-average-pool';
     expect(() => readTrainingDocument(old)).toThrow(/configuration/);

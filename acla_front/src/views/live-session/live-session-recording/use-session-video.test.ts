@@ -6,7 +6,9 @@ jest.mock('./session-video', () => ({ recordSessionVideo: jest.fn() }));
 
 const stream = {} as MediaStream;
 const otherStream = {} as MediaStream;
+const telemetryStartedAt = 1700000000000;
 const initialProps = { stream: null as MediaStream | null, filePath: null as string | null, recording: false };
+const useSyncedVideo = ({ stream, filePath, recording }: typeof initialProps) => useSessionVideo(stream, filePath, telemetryStartedAt, recording);
 const mockRecord = recordSessionVideo as jest.Mock;
 let stop: jest.Mock;
 
@@ -17,7 +19,7 @@ beforeEach(() => {
 });
 
 it('starts video with telemetry only when a screen was shared before recording', async () => {
-    const { result, rerender } = renderHook(({ stream, filePath, recording }) => useSessionVideo(stream, filePath, recording), {
+    const { result, rerender } = renderHook(useSyncedVideo, {
         initialProps: { ...initialProps, stream },
     });
     await act(async () => undefined);
@@ -27,7 +29,7 @@ it('starts video with telemetry only when a screen was shared before recording',
     await act(async () => undefined);
     await waitFor(() => expect(result.current.saving).toBe(true));
     expect(mockRecord).toHaveBeenCalledTimes(1);
-    expect(mockRecord).toHaveBeenCalledWith(stream, 'session.jsonl', expect.any(Function));
+    expect(mockRecord).toHaveBeenCalledWith(stream, 'session.jsonl', telemetryStartedAt, expect.any(Function));
 
     rerender({ stream, filePath: 'session.jsonl', recording: false });
     await waitFor(() => expect(result.current.saving).toBe(false));
@@ -35,7 +37,7 @@ it('starts video with telemetry only when a screen was shared before recording',
 });
 
 it('keeps a telemetry-only session without video when screen sharing starts later', async () => {
-    const { rerender } = renderHook(({ stream, filePath, recording }) => useSessionVideo(stream, filePath, recording), { initialProps });
+    const { rerender } = renderHook(useSyncedVideo, { initialProps });
     rerender({ stream: null, filePath: 'session.jsonl', recording: true });
     await act(async () => undefined);
     rerender({ stream, filePath: 'session.jsonl', recording: true });
@@ -44,7 +46,7 @@ it('keeps a telemetry-only session without video when screen sharing starts late
 });
 
 it('does not restart video after sharing stops, the source changes, or telemetry resumes', async () => {
-    const { rerender } = renderHook(({ stream, filePath, recording }) => useSessionVideo(stream, filePath, recording), {
+    const { rerender } = renderHook(useSyncedVideo, {
         initialProps,
     });
     rerender({ stream, filePath: 'session.jsonl', recording: true });
@@ -61,7 +63,7 @@ it('does not restart video after sharing stops, the source changes, or telemetry
 });
 
 it.each([false, true])('does not start video for an existing session (recording: %s)', async (recording) => {
-    const { rerender } = renderHook(({ stream, filePath, recording }) => useSessionVideo(stream, filePath, recording), {
+    const { rerender } = renderHook(({ stream, filePath, recording }) => useSessionVideo(stream, filePath, null, recording), {
         initialProps: { stream, filePath: 'restored.jsonl', recording },
     });
     await act(async () => undefined);
@@ -72,7 +74,7 @@ it.each([false, true])('does not start video for an existing session (recording:
 
 it('does not retry failed video recording during the same telemetry session', async () => {
     mockRecord.mockImplementationOnce(() => { throw new Error('Video unavailable'); });
-    const { result, rerender } = renderHook(({ stream, filePath, recording }) => useSessionVideo(stream, filePath, recording), {
+    const { result, rerender } = renderHook(useSyncedVideo, {
         initialProps: { ...initialProps, stream },
     });
     rerender({ stream, filePath: 'session.jsonl', recording: true });

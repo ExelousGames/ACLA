@@ -318,14 +318,21 @@ slope 0.01). The feature maps are 192 × 108, 96 × 54, 48 × 27 and 24 × 14.
 Adaptive average pooling retains an 8-column × 4-row × 64-channel grid, flattened
 in Y/X/channel order. A learned linear projection maps its 2,048 values to 256 visual
 features, with separate weights for each spatial position so left and right remain distinct.
-A 128-unit LSTM reads these features and telemetry in chronological order, from the
-oldest available history frame through the current observation. Input, forget,
-candidate and output gates maintain hidden and cell states within that sequence.
+A 128-unit GRU carries hidden state across predictions in an episode. Each prediction
+processes the current observation and any history bins captured after the last saved
+state. An episode starts with zero hidden state. The GRU sits between the combined
+features and the action head, following the recurrent actor in
+[Sony AI's vision-based GT7 research](https://arxiv.org/html/2504.09021#S3.SS4).
+During training, the GRU warms up on the stored observation window, seeded by the most
+recent saved state before that window. If a seed has aged out of the bounded GPU
+buffer, the warm-up starts from zero. The existing history bins supply the burn-in,
+following the study's use of stored state with recurrent warm-up.
+[GT7 training and ablation](https://arxiv.org/html/2504.09021#S4.SS2)
 Actor–critic, human demonstrations and delayed action-plan training all backpropagate
 through the complete sequence, updating convolution and projection weights/biases as
-well as LSTM input weights, recurrent weights and gate biases. Visual gradients accumulate
+well as GRU input weights, recurrent weights and gate biases. Visual gradients accumulate
 across all camera timesteps before updating the shared encoder.
-CNN and LSTM inference, learning-gradient calculations, backpropagation and weight
+CNN and GRU inference, learning-gradient calculations, backpropagation and weight
 updates run on a hardware WebGPU device. The CPU sends demonstration/plan targets or
 reward, elapsed time and the sampled actions with per-slot execution weights. The GPU calculates target transforms,
 masked shift probabilities, the TD advantage and clipped gradients without intermediate
@@ -355,18 +362,17 @@ New models receive up to five seconds of observations, including game/car/map, t
 controls, reference targets and full-resolution camera frames, in 17 elapsed-time bins
 of 300 ms (the oldest bin spans the final 200 ms), using the newest observation in each
 bin, followed by the current observation. Each history slot has presence and
-age inputs; missing bins are skipped when assembling the LSTM sequence. Raw RGB bytes
+age inputs; missing bins are skipped when assembling the GRU sequence. Raw RGB bytes
 are stored separately from scalar telemetry and shared across pending samples. The same
-learned CNN processes current and historical frames. Every decision starts with zero
-recurrent state. Saved configurations declare the history features.
-History resets on start/stop, human/AI handover, invalid inputs, session/reference/context
+learned CNN processes current and historical frames. Saved configurations declare
+the history features.
+History and recurrent state reset on start/stop, human/AI handover, invalid inputs, session/reference/context
 changes, backwards timestamps and gaps over 1.5 seconds. The observation panel shows the
-384 × 216 camera resolution. Earlier square-image CNN and pooled-image LSTM checkpoints
-and configurations are incompatible with this architecture. Create a new CNN–LSTM model and retrain
-from scratch; existing files are not automatically migrated.
+384 × 216 camera resolution. Create a new CNN–GRU model and train it from scratch.
+The loader rejects earlier LSTM configurations and checkpoints.
 Heading, pitch and roll angles are not required for training or used as policy features.
 Telemetry is paired with the image before inference;
-stale or mismatched sessions are rejected. New policies have a 128-unit LSTM,
+stale or mismatched sessions are rejected. New policies have a 128-unit GRU,
 a three-dimensional Gaussian actor, a three-way categorical shifting head
 and a TD(0) value head. **Driving aggression** shapes the reference lap's speed goals:
 AI training owns its speed-profile calculation independently of Live Phrases.
@@ -501,15 +507,16 @@ The desktop dialogs label these files **Kestrel self driving model** and default
 `kestrel-self-driving-model.json`. The `format` is `kestrel-self-driving-model`.
 `configuration` owns the ordered input features and their normalization/encodings,
 camera resolution/resizing, CNN layers/padding/activation, spatial pooling and projection size,
-history feature selection and timing, LSTM size,
+history feature selection and timing, GRU size and layer normalization,
 action plan times, shift timing, exploration and learning parameters, reward
 parameters, input freshness limits, checkpoint frequency, and aggression.
 `model` owns the game/car/track, per-timestep input count, learning step count,
 convolution weights (`cameraWeights`: layers, output-channel rows, then flattened
 kernel Y/X/input-channel weights and a final bias), linear projection weights
 (`cameraProjectionWeights`: output rows, pooled Y/X/channel columns and a final bias),
-LSTM gate weights (`lstmWeights`: input/forget/candidate/output rows, with input features,
-previous hidden values and bias columns), the actor output matrix (`outputWeights`),
+GRU weights (`gruWeights` with update, reset and candidate row blocks, each with
+input, previous hidden state and bias columns), optional GRU normalization scales and
+offsets (`gruNormWeights`), the actor output matrix (`outputWeights`),
 and the SAC parameters (`sac`), including the online and target critic weights.
 An untrained document has `model: null`.
 The format and algorithm names identify supported operations; there is no numeric model version.

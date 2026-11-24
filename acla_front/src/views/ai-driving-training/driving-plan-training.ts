@@ -10,7 +10,7 @@ export class DrivingPlanTraining {
 
     reset() { this.pending = []; }
 
-    async recordAsync(policy: DrivingPolicy, features: DrivingPolicyInput, action: DrivingAction, shifts: ShiftAvailability,
+    async recordAsync(policy: DrivingPolicy, features: DrivingPolicyInput | undefined, action: DrivingAction, shifts: ShiftAvailability,
         appliedAt: number, active = () => true, onReplaySubmitted?: () => void) {
         for (const sample of this.collect(policy, features, action, shifts, appliedAt)) {
             if (!active()) return;
@@ -19,7 +19,7 @@ export class DrivingPlanTraining {
         }
     }
 
-    private collect(policy: DrivingPolicy, features: DrivingPolicyInput, action: DrivingAction, shifts: ShiftAvailability, appliedAt: number) {
+    private collect(policy: DrivingPolicy, features: DrivingPolicyInput | undefined, action: DrivingAction, shifts: ShiftAvailability, appliedAt: number) {
         const samples: { features: DrivingPolicyInput; targets: PlannedActionTarget[] }[] = [];
         for (const plan of this.pending) {
             const targets: PlannedActionTarget[] = [];
@@ -37,7 +37,8 @@ export class DrivingPlanTraining {
             if (targets.length) samples.push({ features: plan.features, targets });
         }
         this.pending = this.pending.filter((plan) => plan.nextStep < policy.planTimes.length);
-        this.pending.push({ features: { features: features.features.slice(), cameras: features.cameras.slice() }, appliedAt, nextStep: 1 });
+        if (features) this.pending.push({ features: { ...features, features: features.features.slice(), cameras: features.cameras.slice() },
+            appliedAt, nextStep: 1 });
         return samples;
     }
 }

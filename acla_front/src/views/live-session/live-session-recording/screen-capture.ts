@@ -19,6 +19,6 @@ export async function captureGameScreen(sourceId: string): Promise<MediaStream> 
     await capture.selectSource(sourceId);
     return navigator.mediaDevices.getDisplayMedia({
         audio: false,
-        video: { frameRate: { ideal: 15, max: 15 }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 1280 }, height: { ideal: 720 } },
     });
 }

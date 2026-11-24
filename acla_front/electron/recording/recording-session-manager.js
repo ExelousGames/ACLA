@@ -231,7 +231,7 @@ class RecordingSessionManager {
           } else if (service === 'view') {
             managed.readyWorkers.add('view');
             settleResolve(signals.viewReady, message);
-          } else if (service === 'reader') {
+          } else if (service === 'reader' && Number.isFinite(message.startedAt) && message.startedAt > 0) {
             managed.readyWorkers.add('reader');
             settleResolve(signals.readerReady, message);
           } else fail(new Error(`${service} sent an invalid ready message.`));
@@ -336,14 +336,14 @@ class RecordingSessionManager {
       untransferred.delete(readerToWriter.port1);
       untransferred.delete(readerToView.port1);
 
-      await waitStartup(signals.readerReady.promise, `${game.toUpperCase()} telemetry reader`);
+      const readerReady = await waitStartup(signals.readerReady.promise, `${game.toUpperCase()} telemetry reader`);
       managed.status = 'running';
       safePostMessage(writer, { type: 'published' });
       return {
         ok: true,
         game,
         filePath: writerReady.filePath,
-        startedAt: Date.now(),
+        startedAt: readerReady.startedAt,
       };
     } catch (error) {
       for (const port of untransferred) {

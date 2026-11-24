@@ -73,6 +73,7 @@ const defaultRuntime: LiveSessionRuntime = {
     recordingState: RecordingState.CHECKING,
     recordingMetadata: null,
     recordingFileKey: null,
+    telemetryStartedAt: null,
     recordingActive: false,
     recordingGame: null,
     restorationStatus: 'idle',
@@ -129,7 +130,10 @@ export const LiveSessionProvider = ({
     const [staticData, setStaticDataState] = useState<LiveSessionStaticData>({});
     const [recordingState, setRecordingState] = useState(RecordingState.CHECKING);
     const [recordingMetadata, setRecordingMetadataState] = useState<LiveRecordingMetadata | null>(null);
-    const [recordingFileKey, setRecordingFileKeyState] = useState<string | null>(null);
+    const [{ recordingFileKey, telemetryStartedAt }, setRecordingFile] = useState<{
+        recordingFileKey: string | null;
+        telemetryStartedAt: number | null;
+    }>({ recordingFileKey: null, telemetryStartedAt: null });
     const [recordingActive, setRecordingActive] = useState(false);
     const [recordingGame, setRecordingGame] = useState<DesktopGame | null>(null);
     const [restorationStatus, setRestorationStatus] = useState<LiveSessionRestorationStatus>(
@@ -302,9 +306,10 @@ export const LiveSessionProvider = ({
         persistDraftRef.current();
     }, []);
 
-    const setRecordingFileKey = useCallback((fileKey: string | null) => {
+    const setRecordingFileKey = useCallback((fileKey: string | null, startedAt: number | null = null) => {
         recordingFileKeyRef.current = fileKey;
-        setRecordingFileKeyState(fileKey);
+        setRecordingFile((current) => current.recordingFileKey === fileKey && current.telemetryStartedAt === startedAt
+            ? current : { recordingFileKey: fileKey, telemetryStartedAt: startedAt });
         persistDraftRef.current();
     }, []);
 
@@ -358,7 +363,7 @@ export const LiveSessionProvider = ({
                 if (result.game !== game || !isAbsoluteFilePath(result.filePath)) {
                     throw new Error('Recording startup returned mismatched session data.');
                 }
-                setRecordingFileKey(result.filePath);
+                setRecordingFileKey(result.filePath, result.startedAt);
                 resetSampleCount();
                 transitionRecordingState({ type: 'recordingStarted' });
                 return result;
@@ -647,6 +652,7 @@ export const LiveSessionProvider = ({
         recordingState,
         recordingMetadata,
         recordingFileKey,
+        telemetryStartedAt,
         recordingActive,
         recordingGame,
         restorationStatus,
@@ -679,6 +685,7 @@ export const LiveSessionProvider = ({
         analysisResultPages,
         activeAnalysisResultPageId,
         recordingFileKey,
+        telemetryStartedAt,
         recordingActive,
         recordingGame,
         recordingMetadata,

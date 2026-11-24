@@ -131,6 +131,33 @@ const transition = { reward: 1, elapsedSeconds: 0.2, terminal: false,
     actions: [{ step: 0, weight: 0.25, action: { pedal: -0.2, steering: -0.2 }, shift: 0, shifts: { up: true, down: true } },
         { step: 2, weight: 0.75, action: { pedal: -0.4, steering: -0.4, shiftUp: true }, shift: 1, shifts: { up: true, down: false } }] };
 
+it('queues predictions in episode order and does not remember a failed capture', async () => {
+    const { model, input, mapping } = await setup();
+    const episode = {};
+    const frame = (capturedAt: number, historyTimes: [number, number] | [null, null]) => ({
+        ...input(historyTimes[0] !== null), recurrent: { episode, capturedAt, historyTimes },
+    });
+    const firstMap = deferred<void>();
+    mapping.mockImplementationOnce(() => firstMap.promise);
+    const first = model.forward(frame(200, [null, null]));
+    const second = model.forward(frame(450, [200, 50]));
+    expect(mapping).toHaveBeenCalledTimes(1);
+    firstMap.resolve();
+    model.release((await first).pass);
+    const next = (await second).pass;
+    expect(next.steps).toBe(1);
+    model.release(next);
+    const duplicate = (await model.forward(frame(450, [200, 50]))).pass;
+    expect(duplicate.steps).toBe(0);
+    model.release(duplicate);
+
+    mapping.mockRejectedValueOnce(new Error('Readback failed'));
+    await expect(model.forward(frame(600, [450, 200]))).rejects.toThrow('Readback failed');
+    const afterFailure = (await model.forward(frame(700, [600, 450]))).pass;
+    expect(afterFailure.steps).toBe(2);
+    model.release(afterFailure);
+});
+
 it('uploads actual executed controls and current/next shift masks for sparse SAC credits', async () => {
     const { model, input, device } = await setup();
     const { pass } = await model.forward(input());

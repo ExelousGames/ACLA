@@ -14,7 +14,7 @@ const shifts = { up: true, down: true };
 
 it('pairs all 30 later 100 ms time slots with their observed action and original input snapshot', async () => {
     const { policy, learn, training, features } = setup();
-    const original = { features: features.features.slice(), cameras: features.cameras.slice() };
+    const original = { ...features, features: features.features.slice(), cameras: features.cameras.slice() };
     await training.recordAsync(policy, features, neutral, shifts, 1000);
     features.features[0] = 1;
     for (let step = 1; step <= 30; step++) {
@@ -23,11 +23,12 @@ it('pairs all 30 later 100 ms time slots with their observed action and original
         expect(learn).toHaveBeenCalledWith(original, [{ step, action, shifts }]);
     }
     expect(learn.mock.calls.filter(([input]) => input.features[0] === original.features[0])).toHaveLength(30);
+    expect(learn.mock.calls[0][0].recurrent).toBe(original.recurrent);
 });
 
 it('waits for a time slot, tolerates small sampling offsets and skips missing targets', async () => {
     const { policy, learn, training, features } = setup();
-    const original = { features: features.features.slice(), cameras: features.cameras.slice() };
+    const original = { ...features, features: features.features.slice(), cameras: features.cameras.slice() };
     await training.recordAsync(policy, features, neutral, shifts, 1000);
     features.features[0] = 1; // Distinguish this initial plan from overlapping later plans.
     await training.recordAsync(policy, features, neutral, shifts, 1099);

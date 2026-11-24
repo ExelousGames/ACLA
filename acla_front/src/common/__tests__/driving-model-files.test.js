@@ -4,7 +4,7 @@ const path = require('path');
 const { registerDrivingModelFiles } = require('../../../electron/driving-model-files');
 
 const document = (steps = 0) => JSON.stringify({ format: 'kestrel-self-driving-model', algorithm: 'soft-actor-critic',
-    configuration: { aggression: 50 }, model: { steps, lstmWeights: [[0.1]], outputWeights: [[0.2]] } });
+    configuration: { aggression: 50 }, model: { steps, gruWeights: [[0.1]], outputWeights: [[0.2]] } });
 let directory;
 beforeEach(async () => { directory = await fs.mkdtemp(path.join(os.tmpdir(), 'acla-driving-files-test-')); });
 afterEach(async () => {

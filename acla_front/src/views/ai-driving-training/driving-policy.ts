@@ -1,6 +1,6 @@
 import { DrivingAction, DrivingObservation } from './driving-observation';
 import { DrivingPolicyInput } from './driving-memory';
-import { cloneConfig, DEFAULT_DRIVING_CONFIG, DRIVING_ANALOG_AXES, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingExplorationSigmas, drivingFeatureEncoding, drivingObservationInputs, drivingPolicyInputs, readDrivingConfig, validateDrivingConfig } from './driving-model-config';
+import { cloneConfig, DEFAULT_DRIVING_CONFIG, DRIVING_ANALOG_AXES, DRIVING_GRU_GATES, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingExplorationSigmas, drivingFeatureEncoding, drivingObservationInputs, drivingPolicyInputs, readDrivingConfig, validateDrivingConfig } from './driving-model-config';
 import { DrivingExploration } from './driving-exploration';
 import { DrivingGpuModel, GpuPolicyPass } from './driving-gpu-model';
 import { DrivingRolloutInterval, drivingSequenceTargets } from './driving-rollout';
@@ -52,16 +52,17 @@ export interface PolicyModelState {
     steps: number;
     cameraWeights: number[][][];
     cameraProjectionWeights: number[][];
-    /** LayerNorm rows are [gain, bias]; absent for the original unnormalized computation. */
+    /** LayerNorm rows are [gain, bias] and are present when enabled. */
     cameraNormWeights?: number[][];
-    lstmNormWeights?: number[][];
-    lstmWeights: number[][];
+    gruNormWeights?: number[][];
+    /** Update, reset and candidate rows, with input columns, recurrent columns and bias. */
+    gruWeights: number[][];
     outputWeights: number[][];
     sac: DrivingSacWeights;
 }
 
 export type DrivingEncoderWeights = Pick<PolicyModelState, 'cameraWeights' | 'cameraProjectionWeights'
-    | 'cameraNormWeights' | 'lstmNormWeights' | 'lstmWeights'>;
+    | 'cameraNormWeights' | 'gruNormWeights' | 'gruWeights'>;
 export interface DrivingSacWeights {
     /** Learned log spread at reference sigma 0.05; configured exploration scales it. */
     logStds: number[];
@@ -89,7 +90,7 @@ export interface DrivingTrainingDocument {
 }
 export interface PolicyCheckpoint extends DrivingTrainingDocument { model: PolicyModelState }
 export type PolicyWeights = Pick<PolicyModelState, 'cameraWeights' | 'cameraProjectionWeights' | 'cameraNormWeights'
-    | 'lstmNormWeights' | 'lstmWeights' | 'outputWeights' | 'sac'>;
+    | 'gruNormWeights' | 'gruWeights' | 'outputWeights' | 'sac'>;
 
 export function emptyTrainingDocument(configuration = DEFAULT_DRIVING_CONFIG): DrivingTrainingDocument {
     return { format: 'kestrel-self-driving-model', algorithm: 'soft-actor-critic', configuration: cloneConfig(configuration), model: null };
@@ -145,9 +146,10 @@ export class DrivingPolicy {
         const cameraProjectionWeights = Array.from({ length: projected }, () =>
             Array.from({ length: pooled + 1 }, (_, i) => i === pooled ? 0
                 : Math.max(-limit, Math.min(limit, (random() * 2 - 1) * Math.sqrt(6 / (pooled + projected))))));
-        const lstmWeights = Array.from({ length: 4 * units }, (_, row) =>
+        const gruRows = DRIVING_GRU_GATES * units;
+        const gruWeights = Array.from({ length: gruRows }, (_, row) =>
             Array.from({ length: inputs + units + 1 }, (_, column) => {
-                const value = column === inputs + units ? Number(!configuration.network.lstmLayerNorm && row >= units && row < 2 * units)
+                const value = column === inputs + units ? Number(!configuration.network.gruLayerNorm && row < units)
                     : (random() * 2 - 1) / Math.sqrt(inputs + units);
                 return Math.max(-limit, Math.min(limit, value));
             }));
@@ -155,13 +157,13 @@ export class DrivingPolicy {
         const outputWeights = Array.from({ length: this.criticOutput + 1 }, (_, i) => Array.from({ length: this.configuration.network.hiddenUnits + 1 },
             (_, j) => i === this.criticOutput ? 0 : j === this.configuration.network.hiddenUnits ? this.configuration.network.initialActionBias[i % this.actionOutputs]
                 : (random() * 2 - 1) * this.configuration.network.initialOutputWeightScale));
-        const encoder: DrivingEncoderWeights = { cameraWeights, cameraProjectionWeights, lstmWeights };
+        const encoder: DrivingEncoderWeights = { cameraWeights, cameraProjectionWeights, gruWeights };
         if (configuration.network.cameraLayerNorm) {
             encoder.cameraNormWeights = [Array(projected).fill(1), Array(projected).fill(0)];
         }
-        if (configuration.network.lstmLayerNorm) {
-            encoder.lstmNormWeights = [Array(4 * units).fill(1),
-                Array.from({ length: 4 * units }, (_, row) => Number(row >= units && row < 2 * units))];
+        if (configuration.network.gruLayerNorm) {
+            encoder.gruNormWeights = [Array(gruRows).fill(1),
+                Array.from({ length: gruRows }, (_, row) => Number(row < units))];
         }
         const columns = units + this.actionOutputs + 1;
         const criticWeights = Array.from({ length: 2 }, () => Array.from({ length: units * columns + units + 1 }, (_, i) =>
@@ -337,6 +339,10 @@ export class DrivingPolicy {
         await this.learnTargetsAsync(input, [{ step: 0, action, shifts }], true);
     }
 
+    observeDemonstration(input: DrivingPolicyInput) {
+        this.requireGpu().observeDemonstration(input);
+    }
+
     /** Train one observation against its available demonstrated future in one update. */
     async learnDemonstratedPlanAsync(input: DrivingPolicyInput, targets: PlannedActionTarget[]): Promise<void> {
         await this.learnTargetsAsync(input, targets, true);
@@ -350,7 +356,7 @@ export class DrivingPolicy {
         const gpu = this.requireGpu();
         if (!targets.length) return;
         this.validateTargets(targets);
-        gpu.learnTargets(input, targets);
+        gpu.learnTargets(input, targets, countStep);
         if (countStep) this.steps++;
     }
 
@@ -393,8 +399,8 @@ export class DrivingPolicy {
             cameraWeights: this.initialWeights.cameraWeights.map((rows) => rows.map((row) => row.slice())),
             cameraProjectionWeights: this.initialWeights.cameraProjectionWeights.map((row) => row.slice()),
             ...(this.initialWeights.cameraNormWeights && { cameraNormWeights: this.initialWeights.cameraNormWeights.map((row) => row.slice()) }),
-            ...(this.initialWeights.lstmNormWeights && { lstmNormWeights: this.initialWeights.lstmNormWeights.map((row) => row.slice()) }),
-            lstmWeights: this.initialWeights.lstmWeights.map((row) => row.slice()), outputWeights: this.initialWeights.outputWeights.map((row) => row.slice()),
+            ...(this.initialWeights.gruNormWeights && { gruNormWeights: this.initialWeights.gruNormWeights.map((row) => row.slice()) }),
+            gruWeights: this.initialWeights.gruWeights.map((row) => row.slice()), outputWeights: this.initialWeights.outputWeights.map((row) => row.slice()),
             sac: JSON.parse(JSON.stringify(this.initialWeights.sac)) } };
     }
 
@@ -416,16 +422,17 @@ export class DrivingPolicy {
         const config = readDrivingConfig(document.configuration), data = document.model;
         const matrix = (rows: unknown, height: number, width: number, limit = config.learning.weightLimit) => Array.isArray(rows) && rows.length === height
             && rows.every((row) => Array.isArray(row) && row.length === width && row.every((v) => typeof v === 'number' && Number.isFinite(v) && Math.abs(v) <= limit));
+        const gruRows = DRIVING_GRU_GATES * config.network.hiddenUnits;
         const validEncoder = (encoder: DrivingEncoderWeights) => encoder
-            && !Object.keys(encoder).some((key) => !['cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'lstmNormWeights', 'lstmWeights'].includes(key))
+            && !Object.keys(encoder).some((key) => !['cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'gruNormWeights', 'gruWeights'].includes(key))
             && Array.isArray(encoder.cameraWeights) && encoder.cameraWeights.length === config.network.cameraLayers.length
             && drivingCameraLayers(config).every((layer, i) => matrix(encoder.cameraWeights[i], layer.channels, layer.columns))
             && matrix(encoder.cameraProjectionWeights, drivingCameraInputs(config), drivingCameraPooledInputs(config) + 1)
-            && matrix(encoder.lstmWeights, 4 * config.network.hiddenUnits, drivingPolicyInputs(config) + config.network.hiddenUnits + 1)
+            && matrix(encoder.gruWeights, gruRows, drivingPolicyInputs(config) + config.network.hiddenUnits + 1)
             && (config.network.cameraLayerNorm ? matrix(encoder.cameraNormWeights, 2, drivingCameraInputs(config), Math.max(1, config.learning.weightLimit)) : encoder.cameraNormWeights === undefined)
-            && (config.network.lstmLayerNorm ? matrix(encoder.lstmNormWeights, 2, 4 * config.network.hiddenUnits, Math.max(1, config.learning.weightLimit)) : encoder.lstmNormWeights === undefined);
+            && (config.network.gruLayerNorm ? matrix(encoder.gruNormWeights, 2, gruRows, Math.max(1, config.learning.weightLimit)) : encoder.gruNormWeights === undefined);
         const criticSize = config.network.hiddenUnits * (config.network.hiddenUnits + config.actions.outputs.length + 1) + config.network.hiddenUnits + 1;
-        if (!data || Object.keys(data).some((key) => !['context', 'inputs', 'steps', 'cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'lstmNormWeights', 'lstmWeights', 'outputWeights', 'sac'].includes(key))
+        if (!data || Object.keys(data).some((key) => !['context', 'inputs', 'steps', 'cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'gruNormWeights', 'gruWeights', 'outputWeights', 'sac'].includes(key))
             || !Number.isInteger(data.inputs) || data.inputs < 1
             || !Number.isSafeInteger(data.steps) || data.steps < 0
             || !data.context || !['game', 'car', 'map'].every((key) => typeof (data.context as any)[key] === 'string' && (data.context as any)[key].length > 0)
@@ -436,9 +443,9 @@ export class DrivingPolicy {
             || !matrix(data.cameraProjectionWeights, drivingCameraInputs(config), drivingCameraPooledInputs(config) + 1)
             || (config.network.cameraLayerNorm ? !matrix(data.cameraNormWeights, 2, drivingCameraInputs(config), Math.max(1, config.learning.weightLimit))
                 : data.cameraNormWeights !== undefined)
-            || (config.network.lstmLayerNorm ? !matrix(data.lstmNormWeights, 2, 4 * config.network.hiddenUnits, Math.max(1, config.learning.weightLimit))
-                : data.lstmNormWeights !== undefined)
-            || !matrix(data.lstmWeights, 4 * config.network.hiddenUnits, data.inputs + config.network.hiddenUnits + 1)
+            || (config.network.gruLayerNorm ? !matrix(data.gruNormWeights, 2, gruRows, Math.max(1, config.learning.weightLimit))
+                : data.gruNormWeights !== undefined)
+            || !matrix(data.gruWeights, gruRows, data.inputs + config.network.hiddenUnits + 1)
             || !matrix(data.outputWeights, config.actions.planTimesSeconds.length * config.actions.outputs.length + 1, config.network.hiddenUnits + 1)
             || !data.sac || Object.keys(data.sac).some((key) => !['logStds', 'criticWeights', 'targetCriticWeights', 'targetEncoder'].includes(key))
             || !Array.isArray(data.sac.logStds) || data.sac.logStds.length !== config.actions.planTimesSeconds.length * DRIVING_ANALOG_AXES
@@ -449,8 +456,8 @@ export class DrivingPolicy {
             cameraWeights: data.cameraWeights.map((rows) => rows.map((row) => row.slice())),
             cameraProjectionWeights: data.cameraProjectionWeights.map((row) => row.slice()),
             ...(data.cameraNormWeights && { cameraNormWeights: data.cameraNormWeights.map((row) => row.slice()) }),
-            ...(data.lstmNormWeights && { lstmNormWeights: data.lstmNormWeights.map((row) => row.slice()) }),
-            lstmWeights: data.lstmWeights.map((row) => row.slice()),
+            ...(data.gruNormWeights && { gruNormWeights: data.gruNormWeights.map((row) => row.slice()) }),
+            gruWeights: data.gruWeights.map((row) => row.slice()),
             outputWeights: data.outputWeights.map((row) => row.slice()),
             sac: JSON.parse(JSON.stringify(data.sac)),
         });

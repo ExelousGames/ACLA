@@ -104,7 +104,7 @@ function runAccReaderWorker() {
       };
 
       void reader.start(emit).then(() => {
-        if (!stopping) parentSend({ type: 'ready', service: 'reader', game: 'acc' });
+        if (!stopping) parentSend({ type: 'ready', service: 'reader', game: 'acc', startedAt: performance.timeOrigin + reader.startedAt });
       }).catch((error) => {
         if (!stopping) parentSend({ type: 'fatal', service: 'reader', error: error?.message || String(error) });
       });

@@ -33,7 +33,7 @@ it.each([
     (c: any) => { c.model.sac.criticWeights.pop(); },
     (c: any) => { c.model.sac.targetCriticWeights[0].pop(); },
     (c: any) => { delete c.model.sac.targetEncoder; },
-    (c: any) => { c.model.sac.targetEncoder.lstmWeights[0][0] = Infinity; },
+    (c: any) => { c.model.sac.targetEncoder.gruWeights[0][0] = Infinity; },
     (c: any) => { delete c.model.sac.targetEncoder.cameraNormWeights; },
 ])('requires complete valid SAC online and target weights %#', (change) => {
     const config = cloneConfig();
@@ -60,7 +60,7 @@ it.each([
     expect(() => validateDrivingConfig(config)).toThrow(/configuration/);
 });
 
-it('keeps a widescreen spatial grid and projects it to 256 visual LSTM inputs', () => {
+it('keeps a widescreen spatial grid and projects it to 256 visual GRU inputs', () => {
     const config = cloneConfig();
     expect(() => validateDrivingConfig(config)).not.toThrow();
     expect(drivingCameraLayers(config).map(({ width, height, channels }) => [width, height, channels]))
@@ -82,12 +82,12 @@ it('starts fresh normalization parameters and round-trips their learned values',
     const { observation } = trainingFixture();
     const policy = new DrivingPolicy(observation.context, observation.features.length, () => 0.6, config);
     const initial = policy.checkpoint();
-    expect(initial.configuration.network).toMatchObject({ cameraLayerNorm: true, lstmLayerNorm: true, layerNormEpsilon: 0.00001 });
+    expect(initial.configuration.network).toMatchObject({ cameraLayerNorm: true, gruLayerNorm: true, layerNormEpsilon: 0.00001 });
     expect(initial.model.cameraNormWeights).toEqual([[1, 1, 1, 1], [0, 0, 0, 0]]);
-    expect(initial.model.lstmNormWeights).toEqual([Array(12).fill(1), [0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0]]);
-    expect(initial.model.lstmWeights.every((row) => row[row.length - 1] === 0)).toBe(true);
+    expect(initial.model.gruNormWeights).toEqual([Array(9).fill(1), [1, 1, 1, 0, 0, 0, 0, 0, 0]]);
+    expect(initial.model.gruWeights.every((row) => row[row.length - 1] === 0)).toBe(true);
     initial.model.cameraNormWeights![0][0] = 1.2;
-    initial.model.lstmNormWeights![1][0] = -0.1;
+    initial.model.gruNormWeights![1][0] = -0.1;
     expect(policy.checkpoint().model.cameraNormWeights![0][0]).toBe(1);
     const restored = DrivingPolicy.restore(initial);
     expect(restored.checkpoint()).toEqual(initial);
@@ -99,14 +99,14 @@ it('starts fresh normalization parameters and round-trips their learned values',
 it('rejects legacy checkpoints missing normalization settings without changing the source', () => {
     const config = cloneConfig();
     config.network.cameraLayerNorm = false;
-    config.network.lstmLayerNorm = false;
+    config.network.gruLayerNorm = false;
     config.network.hiddenUnits = 3;
     config.network.cameraProjectionUnits = 4;
     config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
     const { observation } = trainingFixture();
     const legacy: any = new DrivingPolicy(observation.context, observation.features.length, () => 0.6, config).checkpoint();
     delete legacy.configuration.network.cameraLayerNorm;
-    delete legacy.configuration.network.lstmLayerNorm;
+    delete legacy.configuration.network.gruLayerNorm;
     delete legacy.configuration.network.layerNormEpsilon;
     delete legacy.configuration.learning.gradientNormLimit;
     const before = JSON.stringify(legacy);
@@ -116,11 +116,11 @@ it('rejects legacy checkpoints missing normalization settings without changing t
 
 it.each([
     (c: any) => { delete c.model.cameraNormWeights; },
-    (c: any) => { delete c.model.lstmNormWeights; },
+    (c: any) => { delete c.model.gruNormWeights; },
     (c: any) => { c.model.cameraNormWeights[0].pop(); },
-    (c: any) => { c.model.lstmNormWeights[1][0] = NaN; },
+    (c: any) => { c.model.gruNormWeights[1][0] = NaN; },
     (c: any) => { c.configuration.network.cameraLayerNorm = false; },
-    (c: any) => { c.configuration.network.lstmLayerNorm = false; },
+    (c: any) => { c.configuration.network.gruLayerNorm = false; },
 ])('rejects checkpoint normalization parameters inconsistent with its computation %#', (change) => {
     const config = cloneConfig();
     config.network.hiddenUnits = 3;
@@ -134,7 +134,7 @@ it.each([
 
 it.each([
     (c: any) => { c.network.cameraLayerNorm = 'true'; },
-    (c: any) => { delete c.network.lstmLayerNorm; },
+    (c: any) => { delete c.network.gruLayerNorm; },
     (c: any) => { c.network.layerNormEpsilon = 0; },
     (c: any) => { c.network.layerNormEpsilon = 1; },
     (c: any) => { c.learning.gradientNormLimit = 0; },
@@ -171,7 +171,7 @@ it('rebuilds the whole observation, memory, network and plan from a non-default 
     const json = JSON.stringify(original.checkpoint());
     const restored = DrivingPolicy.restore(JSON.parse(json));
     expect(restored.matches(observation)).toBe(true);
-    expect(restored.checkpoint().model.lstmWeights).toHaveLength(4 * 7);
+    expect(restored.checkpoint().model.gruWeights).toHaveLength(3 * 7);
     expect(restored.checkpoint().model.outputWeights).toHaveLength(16);
     expect(restored.planTimes).toEqual([0, 0.3, 1.2]);
     expect(restored.checkpoint()).toEqual(JSON.parse(json));
@@ -234,10 +234,10 @@ it('supports a configuration-only JSON and isolates exported values from the run
     const exported = policy.checkpoint();
     exported.configuration.network.hiddenUnits = 99;
     exported.model.context.car = 'modified';
-    exported.model.lstmWeights[0][0] = 4;
+    exported.model.gruWeights[0][0] = 4;
     expect(policy.configuration.network.hiddenUnits).toBe(128);
     expect(policy.context.car).toEqual(observation.context.car);
-    expect(policy.checkpoint().model.lstmWeights[0][0]).not.toBe(4);
+    expect(policy.checkpoint().model.gruWeights[0][0]).not.toBe(4);
 });
 
 it('starts fresh models with five-second plans and five-second consequence windows', () => {
