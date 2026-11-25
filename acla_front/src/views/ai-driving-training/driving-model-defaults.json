@@ -80,20 +80,18 @@
   "recordedSamplingWeights": {
     "Warmup": 4,
     "Race pace": 4,
-    "Qualifying": 4,
     "Shifting": 15,
     "Cornering": 25,
     "Overtake": 4,
     "Defend": 4,
     "Traffic": 4,
-    "Recovery": 4,
     "Recover from wall contact": 4,
     "Recover off track": 4,
     "Avoid wall": 4,
     "Reverse back": 4,
     "Pit entry": 4,
     "Pit exit": 4,
-    "Unlabeled": 8
+    "Unlabeled": 16
   },
   "reward": {
     "referenceTiming": "live-phrase-speed-profile",

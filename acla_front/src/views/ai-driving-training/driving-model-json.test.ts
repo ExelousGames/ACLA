@@ -41,9 +41,21 @@ it.each([false, true])('loads older model files with default sampling weights (t
     expect(previous.configuration).not.toHaveProperty('recordedSamplingWeights');
     expect(restored.model).toEqual(document.model);
 
-    const weights = { ...emptyRecordedSamplingWeights(), Recovery: 62.5, Shifting: 37.5 };
+    const weights = { ...emptyRecordedSamplingWeights(), 'Recover off track': 62.5, Shifting: 37.5 };
     restored.configuration.recordedSamplingWeights = weights;
     expect(readTrainingDocument(restored).configuration.recordedSamplingWeights).toEqual(weights);
+
+    const retiredWeights = { 'Recover off track': 45, Shifting: 37.5, Qualifying: 7.5, Recovery: 2.5, 'Save fuel': 5, Unlabeled: 2.5 };
+    const migrated = readTrainingDocument({ ...restored, configuration: { ...restored.configuration, recordedSamplingWeights: retiredWeights } });
+    expect(migrated.configuration.recordedSamplingWeights).toEqual({ ...weights, 'Recover off track': 45, Unlabeled: 17.5 });
+    expect(migrated.model).toEqual(document.model);
+});
+
+it('combines weights from a wholly retired label set and accounts for rounding', () => {
+    const document = emptyTrainingDocument();
+    const retiredWeights = { 'Stint management': 79.1, 'Scrub tires': 20.9, Unlabeled: 1e-10 };
+    const migrated = readTrainingDocument({ ...document, configuration: { ...document.configuration, recordedSamplingWeights: retiredWeights } });
+    expect(migrated.configuration.recordedSamplingWeights).toEqual({ ...emptyRecordedSamplingWeights(), Unlabeled: 100 });
 });
 
 it('defines defaults for exactly the annotation labels and Unlabeled', () => {
@@ -56,7 +68,7 @@ it('migrates a custom grouped mix to independent annotation percentages', () => 
     const document = emptyTrainingDocument();
     const restored = readTrainingDocument({ ...document, configuration: { ...document.configuration, recordedSamplingWeights: legacy } });
     const weights = restored.configuration.recordedSamplingWeights;
-    expect(weights).toMatchObject({ 'Race pace': 3.7, Recovery: 3.7, Unlabeled: 7.4, Cornering: 10, Shifting: 34.5 });
+    expect(weights).toMatchObject({ 'Race pace': 3.7, 'Recover off track': 3.7, Unlabeled: 14.8, Cornering: 10, Shifting: 34.5 });
     const formerGeneral = RECORDED_SAMPLING_CATEGORIES.filter((label) => label !== 'Cornering' && label !== 'Shifting');
     expect(formerGeneral.reduce((sum, label) => sum + weights[label], 0)).toBeCloseTo(legacy.general);
 });
@@ -65,7 +77,9 @@ it.each([
     { ...defaultSamplingWeights, Cornering: 20 },
     { ...defaultSamplingWeights, Warmup: -1, 'Race pace': 9 },
     { ...defaultSamplingWeights, Cornering: NaN },
-    { ...defaultSamplingWeights, Unknown: 0 },
+    { ...defaultSamplingWeights, 'Save fuel': 1 },
+    { ...defaultSamplingWeights, 'Save fuel': -1, Unlabeled: 17 },
+    { ...defaultSamplingWeights, 'Save fuel': '0' },
     { Cornering: 100 },
     { general: 100, cornering: 0 },
 ])('rejects invalid recorded sampling weights %#', (weights) => {

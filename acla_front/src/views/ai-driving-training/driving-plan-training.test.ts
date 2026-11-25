@@ -124,11 +124,11 @@ it('fills each optimizer batch from preset category percentages and reuses rare 
 });
 
 it('waits for late categories and retains a cross-section of earlier origins for their fixed mix', async () => {
-    const weights = { ...emptyRecordedSamplingWeights(), Qualifying: 60, Cornering: 25, Shifting: 15 };
+    const weights = { ...emptyRecordedSamplingWeights(), 'Race pace': 60, Cornering: 25, Shifting: 15 };
     const { policy, batch, training, features } = setup(weights, () => 0.99);
     for (let i = 0; i < 400; i++) {
         const input = { ...features, features: [i, ...features.features.slice(1)] };
-        const category = i === 399 ? 'Shifting' : i === 398 ? 'Cornering' : 'Qualifying';
+        const category = i === 399 ? 'Shifting' : i === 398 ? 'Cornering' : 'Race pace';
         await training.recordAsync(policy, input, neutralTarget, 1000 + i * 100, undefined, category);
     }
     expect(batch).not.toHaveBeenCalled();
@@ -138,7 +138,7 @@ it('waits for late categories and retains a cross-section of earlier origins for
     expect(batch).toHaveBeenCalledTimes(32);
     await training.finishAsync(policy);
     expect(batch).toHaveBeenCalledTimes(50);
-    expect(training.sampled).toEqual({ ...emptyRecordedSamplingWeights(), Qualifying: 240, Cornering: 100, Shifting: 60 });
+    expect(training.sampled).toEqual({ ...emptyRecordedSamplingWeights(), 'Race pace': 240, Cornering: 100, Shifting: 60 });
     expect(batch.mock.calls.flatMap(([plans]) => plans).some(({ input }) => input.features[0] === 0)).toBe(true);
     for (const [plans] of batch.mock.calls) {
         expect(plans.filter(({ input }) => input.features[0] === 398)).toHaveLength(2);

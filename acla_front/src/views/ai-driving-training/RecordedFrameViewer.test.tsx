@@ -343,6 +343,12 @@ it('marks, edits and removes saved ranges, and restores each video’s selection
     const end = () => screen.getByLabelText('Range end (seconds)');
     const label = () => screen.getByRole('combobox', { name: 'Clip label (optional)' });
     expect(within(label()).getAllByRole<HTMLOptionElement>('option').map((option) => option.value)).toEqual(['', ...trainingLabels]);
+    const fullLabel = screen.getByRole('combobox', { name: 'Full recording label (optional)' });
+    for (const select of [label(), fullLabel]) {
+        expect(within(select).queryByRole('option', { name: 'Qualifying' })).not.toBeInTheDocument();
+        expect(within(select).queryByRole('option', { name: 'Recovery' })).not.toBeInTheDocument();
+        expect(within(select).getByRole('option', { name: 'Recover off track' })).toBeInTheDocument();
+    }
     fireEvent.click(screen.getByRole('button', { name: 'Mark start here' }));
     await act(async () => { video.currentTime = 0.4; });
     fireEvent.click(screen.getByRole('button', { name: 'Mark end here' }));

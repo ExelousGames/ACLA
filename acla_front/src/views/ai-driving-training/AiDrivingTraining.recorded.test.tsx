@@ -186,7 +186,7 @@ it('saves a fixed sampling mix, trains on tagged origins, and evaluates every al
     })).join('\n'), 'acc');
     mockFrames = session.rows.map((row, index) => ({ session, videoSeconds: row.timeSeconds, telemetrySeconds: row.timeSeconds,
         camera, startsRange: [0, 5, 8, 10].includes(index),
-        clipLabel: index < 5 ? 'Race pace' : index < 8 ? 'Recovery' : index < 10 ? 'Cornering' : 'Shifting' }));
+        clipLabel: index < 5 ? 'Race pace' : index < 8 ? 'Recover off track' : index < 10 ? 'Cornering' : 'Shifting' }));
     await loadRecording();
     const weights = within(screen.getByRole('group', { name: 'Fixed sampling weights' }));
     expect(weights.getAllByRole('spinbutton')).toHaveLength(RECORDED_SAMPLING_CATEGORIES.length);
@@ -197,7 +197,7 @@ it('saves a fixed sampling mix, trains on tagged origins, and evaluates every al
     expect(racePace).toHaveValue(4);
     fireEvent.change(racePace, { target: { value: '12' } });
     expect(saveWeights).toBeDisabled();
-    fireEvent.change(unlabeled, { target: { value: '0' } });
+    fireEvent.change(unlabeled, { target: { value: '8' } });
     expect(saveWeights).toBeEnabled();
     jest.mocked(window.drivingModelFiles!.write).mockRejectedValueOnce(new Error('Test save failure'));
     fireEvent.click(saveWeights); await flush();
@@ -205,11 +205,11 @@ it('saves a fixed sampling mix, trains on tagged origins, and evaluates every al
     expect(saveWeights).toBeEnabled();
     fireEvent.click(saveWeights); await flush();
     expect(JSON.parse(savedJson).configuration.recordedSamplingWeights).toEqual({
-        ...DEFAULT_DRIVING_CONFIG.recordedSamplingWeights, 'Race pace': 12, Unlabeled: 0,
+        ...DEFAULT_DRIVING_CONFIG.recordedSamplingWeights, 'Race pace': 12, Unlabeled: 8,
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Train from annotations' })); await flush();
-    expect(screen.getByText(/Completed\. Learning from recording.*8 samples.*Race pace 2 \(4\).*Shifting 2 \(1\).*Cornering 3 \(1\).*Recovery 1 \(2\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Completed\. Learning from recording.*8 samples.*Race pace 2 \(4\).*Shifting 2 \(1\).*Cornering 3 \(1\).*Recover off track 1 \(2\)/)).toBeInTheDocument();
     expect(JSON.parse(savedJson).model.steps).toBe(8);
     fireEvent.change(racePace, { target: { value: '13' } });
     fireEvent.click(screen.getByRole('button', { name: 'Evaluate annotations' })); await flush();

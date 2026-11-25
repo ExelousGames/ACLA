@@ -24,19 +24,40 @@ export function validRecordedSamplingWeights(weights: Record<RecordedSamplingCat
 }
 
 function migrateRecordedSamplingWeights(value: unknown): RecordedSamplingWeights | undefined {
-    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 3) return undefined;
-    const legacy = value as Record<string, unknown>;
-    const percentages = [legacy.general, legacy.cornering, legacy.shifting];
-    if (!validSamplingPercentages(percentages)) return undefined;
-    const [general, cornering, shifting] = percentages;
-    const generalLabels = RECORDED_SAMPLING_CATEGORIES.filter((label) => label !== 'Cornering' && label !== 'Shifting'
-        && label !== UNLABELED_RECORDED_SAMPLING_CATEGORY);
-    // Split the former General share proportionally to the new defaults. Keep
-    // a readable percentage in each field and put rounding residue in Unlabeled.
-    const share = Number((general / (generalLabels.length + 2)).toPrecision(3));
-    const weights = { ...emptyRecordedSamplingWeights(), Cornering: cornering, Shifting: shifting,
-        Unlabeled: Number((general - share * generalLabels.length).toPrecision(15)) };
-    for (const label of generalLabels) weights[label] = share;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+    const saved = value as Record<string, unknown>;
+    const labels = Object.keys(saved);
+    const weights = emptyRecordedSamplingWeights();
+    const addWeight = (label: string, percentage: number) => {
+        const category = Object.prototype.hasOwnProperty.call(weights, label)
+            ? label as RecordedSamplingCategory : UNLABELED_RECORDED_SAMPLING_CATEGORY;
+        weights[category] += percentage;
+    };
+    if (Object.prototype.hasOwnProperty.call(saved, UNLABELED_RECORDED_SAMPLING_CATEGORY)) {
+        const percentages = labels.map((label) => saved[label]);
+        if (!validSamplingPercentages(percentages)) return undefined;
+        labels.forEach((label, index) => addWeight(label, percentages[index]));
+    } else {
+        // The original grouped format stored General, Cornering and Shifting separately.
+        if (labels.length !== 3) return undefined;
+        const percentages = [saved.general, saved.cornering, saved.shifting];
+        if (!validSamplingPercentages(percentages)) return undefined;
+        const [general, cornering, shifting] = percentages;
+        const generalLabels = RECORDED_SAMPLING_CATEGORIES.filter((label) => label !== 'Cornering' && label !== 'Shifting'
+            && label !== UNLABELED_RECORDED_SAMPLING_CATEGORY);
+        const defaultWeights = defaults.recordedSamplingWeights;
+        const generalDefault = generalLabels.reduce((sum, label) => sum + defaultWeights[label], defaultWeights.Unlabeled);
+        let remaining = general;
+        for (const label of generalLabels) {
+            const share = generalDefault > 0 ? Number((general * defaultWeights[label] / generalDefault).toPrecision(3)) : 0;
+            weights[label] = Math.min(remaining, share);
+            remaining -= weights[label];
+        }
+        weights.Unlabeled = Number(remaining.toPrecision(15));
+        addWeight('Cornering', cornering);
+        addWeight('Shifting', shifting);
+    }
+    weights.Unlabeled = Math.min(100, weights.Unlabeled);
     return weights;
 }
 
