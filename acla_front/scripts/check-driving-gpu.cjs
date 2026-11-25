@@ -560,6 +560,185 @@ async function checks(soakIterations) {
         close(saved.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), pedalSeed.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), 'Forced hold uses the shifted logit indices');
     }
     pedals.dispose();
+
+    // Check unweighted recorded control gradients on the real GPU, including
+    // the last slot's target stride and recovery from wrong saturation.
+    const recordedSeed = JSON.parse(JSON.stringify(pedalSeed));
+    recordedSeed.configuration.learning.weightLimit = 100;
+    const biasColumn = config.network.hiddenUnits;
+    const finalRecordedSlot = config.actions.planTimesSeconds.length - 1;
+    const recordedCases = [
+        { step: 0, action: { pedal: -1, steering: 0, shiftUp: true }, shifts: { up: true, down: true },
+            means: [25, 0.4] },
+        { step: 1, action: { pedal: 0.7, steering: 0.3 }, shifts: { up: false, down: false },
+            means: [-25, -25] },
+        { step: finalRecordedSlot, action: { pedal: -0.35, steering: -0.2 }, shifts: { up: true, down: true },
+            means: [0.7, 0.2] },
+    ];
+    for (const { step, means } of recordedCases) {
+        means.forEach((value, axis) => { recordedSeed.model.outputWeights[step * actionOutputs + axis][biasColumn] = value; });
+    }
+    const recorded = await create(recordedSeed.configuration, recordedSeed);
+    const standardTarget = { step: 2, action: { pedal: 0.7, steering: -0.3 }, shifts: { up: false, down: false } };
+    await withoutReadbacks('Recorded analog update', () => recorded.trainBatchAsync(async () => {
+        recorded.gpu.learnTargets(pedalInput, [recordedCases[0]], true, 'recorded');
+        recorded.gpu.learnTargets(pedalInput, [standardTarget]);
+        recorded.gpu.learnTargets(pedalInput, recordedCases.slice(1), false, 'recorded');
+    }));
+    const recordedAfter = await recorded.checkpointAsync();
+    const recordedGradient = (mean, action) => {
+        const objective = (z) => (1 + action) * z - Math.max(0, 2 * z) - Math.log1p(Math.exp(-Math.abs(2 * z)));
+        const epsilon = 1e-4;
+        const gradient = (objective(mean + epsilon) - objective(mean - epsilon)) / (2 * epsilon);
+        const limit = config.learning.demonstrationGradientLimit;
+        return Math.max(-limit, Math.min(limit, gradient));
+    };
+    const expectedRecordedBias = ({ action, means }, scale = 1) => [action.pedal, action.steering]
+        .map((value, axis) => means[axis] + config.learning.demonstrationRate * scale * recordedGradient(means[axis], value));
+    const analogBias = (model, step) => model.outputWeights.slice(step * actionOutputs, step * actionOutputs + DRIVING_ANALOG_AXES)
+        .map((row) => row[biasColumn]);
+    for (const target of recordedCases) {
+        close(analogBias(recordedAfter.model, target.step), expectedRecordedBias(target), `Recorded analog finite differences at slot ${target.step}`);
+    }
+    close(recordedAfter.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).map((row) => row[biasColumn]),
+        [-1 / 3, 2 / 3, -1 / 3].map((score) => score * config.learning.demonstrationRate / config.learning.shiftTemperature),
+        'Recorded upshift uses the categorical cross-entropy derivative');
+    close(recordedAfter.model.outputWeights.slice(finalRecordedSlot * actionOutputs + DRIVING_ANALOG_AXES, (finalRecordedSlot + 1) * actionOutputs)
+        .map((row) => row[biasColumn]), [2 / 3, -1 / 3, -1 / 3]
+        .map((score) => score * config.learning.demonstrationRate / config.learning.shiftTemperature),
+        'Recorded gear hold uses the same categorical cross-entropy derivative');
+    close(analogBias(recordedAfter.model, standardTarget.step), [standardTarget.action.pedal, standardTarget.action.steering]
+        .map((value) => config.learning.demonstrationRate * Math.atanh(value)), 'The standard objective remains distinct on the same GPU');
+    close(analogBias(recordedAfter.model, 3), [0, 0], 'Recorded objective skips absent plan targets');
+    recorded.dispose();
+
+    const linkedRecorded = await create(recordedSeed.configuration, recordedSeed);
+    const delayedShift = { ...recordedCases[1], action: { ...recordedCases[1].action, shiftDown: true }, shifts: { up: true, down: true } };
+    const linkedTargets = [recordedCases[0], delayedShift, recordedCases[2]];
+    await linkedRecorded.trainBatchAsync(async () => linkedRecorded.gpu.learnTargets(pedalInput,
+        [...linkedTargets, delayedShift], false, 'recorded'));
+    const linkedWeights = (await linkedRecorded.checkpointAsync()).model;
+    for (const target of linkedTargets) {
+        const scale = target.step === 0 ? 1 : 0.25;
+        close(analogBias(linkedWeights, target.step), expectedRecordedBias(target, scale),
+            `Grouped recorded analog weight at slot ${target.step}`);
+    }
+    close(linkedWeights.outputWeights.slice(actionOutputs + DRIVING_ANALOG_AXES, 2 * actionOutputs).map((row) => row[biasColumn]),
+        [-1 / 3, -1 / 3, 2 / 3].map((score) => 0.25 * score * config.learning.demonstrationRate / config.learning.shiftTemperature),
+        'A grouped recorded shift uses the same delayed target weight');
+    linkedRecorded.dispose();
+
+    const clippedRecordedSeed = JSON.parse(JSON.stringify(recordedSeed));
+    clippedRecordedSeed.configuration.learning.gradientNormLimit = 0.05;
+    const clippedRecorded = await create(clippedRecordedSeed.configuration, clippedRecordedSeed);
+    await clippedRecorded.trainBatchAsync(async () => clippedRecorded.gpu.learnTargets(pedalInput, [recordedCases[0]], true, 'recorded'));
+    const recordedDiagnostics = await clippedRecorded.trainingDiagnosticsAsync();
+    assert(recordedDiagnostics?.finite && recordedDiagnostics.clipScale > 0 && recordedDiagnostics.clipScale < 1,
+        'Recorded objective uses global gradient clipping');
+    close(analogBias((await clippedRecorded.checkpointAsync()).model, 0), expectedRecordedBias(recordedCases[0], recordedDiagnostics.clipScale),
+        'Global clipping scales the recorded steering and brake update together');
+
+    clippedRecorded.dispose();
+
+    const adamRecorded = await create(clippedRecordedSeed.configuration, clippedRecordedSeed);
+    const adamReference = await create(clippedRecordedSeed.configuration, clippedRecordedSeed);
+    const runAdam = async (policy, target, commit = true, invalid = false) => {
+        const gpu = policy.gpu;
+        await policy.trainBatchAsync(async () => {
+            gpu.beginRecordedSequence();
+            gpu.learnTargets(pedalInput, [target], false, 'recorded');
+            gpu.learnTargets(pedalInput, [target], false, 'recorded');
+            if (invalid) gpu.device.queue.writeBuffer(gpu.parameters()[0].gradient, 0, new Float32Array([NaN]));
+            gpu.endSequence(commit);
+        });
+    };
+    await withoutReadbacks('Recorded Adam training batch', () => runAdam(adamRecorded, recordedCases[0]));
+    await runAdam(adamReference, recordedCases[0]);
+    const firstAdam = await adamRecorded.checkpointAsync(), firstAdamStats = await adamRecorded.trainingDiagnosticsAsync();
+    close(analogBias(firstAdam.model, 0), [25, 0.4].map(value => value - clippedRecordedSeed.configuration.learning.demonstrationRate),
+        'First Adam step debiases both moment estimates');
+    assert(firstAdamStats.finite && firstAdamStats.samples === 2 && firstAdamStats.clipScale < 0.5 && firstAdamStats.updateNorm > 0,
+        'Recorded Adam averages and clips its training gradient');
+    close([firstAdamStats.learningRate], [clippedRecordedSeed.configuration.learning.demonstrationRate], 'Recorded Adam reports its configured rate');
+    await runAdam(adamRecorded, delayedShift, false);
+    compare(await adamRecorded.checkpointAsync(), firstAdam, 'Cancelled recorded batch commits no weights');
+    await runAdam(adamRecorded, delayedShift, true, true);
+    compare(await adamRecorded.checkpointAsync(), firstAdam, 'Nonfinite recorded batch commits no weights');
+    const invalidAdam = await adamRecorded.trainingDiagnosticsAsync();
+    assert(!invalidAdam.finite && invalidAdam.updateNorm === 0, 'Nonfinite recorded batch reports no update');
+    await runAdam(adamRecorded, delayedShift);
+    await runAdam(adamReference, delayedShift);
+    compare(await adamRecorded.checkpointAsync(), await adamReference.checkpointAsync(),
+        'Cancelled and nonfinite batches leave both Adam moments and bias correction unchanged');
+    adamRecorded.dispose(); adamReference.dispose();
+
+    // Train contradictory controls together so a constant policy cannot pass.
+    const nativeConfig = unnormalizedConfig();
+    nativeConfig.network.hiddenUnits = 3;
+    nativeConfig.network.cameraLayers.forEach(layer => { layer.channels = 1; });
+    nativeConfig.network.cameraProjectionUnits = 1;
+    nativeConfig.observation.features = ['camera', 'localVelocity', 'centerline'];
+    nativeConfig.memory.features = ['localVelocity'];
+    nativeConfig.memory.windowMs = nativeConfig.memory.intervalMs = 100;
+    nativeConfig.actions.planTimesSeconds = [0];
+    nativeConfig.learning.demonstrationRate = 0.02;
+    nativeConfig.learning.gradientNormLimit = 1;
+    const nativeSeed = new DrivingPolicy({ game: 'acc', car: 'GT3', map: 'monza' },
+        drivingObservationInputs(nativeConfig), () => 0.5, nativeConfig).checkpoint();
+    const nativeHidden = nativeConfig.network.hiddenUnits;
+    nativeSeed.model.gruWeights.forEach(row => row.fill(0));
+    nativeSeed.model.outputWeights.forEach(row => row.fill(0));
+    nativeSeed.model.outputWeights[DRIVING_ANALOG_AXES][nativeHidden] = 0.05;
+    for (let j = 0; j < nativeHidden; j++) {
+        nativeSeed.model.gruWeights[j][drivingPolicyInputs(nativeConfig) + nativeHidden] = -2;
+        nativeSeed.model.gruWeights[2 * nativeHidden + j][2 + drivingCameraInputs(nativeConfig) + j] = 2;
+    }
+    const nativePolicy = await create(nativeConfig, nativeSeed), allShifts = { up: true, down: true };
+    const nativeBatch = [
+        { pedal: 0.7, steering: -0.65, shiftUp: true },
+        { pedal: -0.7, steering: 0.65, shiftDown: true },
+        { pedal: 0, steering: 0 },
+    ].map((action, cue) => {
+        const input = makeInput(nativeConfig, 0, false);
+        input.features.fill(0);
+        const offset = drivingMemoryInputs(nativeConfig);
+        input.features.splice(offset, 3, ...Array.from({ length: 3 }, (_, j) => j === cue ? 1 : -1));
+        input.recurrent = { episode: {}, capturedAt: 1100, historyTimes: [null] };
+        input.recordedHistory = [{ capturedAt: 1000, features: input.features.slice(offset), camera: input.cameras.at(-1) }];
+        return { input, targets: [{ step: 0, action, shifts: allShifts }] };
+    });
+    const nativePredictions = () => Promise.all(nativeBatch.map(async ({ input }) => {
+        const recurrent = { ...input.recurrent, episode: {} };
+        await predict(nativePolicy, { ...input, recurrent: { ...recurrent, capturedAt: 1000 } }, allShifts);
+        return (await predict(nativePolicy, { ...input, recurrent }, allShifts)).plan[0];
+    }));
+    const nativeBefore = await nativePredictions();
+    const nativeBatches = 32;
+    await withoutReadbacks('Recorded GRU learns distinct control contexts', async () => {
+        for (let i = 0; i < nativeBatches; i++) {
+            await nativePolicy.trainBatchAsync(async () => {
+                await nativePolicy.learnRecordedBatchAsync(nativeBatch, () => true);
+            });
+        }
+    });
+    const nativeAfter = await nativePredictions(), nativeWeights = await nativePolicy.checkpointAsync();
+    const recurrentWeights = model => model.gruWeights.map(row => row.slice(drivingPolicyInputs(nativeConfig), -1));
+    assert(changed(recurrentWeights(nativeSeed.model), recurrentWeights(nativeWeights.model)), 'Recorded batch trains the GRU recurrent weights');
+    assert(nativeWeights.model.steps === nativeBatches * nativeBatch.length, 'Recorded batch counts each committed origin');
+    const totalAnalogError = predictions => predictions.reduce((sum, { action }, i) => {
+        const target = nativeBatch[i].targets[0].action;
+        return sum + Math.abs(action.pedal - target.pedal) + Math.abs(action.steering - target.steering);
+    }, 0);
+    const analogErrorBefore = totalAnalogError(nativeBefore), analogErrorAfter = totalAnalogError(nativeAfter);
+    assert(analogErrorAfter < 0.7 * analogErrorBefore,
+        `Recorded batch reduces native analog error across opposing commands (${analogErrorBefore} → ${analogErrorAfter})`);
+    assert(nativeAfter[0].action.pedal > 0.2 && nativeAfter[0].action.steering < -0.2
+        && nativeAfter[1].action.pedal < -0.2 && nativeAfter[1].action.steering > 0.2,
+        'Native actions distinguish throttle, braking, and both steering directions');
+    assert(nativeBefore.every(({ shift }) => shift === 0) && nativeAfter.map(({ shift }) => shift).join() === '1,2,0',
+        'Native shift logits learn Up, Down, and Hold on distinct inputs');
+    nativePolicy.dispose();
+
     // Compare reused storage with a newly restored GPU for every update. Vary
     // history length and capture sharing to expose stale state/gradient contents.
     const reused = await create(config);
@@ -714,13 +893,18 @@ async function checks(soakIterations) {
         spatial.gpu.release(pass);
         return outputs[0];
     };
-    const checkReplay = async (sample, initial, speeds, label) => {
-        const pass = spatial.gpu.replay(sample);
+    const checkReplay = async (sample, initial, speeds, label, recorded = false) => {
+        const pass = recorded ? spatial.gpu.forwardPass(sample, false, 'recorded') : spatial.gpu.replay(sample);
         try {
             assert(pass.steps === speeds.length, `${label} processes the full replay sequence`);
             const [seed] = await spatial.gpu.download([pass.states]);
             const [output] = await spatial.gpu.download([pass.outputs]);
             close([seed, output], [initial, speeds.reduce(advanceHidden, initial)], label);
+            if (recorded) {
+                const features = await spatial.gpu.download([pass.features]);
+                close(speeds.map((_speed, i) => features[i * drivingPolicyInputs(config) + 1]), speeds.map(() => 0),
+                    'Dense recorded history uses each timestep as a current observation');
+            }
         } finally { spatial.gpu.release(pass); }
     };
     const firstHidden = advanceHidden(0, 0.2);
@@ -739,6 +923,25 @@ async function checks(soakIterations) {
         'Training replay and out-of-order observations leave live state intact and new history is processed');
     close([await liveOutput(recurrentSample(1900, 0.9, [], {}))], [advanceHidden(0, 0.9)],
         'A distinct episode clears the previous live state');
+    const recordedEpisode = {};
+    spatial.gpu.observeDemonstration(recurrentSample(1000, 0.2, [], recordedEpisode));
+    spatial.gpu.observeDemonstration(recurrentSample(1300, 0.4, [[1000, 0.7]], recordedEpisode));
+    spatial.gpu.observeDemonstration(recurrentSample(1300, -0.4, [[1000, 0.8]], recordedEpisode));
+    close([await liveOutput(recurrentSample(1300, -0.8, [], recordedEpisode))], [nextHidden],
+        'Recorded observations build the same recurrent state as sequential live inference');
+    await checkReplay(recurrentSample(1900, 0.8, [[1600, 0.7]], recordedEpisode), nextHidden, [0.7, 0.8],
+        'Delayed recorded learning backpropagates from an earlier recurrent seed');
+    spatial.gpu.observeDemonstration(recurrentSample(1400, -0.9, [], recordedEpisode));
+    const dense = recurrentSample(1600, 0.8, [[1300, 0.1]], recordedEpisode);
+    dense.recordedHistory = [[1400, 0.65], [1500, -0.18]].map(([capturedAt, speed]) => {
+        const sample = recurrentSample(capturedAt, speed, [], recordedEpisode);
+        return { capturedAt, features: sample.features.slice(drivingMemoryInputs(config)), camera: sample.cameras.at(-1) };
+    });
+    await checkReplay(dense, nextHidden, [0.65, -0.18, 0.8],
+        'Recorded replay restores the seed strictly before the first dense frame and ignores the sparse bins', true);
+    const emptyDense = { ...dense, recordedHistory: [] };
+    await checkReplay(emptyDense, advanceHidden(nextHidden, -0.9), [0.8],
+        'An empty dense history still uses current observation and the previous recurrent seed', true);
     spatial.dispose();
 
     for (const cameraHistory of [true, false]) {
@@ -1090,6 +1293,8 @@ async function checks(soakIterations) {
     return { adapter: { vendor: adapter.info.vendor, architecture: adapter.info.architecture },
         checks: 'GPU-only prediction and learning, zero intermediate readbacks, CNN/projection/GRU/output finite differences, padded borders, spatial ordering and adaptive pooling gradients, all layers and gates train, historical camera gradients, masks, terminal/clipped transitions, delayed plans, checkpoint reload/synchronization, custom layouts/rates, allocation-free warmed ticks, reused versus fresh workspaces, bounded buffers and device loss passed',
         activationCases, sequenceChecks: 'Episode-scoped GRU state carry, duplicate and out-of-order observations, seeded training replay, adjacent-state replay, clipped double-Q Bellman targets, elapsed discount, terminal masks, Polyak targets, current-policy actor samples, learned entropy, and interrupted-batch rollback passed',
+        nativeRecorded: { batches: nativeBatches, analogErrorBefore, analogErrorAfter,
+            shifts: nativeAfter.map(({ shift }) => shift) },
         normalization, soak, finiteDifferences: { weightsChecked: coordinates.length, maxDerivativeError }, results };
 }
 

@@ -140,6 +140,7 @@ export function readRecordedDrivingObservation(session: RecordedDrivingSession, 
     if (!result.observation) return { error: result.error.replace(/Live Map/g, 'Reference map').replace(/in Live Session/g, 'for this recording') };
     const shift = row.neutralShift;
     const shiftGear = shift && shift.maxGapSeconds <= config.runtime.maxTransitionSeconds ? shift.gear : undefined;
-    return { ...result, shiftGear, observation: { ...result.observation,
+    return { ...result, shiftGear,
+        observation: { ...result.observation,
         session: JSON.stringify([session.id, row.segment, session.game, sample.Static_car_model, sample.Static_track]) } };
 }

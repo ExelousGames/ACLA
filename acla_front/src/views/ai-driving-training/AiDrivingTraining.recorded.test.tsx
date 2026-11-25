@@ -3,7 +3,7 @@ import React from 'react';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import AiDrivingTraining from './AiDrivingTraining';
 import { emptyTrainingDocument } from './driving-policy';
-import { cloneConfig } from './driving-model-config';
+import { cloneConfig, DEFAULT_DRIVING_CONFIG, RECORDED_SAMPLING_CATEGORIES } from './driving-model-config';
 import { circuitMapFixture, trainingFixture } from './training-fixtures';
 import { parseRecordedDrivingSession } from './recorded-driving-session';
 import type { RecordedDrivingFrame, RecordedFrameViewerHandle } from './RecordedFrameViewer';
@@ -86,7 +86,7 @@ it('trains and evaluates local recording without connecting or writing virtual c
     expect(JSON.parse(savedJson).configuration.aggression).toBe(73);
     const trained = savedJson;
     fireEvent.click(aiDriver.getByRole('button', { name: 'Evaluate annotations' })); await flush();
-    expect(screen.getByText(/Completed\. Evaluating recording.*pedal MAE/)).toBeInTheDocument();
+    expect(screen.getByText(/Completed\. Evaluating recording.*pedal MAE.*steering MAE/)).toBeInTheDocument();
     expect(savedJson).toBe(trained);
     fireEvent.keyDown(window, { key: 'Escape' }); await flush();
     expect(window.virtualController!.connect).not.toHaveBeenCalled();
@@ -106,6 +106,7 @@ it('locks source and model changes during replay, stops and saves on cancellatio
     expect(progress).toHaveAttribute('value', '1');
     expect(progress).toHaveAttribute('aria-valuetext', 'Recording 1 of 1 · 3 / 3 frames processed');
     expect(screen.getByLabelText('AI observation input source')).toBeDisabled();
+    expect(aiDriver.getByRole('spinbutton', { name: 'Shifting (%)' })).toBeDisabled();
     expect(aiDriver.getByText('Model file')).toBeInTheDocument();
     for (const name of ['New model', 'Open model', 'Save model']) {
         expect(aiDriver.getByRole('button', { name })).toBeDisabled();
@@ -177,23 +178,48 @@ it('trains one model across recordings and clears imitation history between clos
     expect(screen.getByText(/Completed\. Learning from recording · second\.mp4.*3 samples/)).toBeInTheDocument();
 });
 
-it('uses balanced labeled clip samples for training and evaluates every aligned pair', async () => {
+it('saves a fixed sampling mix, trains on tagged origins, and evaluates every aligned pair', async () => {
     const { session: source, camera } = mockFrames[0];
-    const session = parseRecordedDrivingSession(Array.from({ length: 10 }, (_, index) => JSON.stringify({
+    const session = parseRecordedDrivingSession(Array.from({ length: 12 }, (_, index) => JSON.stringify({
         ...source.rows[0].sample, Graphics_analyst_session_time: index / 10,
+        Physics_gear: index < 4 ? 4 : 5, Physics_steer_angle: index >= 2 && index < 6 ? 0.3 : 0,
     })).join('\n'), 'acc');
     mockFrames = session.rows.map((row, index) => ({ session, videoSeconds: row.timeSeconds, telemetrySeconds: row.timeSeconds,
-        camera, startsRange: index === 0 || index === 7, clipLabel: index < 7 ? 'Race pace' : 'Recovery' }));
+        camera, startsRange: [0, 5, 8, 10].includes(index),
+        clipLabel: index < 5 ? 'Race pace' : index < 8 ? 'Recovery' : index < 10 ? 'Cornering' : 'Shifting' }));
     await loadRecording();
+    const weights = within(screen.getByRole('group', { name: 'Fixed sampling weights' }));
+    expect(weights.getAllByRole('spinbutton')).toHaveLength(RECORDED_SAMPLING_CATEGORIES.length);
+    RECORDED_SAMPLING_CATEGORIES.forEach((label) => expect(weights.getByRole('spinbutton', { name: `${label} (%)` })).toBeInTheDocument());
+    const racePace = weights.getByRole('spinbutton', { name: 'Race pace (%)' });
+    const unlabeled = weights.getByRole('spinbutton', { name: 'Unlabeled (%)' });
+    const saveWeights = weights.getByRole('button', { name: 'Save sampling weights' });
+    expect(racePace).toHaveValue(4);
+    fireEvent.change(racePace, { target: { value: '12' } });
+    expect(saveWeights).toBeDisabled();
+    fireEvent.change(unlabeled, { target: { value: '0' } });
+    expect(saveWeights).toBeEnabled();
+    jest.mocked(window.drivingModelFiles!.write).mockRejectedValueOnce(new Error('Test save failure'));
+    fireEvent.click(saveWeights); await flush();
+    expect(screen.getByRole('alert')).toHaveTextContent('Test save failure');
+    expect(saveWeights).toBeEnabled();
+    fireEvent.click(saveWeights); await flush();
+    expect(JSON.parse(savedJson).configuration.recordedSamplingWeights).toEqual({
+        ...DEFAULT_DRIVING_CONFIG.recordedSamplingWeights, 'Race pace': 12, Unlabeled: 0,
+    });
+
     fireEvent.click(screen.getByRole('button', { name: 'Train from annotations' })); await flush();
-    expect(screen.getByText(/Completed\. Learning from recording.*4 samples.*4 set aside for balance/)).toBeInTheDocument();
-    expect(JSON.parse(savedJson).model.steps).toBe(4);
+    expect(screen.getByText(/Completed\. Learning from recording.*8 samples.*Race pace 2 \(4\).*Shifting 2 \(1\).*Cornering 3 \(1\).*Recovery 1 \(2\)/)).toBeInTheDocument();
+    expect(JSON.parse(savedJson).model.steps).toBe(8);
+    fireEvent.change(racePace, { target: { value: '13' } });
     fireEvent.click(screen.getByRole('button', { name: 'Evaluate annotations' })); await flush();
     expect(screen.getByText(/Completed\. Evaluating recording.*8 samples/)).toBeInTheDocument();
-    expect(JSON.parse(savedJson).model.steps).toBe(4);
+    expect(JSON.parse(savedJson).model.steps).toBe(8);
+    expect(racePace).toHaveValue(13);
+    expect(JSON.parse(savedJson).configuration.recordedSamplingWeights['Race pace']).toBe(12);
 });
 
-it('balances saved centerline ranges using the same telemetry times in both passes', async () => {
+it('uses the same telemetry times when counting samples and replaying decoded frames', async () => {
     const fixture = trainingFixture();
     const map = { ...fixture.circuitMap, centerline_segments: [
         { id: 'entry', start_position: 0.2, end_position: 0.27, tags: ['corner'] },
@@ -211,11 +237,11 @@ it('balances saved centerline ranges using the same telemetry times in both pass
     await loadRecording();
     fireEvent.click(screen.getByRole('button', { name: 'Train from annotations' })); await flush();
 
-    expect(screen.getByText(/Completed\. Learning from recording.*6 samples.*3 set aside for balance/)).toBeInTheDocument();
-    expect(JSON.parse(savedJson).model.steps).toBe(6);
+    expect(screen.getByText(/Completed\. Learning from recording.*9 samples.*Race pace 9 \(9\)/)).toBeInTheDocument();
+    expect(JSON.parse(savedJson).model.steps).toBe(9);
 });
 
-it('balances across simulators and tracks and reuses the measured recording references', async () => {
+it('samples across simulators and tracks and reuses the measured recording references', async () => {
     const fixture = trainingFixture();
     const references = jest.mocked(loadRecordedDrivingReferences);
     references.mockClear().mockImplementation(async ({ game, rows }) => {
@@ -239,7 +265,7 @@ it('balances across simulators and tracks and reuses the measured recording refe
     await loadRecording();
     fireEvent.click(screen.getByRole('button', { name: 'Train from annotations' })); await flush();
 
-    expect(screen.getByText(/Completed\. Learning from recording.*6 samples.*6 set aside for balance/)).toBeInTheDocument();
-    expect(JSON.parse(savedJson).model.steps).toBe(6);
+    expect(screen.getByText(/Completed\. Learning from recording.*12 samples.*Race pace 12 \(12\)/)).toBeInTheDocument();
+    expect(JSON.parse(savedJson).model.steps).toBe(12);
     expect(references).toHaveBeenCalledTimes(recordings.length);
 });

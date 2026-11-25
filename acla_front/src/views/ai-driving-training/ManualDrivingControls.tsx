@@ -205,7 +205,7 @@ const ManualDrivingControls = forwardRef<ManualDrivingControlsHandle, {
         </fieldset>
         {(error || (devices.length > 0 && !detecting && mappingError)) && <p className="driving-error">{error || mappingError}</p>}
         <p className="driving-note">Takeover stays active until you return control to AI. Map the Take over / Return to AI button to switch while the simulator has focus. Each press switches control once; release before pressing again. Returning to AI requires an active AI session with ready inputs. Steering, pedals and mapped shift buttons all pass through the same vJoy device; keep the simulator bound to vJoy. Invert pedals if their preview is 1 at rest. Calibrate axis ranges in Windows controller settings.</p>
-        <p className="driving-note">During training, your applied controls teach the model. Missing AI observations pause learning while you keep driving. Evaluation and standalone human driving never update weights. A mapped controller disconnect releases controls. Manual shifts use one press per paddle pull with no cooldown. Steering passes through without a dead zone.</p>
+        <p className="driving-note">Live learning is off while you drive. A mapped controller disconnect releases controls. Manual shifts use one press per paddle pull with no cooldown. Steering passes through without a dead zone.</p>
     </section>;
 });
 

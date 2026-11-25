@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useId, useState } from 'react';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import trainingLabels from 'data/recorded-training-labels.json';
 
@@ -9,17 +9,15 @@ export interface TrainingRangeDraft {
     fullRecordingLabel?: string;
     /** Null clears a saved simulator override. */
     game?: DesktopGame | null;
+    /** Manual alignment when the video has no usable telemetry start time. */
+    offsetSeconds?: number;
 }
-interface TrainingSelectionData extends TrainingRangeDraft {
-    /** Read for compatibility with annotations saved before video timing was recorded. */
-    readonly offsetSeconds?: number;
-}
-interface SavedTrainingSelection extends TrainingSelectionData {
+interface SavedTrainingSelection extends TrainingRangeDraft {
     version: 2;
     videoFileName: string;
     telemetryFileName: string;
 }
-export type TrainingSelection = (TrainingSelectionData & { version: 1 }) | SavedTrainingSelection;
+export type TrainingSelection = (TrainingRangeDraft & { version: 1 }) | SavedTrainingSelection;
 export interface TrainingAnnotation {
     id: string;
     name: string;
@@ -66,16 +64,21 @@ interface Props {
     playhead(): number;
     seek(seconds: number): void;
     change(draft: TrainingRangeDraft): void;
+    changeOffset?(offsetSeconds: number): void;
     save(): void;
 }
 
-export default function RecordedTrainingRanges({ selection, duration, time, step, overlap, disabled, dirty, canSave, playhead, seek, change, save }: Props) {
+export default function RecordedTrainingRanges({ selection, duration, time, step, overlap, disabled, dirty, canSave,
+    playhead, seek, change, changeOffset, save }: Props) {
     const ranges = selection.ranges ?? [];
     const [start, setStart] = useState('');
     const [end, setEnd] = useState('');
     const [label, setLabel] = useState('');
     const [editing, setEditing] = useState<number | null>(null);
     const [error, setError] = useState('');
+    const [offsetInput, setOffsetInput] = useState<string>();
+    const offsetHelpId = useId();
+    const savedOffsetMs = selection.offsetSeconds === undefined ? '' : selection.offsetSeconds * 1000;
     const reset = () => { setStart(''); setEnd(''); setLabel(''); setEditing(null); setError(''); };
     const mark = (set: (value: string) => void) => {
         set(String(Math.min(duration, Math.round(playhead() * 100) / 100)));
@@ -113,6 +116,16 @@ export default function RecordedTrainingRanges({ selection, duration, time, step
                 : ranges.length ? `${ranges.length} selected ${ranges.length === 1 ? 'range' : 'ranges'} · ${timestamp(ranges.reduce((total, range) => total + range.end - range.start, 0))} of footage`
                     : 'No footage selected.'}
         </p>
+        {changeOffset && <>
+            <label className="recorded-setting">Telemetry offset (ms)
+                <input type="number" step="any" placeholder="0" value={offsetInput ?? savedOffsetMs} disabled={disabled}
+                    aria-describedby={offsetHelpId} onChange={({ currentTarget }) => {
+                        setOffsetInput(currentTarget.value);
+                        if (Number.isFinite(currentTarget.valueAsNumber)) changeOffset(currentTarget.valueAsNumber / 1000);
+                    }} onBlur={() => setOffsetInput(undefined)} />
+            </label>
+            <p className="driving-note" id={offsetHelpId}>Positive values read earlier telemetry.</p>
+        </>}
         {selection.ranges === null && <label className="recorded-setting">Full recording label (optional)
             <select value={selection.fullRecordingLabel ?? ''} disabled={disabled}
                 onChange={(event) => change({ ranges: null, fullRecordingLabel: event.target.value })}>

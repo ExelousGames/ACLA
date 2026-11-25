@@ -1,8 +1,9 @@
 import { DrivingPolicyInput, drivingMemoryInputs } from './driving-memory';
-import { DRIVING_ANALOG_AXES, DrivingModelConfig, drivingExplorationFrequencies, drivingExplorationSigmas, drivingFeatureSizes } from './driving-model-config';
+import { DRIVING_ANALOG_AXES, DrivingModelConfig, drivingExplorationFrequencies, drivingExplorationSigmas, drivingFeatureSizes,
+    isReservedPositionFeature } from './driving-model-config';
 
 /** Fixed observation features keep exploration independent of actor weight updates.
- * Balance feature groups so the dense centerline cannot drown out car dynamics.
+ * Retain the saved group widths and scaling when reserved position slots are zeroed.
  * The bias keeps exploration alive at rest; bounded features limit its variance. */
 function explorationFeatures(input: DrivingPolicyInput, config: DrivingModelConfig): number[] {
     const sizes = drivingFeatureSizes(config), groups: number[][] = [];
@@ -10,7 +11,9 @@ function explorationFeatures(input: DrivingPolicyInput, config: DrivingModelConf
     for (const name of config.observation.features) {
         const size = sizes[name];
         if (size && !['game', 'car', 'map'].includes(name)) {
-            groups.push(input.features.slice(offset, offset + size).map((value) => Math.max(-1, Math.min(1, value))));
+            const group = isReservedPositionFeature(name) ? new Array<number>(size).fill(0)
+                : input.features.slice(offset, offset + size).map((value) => Math.max(-1, Math.min(1, value)));
+            groups.push(group);
         }
         offset += size;
     }

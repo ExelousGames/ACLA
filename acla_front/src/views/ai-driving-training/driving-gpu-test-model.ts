@@ -31,6 +31,7 @@ export function mockDrivingGpu() {
             observeDemonstration: jest.fn(),
             replay: jest.fn(() => ({ released: false } as GpuPolicyPass)),
             beginSequence: jest.fn(() => { pendingChanges = 0; }),
+            beginRecordedSequence: jest.fn(() => { pendingChanges = 0; }),
             endSequence: jest.fn((commit: boolean) => {
                 if (commit) weights.gruWeights[0][0] += (pendingChanges ?? 0) * 0.00001;
                 pendingChanges = undefined;

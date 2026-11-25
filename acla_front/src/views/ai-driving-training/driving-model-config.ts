@@ -1,9 +1,44 @@
+import recordedTrainingLabels from 'data/recorded-training-labels.json';
 import defaults from './driving-model-defaults.json';
 import { POLICY_CAMERA_HEIGHT, POLICY_CAMERA_WIDTH } from 'views/live-session/live-session-recording/policy-camera';
 
 export type DrivingModelConfig = typeof defaults;
+export type RecordedSamplingWeights = DrivingModelConfig['recordedSamplingWeights'];
+export type RecordedSamplingCategory = keyof RecordedSamplingWeights;
+export const UNLABELED_RECORDED_SAMPLING_CATEGORY = 'Unlabeled';
+export const RECORDED_SAMPLING_CATEGORIES: readonly RecordedSamplingCategory[] =
+    [...recordedTrainingLabels, UNLABELED_RECORDED_SAMPLING_CATEGORY] as RecordedSamplingCategory[];
 export const DEFAULT_DRIVING_CONFIG: DrivingModelConfig = defaults;
 export const cloneConfig = (config = DEFAULT_DRIVING_CONFIG): DrivingModelConfig => JSON.parse(JSON.stringify(config));
+
+export const emptyRecordedSamplingWeights = (): RecordedSamplingWeights =>
+    Object.fromEntries(RECORDED_SAMPLING_CATEGORIES.map((label) => [label, 0])) as RecordedSamplingWeights;
+
+function validSamplingPercentages(values: unknown[]): values is number[] {
+    return values.every((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100)
+        && Math.abs(values.reduce((sum, value) => sum + value, 0) - 100) < 1e-9;
+}
+
+export function validRecordedSamplingWeights(weights: Record<RecordedSamplingCategory, number | ''>): weights is RecordedSamplingWeights {
+    return validSamplingPercentages(RECORDED_SAMPLING_CATEGORIES.map((label) => weights[label]));
+}
+
+function migrateRecordedSamplingWeights(value: unknown): RecordedSamplingWeights | undefined {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 3) return undefined;
+    const legacy = value as Record<string, unknown>;
+    const percentages = [legacy.general, legacy.cornering, legacy.shifting];
+    if (!validSamplingPercentages(percentages)) return undefined;
+    const [general, cornering, shifting] = percentages;
+    const generalLabels = RECORDED_SAMPLING_CATEGORIES.filter((label) => label !== 'Cornering' && label !== 'Shifting'
+        && label !== UNLABELED_RECORDED_SAMPLING_CATEGORY);
+    // Split the former General share proportionally to the new defaults. Keep
+    // a readable percentage in each field and put rounding residue in Unlabeled.
+    const share = Number((general / (generalLabels.length + 2)).toPrecision(3));
+    const weights = { ...emptyRecordedSamplingWeights(), Cornering: cornering, Shifting: shifting,
+        Unlabeled: Number((general - share * generalLabels.length).toPrecision(15)) };
+    for (const label of generalLabels) weights[label] = share;
+    return weights;
+}
 
 export const DRIVING_ANALOG_AXES = 2;
 export const DRIVING_GRU_GATES = 3;
@@ -22,6 +57,11 @@ export function readDrivingConfig(value: unknown): DrivingModelConfig {
     const outputs = (value as Partial<DrivingModelConfig> | null)?.actions?.outputs;
     if (Array.isArray(outputs) && outputs.includes('throttle-tanh')) {
         throw new Error('This checkpoint uses separate throttle and brake outputs. Create a new model file to train the signed pedal policy.');
+    }
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const weights = 'recordedSamplingWeights' in value ? migrateRecordedSamplingWeights(value.recordedSamplingWeights)
+            : defaults.recordedSamplingWeights;
+        if (weights) value = { ...value, recordedSamplingWeights: { ...weights } };
     }
     const learning = (value as { learning?: Record<string, unknown> } | null)?.learning;
     if (learning && typeof learning === 'object' && !Array.isArray(learning)
@@ -52,6 +92,13 @@ export function drivingFeatureEncoding(config = DEFAULT_DRIVING_CONFIG): string 
     const observation = config.observation;
     return JSON.stringify([Object.keys(observation).sort().map((key) =>
         [key, observation[key as keyof typeof observation]]), config.reward.referenceTiming]);
+}
+
+const reservedPositionFeatures = new Set(['position', 'referenceSpeed', 'targetSpeed']);
+
+/** These saved feature slots keep their dimensions for older checkpoints. */
+export function isReservedPositionFeature(name: string): boolean {
+    return reservedPositionFeatures.has(name);
 }
 
 /** Scalar feature sizes; camera bytes travel separately until learned convolution.
@@ -134,7 +181,8 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
         || c.network.cameraPooling.height !== defaults.network.cameraPooling.height
         || !integer(c.network.cameraProjectionUnits, 1, 256)
         || c.network.layerNormEpsilon < 1e-9 || c.network.layerNormEpsilon > 0.01) return invalid();
-    if (!integer(c.network.hiddenUnits, 1, 256) || !integer(o.categoryBits, 1, 32)
+    if (!validRecordedSamplingWeights(c.recordedSamplingWeights)
+        || !integer(c.network.hiddenUnits, 1, 256) || !integer(o.categoryBits, 1, 32)
         || o.cameraWidth !== POLICY_CAMERA_WIDTH || o.cameraHeight !== POLICY_CAMERA_HEIGHT
         || DRIVING_GRU_GATES * c.network.hiddenUnits * (drivingPolicyInputs(c) + c.network.hiddenUnits + 1) > 2000000
         || !o.features.includes('camera') || !o.features.includes('centerline')

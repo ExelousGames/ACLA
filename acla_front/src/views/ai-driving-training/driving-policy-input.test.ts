@@ -1,4 +1,4 @@
-import { cloneConfig, drivingPolicyInputs } from './driving-model-config';
+import { cloneConfig, drivingCameraInputs, drivingFeatureSizes, drivingPolicyInputs } from './driving-model-config';
 import { DrivingMemory } from './driving-memory';
 import { assembleDrivingInput } from './driving-policy-input';
 import { DrivingPolicy, emptyTrainingDocument, readTrainingDocument } from './driving-policy';
@@ -40,6 +40,36 @@ it('assembles all 17 history bins and the current observation into 18 chronologi
     expect(input.cameras).toHaveLength(18);
     expect(Array.from({ length: input.steps }, (_, i) => input.features[i * width + 1]))
         .toEqual([...Array.from({ length: 17 }, (_, i) => (5000 - i * 300) / 5000), 0]);
+});
+
+it('passes centerline through custom current, memory and recorded history layouts while zeroing reserved slots', () => {
+    const config = cloneConfig(), { observation } = trainingFixture();
+    config.observation.features = ['position', 'speed', 'camera', 'centerline', 'targetSpeed', 'gear', 'referenceSpeed'];
+    config.memory.features = ['gear', 'referenceSpeed', 'position', 'targetSpeed', 'centerline', 'speed'];
+    const memory = new DrivingMemory(config, true);
+    const cameraInputs = drivingCameraInputs(config), centerlineWidth = drivingFeatureSizes(config).centerline;
+    const makeFrame = (capturedAt: number, speed: number, gear: number, route: number) => ({
+        ...observation, capturedAt, features: [route, -route, speed, ...new Array(centerlineWidth).fill(route), route, gear, -route],
+    });
+    const expected = (age: number, speed: number, gear: number, route: number) => [1, age, 0, 0, speed,
+        ...new Array(cameraInputs).fill(0), ...new Array(centerlineWidth).fill(route), 0, gear, 0];
+    memory.encode(makeFrame(1000, 0.3, 0.1, 0.8));
+    const input = memory.encode(makeFrame(1200, 0.5, 0.2, -0.9));
+    const assembled = assembleDrivingInput(input, config);
+    expect(assembled.steps).toBe(2);
+    const current = expected(0, 0.5, 0.2, -0.9);
+    expect(assembled.features).toEqual([...expected(200 / config.memory.windowMs, 0.3, 0.1, 0.8), ...current]);
+    expect(assembled.cameras.map(({ offset }) => offset)).toEqual([drivingPolicyInputs(config) + 5]);
+
+    const recurrent = assembleDrivingInput(input, config, 1000);
+    expect(recurrent.steps).toBe(1);
+    expect(recurrent.features).toEqual(current);
+    expect(recurrent.cameras.map(({ offset }) => offset)).toEqual([5]);
+
+    const recorded = assembleDrivingInput(input, config, -Infinity, input.recordedHistory);
+    expect(recorded.steps).toBe(2);
+    expect(recorded.features).toEqual([...expected(0, 0.3, 0.1, 0.8), ...current]);
+    expect(recorded.cameras.map(({ offset }) => offset)).toEqual([5, drivingPolicyInputs(config) + 5]);
 });
 
 it('rejects old configurations and missing or malformed CNN/projection/GRU weights without migration', () => {

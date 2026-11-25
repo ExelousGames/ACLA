@@ -1,5 +1,5 @@
 import { DrivingExploration } from './driving-exploration';
-import { cloneConfig, drivingExplorationSigmas } from './driving-model-config';
+import { cloneConfig, drivingExplorationSigmas, drivingFeatureSizes } from './driving-model-config';
 import { drivingMemoryInputs } from './driving-memory';
 
 function setup() {
@@ -40,6 +40,19 @@ it('uses the configured current feature layout and ignores history and category 
     expect(sampler.plan(sample, 1000)).toEqual(first);
     sample.features[sample.features.length - 1] += 0.01;
     expect(sampler.plan(sample, 1000)[0].axes).not.toEqual(first[0].axes);
+});
+
+it('conditions exploration on centerline while ignoring reserved lap-position and speed slots', () => {
+    const { config, sampler, input } = setup();
+    config.observation.features = ['position', 'speed', 'centerline', 'targetSpeed', 'referenceSpeed', 'yawRate'];
+    const { centerline } = drivingFeatureSizes(config);
+    const missingCenterline = new Array(centerline).fill(0);
+    const before = sampler.plan(input([0, 0, 0.4, ...missingCenterline, 0, 0, 0.2]), 1000);
+    const changedReserved = input([0.9, -0.3, 0.4, ...missingCenterline, 0.8, 0.9, 0.2]);
+    expect(sampler.plan(changedReserved, 1000)).toEqual(before);
+    const changedCenterline = sampler.plan(input([0.9, -0.3, 0.4, ...new Array(centerline).fill(0.6), 0.8, 0.9, 0.2]), 1000);
+    expect(changedCenterline[0].axes).not.toEqual(before[0].axes);
+    expect(changedCenterline[0].variances[0]).toBeGreaterThan(before[0].variances[0]);
 });
 
 it('changes continuously around refresh boundaries and is smoother than independent action noise', () => {

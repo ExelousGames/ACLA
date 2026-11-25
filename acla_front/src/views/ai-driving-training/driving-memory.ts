@@ -2,10 +2,20 @@ import { DrivingObservation } from './driving-observation';
 import { DEFAULT_DRIVING_CONFIG, drivingFeatureSizes, drivingMemorySlots } from './driving-model-config';
 import type { PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
 
+export const RECORDED_BPTT_STEPS = 8;
+
+interface RecordedDrivingStep {
+    capturedAt: number;
+    features: readonly number[];
+    camera: PolicyCameraImage;
+}
+
 export interface DrivingPolicyInput {
     features: number[];
     /** Historical images in bin order, followed by the current full-resolution image. */
     cameras: (PolicyCameraImage | null)[];
+    /** Consecutive full observations before the current recorded frame, oldest first. */
+    recordedHistory?: readonly RecordedDrivingStep[];
     /** Capture timestamps and episode identity used to advance recurrent state. */
     recurrent?: {
         readonly episode: object;
@@ -21,15 +31,15 @@ export const drivingMemorySlotInputs = (config = DEFAULT_DRIVING_CONFIG) => {
 export const drivingMemoryInputs = (config = DEFAULT_DRIVING_CONFIG) =>
     drivingMemorySlots(config) * drivingMemorySlotInputs(config);
 
-/** A timestamped history shared by inference, the critic and human demonstrations.
+/** A timestamped history shared by inference, the critic and recorded training.
  * Defaults retain the complete observation; saved models keep their declared feature layout. */
 export class DrivingMemory {
-    private frames: { capturedAt: number; features: number[]; camera: PolicyCameraImage }[] = [];
+    private frames: { capturedAt: number; features: number[]; camera: PolicyCameraImage; recordedFeatures?: number[] }[] = [];
     private cameraCopies = new WeakMap<PolicyCameraImage, PolicyCameraImage>();
     private last?: DrivingObservation;
     private episode = {};
 
-    constructor(private config = DEFAULT_DRIVING_CONFIG) {}
+    constructor(private config = DEFAULT_DRIVING_CONFIG, private recordedTraining = false) {}
 
     reset() {
         this.frames = [];
@@ -75,6 +85,9 @@ export class DrivingMemory {
             camera = { ...observation.camera, rgb: observation.camera.rgb.slice() };
             this.cameraCopies.set(observation.camera, camera);
         }
+        const recordedHistory = this.recordedTraining ? this.frames.slice(-RECORDED_BPTT_STEPS)
+            .filter(({ capturedAt }) => capturedAt < observation.capturedAt).slice(1 - RECORDED_BPTT_STEPS)
+            .map(({ capturedAt, camera, recordedFeatures }) => ({ capturedAt, camera, features: recordedFeatures! })) : undefined;
         if (!this.last || observation.capturedAt > this.last.capturedAt) {
             const features = observation.features;
             const sizes = drivingFeatureSizes(this.config);
@@ -85,10 +98,12 @@ export class DrivingMemory {
                 offset += sizes[name];
             });
             this.frames.push({ capturedAt: observation.capturedAt, camera,
-                features: this.config.memory.features.flatMap((name) => groups[name]) });
+                features: this.config.memory.features.flatMap((name) => groups[name]),
+                ...(this.recordedTraining && { recordedFeatures: features.slice() }) });
             this.last = observation;
         }
         return { features: [...history, ...observation.features], cameras: [...cameras, camera],
+            ...(recordedHistory && { recordedHistory }),
             recurrent: { episode: this.episode, capturedAt: observation.capturedAt, historyTimes } };
     }
 }

@@ -35,6 +35,11 @@ export interface PlannedActionTarget {
     action: DrivingAction;
     shifts: ShiftAvailability;
 }
+export interface RecordedPlanTarget {
+    input: DrivingPolicyInput;
+    targets: PlannedActionTarget[];
+}
+export type DrivingImitationObjective = 'standard' | 'recorded';
 export interface PlanStepCredit {
     step: number;
     weight: number;
@@ -335,28 +340,53 @@ export class DrivingPolicy {
         }
     }
 
-    async learnDemonstrationAsync(input: DrivingPolicyInput, action: DrivingAction, shifts: ShiftAvailability): Promise<void> {
-        await this.learnTargetsAsync(input, [{ step: 0, action, shifts }], true);
+    async learnDemonstrationAsync(input: DrivingPolicyInput, action: DrivingAction, shifts: ShiftAvailability,
+        objective: DrivingImitationObjective = 'standard'): Promise<void> {
+        await this.learnTargetsAsync(input, [{ step: 0, action, shifts }], true, objective);
     }
 
     observeDemonstration(input: DrivingPolicyInput) {
         this.requireGpu().observeDemonstration(input);
     }
 
-    /** Train one observation against its available demonstrated future in one update. */
-    async learnDemonstratedPlanAsync(input: DrivingPolicyInput, targets: PlannedActionTarget[]): Promise<void> {
-        await this.learnTargetsAsync(input, targets, true);
+    async learnRecordedPlanAsync(input: DrivingPolicyInput, targets: PlannedActionTarget[]): Promise<void> {
+        // The replay has already advanced its recurrent state while collecting these targets.
+        await this.learnTargetsAsync(input, targets, true, 'recorded', false);
     }
 
-    async learnPlannedActionsAsync(input: DrivingPolicyInput, targets: PlannedActionTarget[]): Promise<void> {
-        await this.learnTargetsAsync(input, targets, false);
+    async learnRecordedBatchAsync(batch: readonly RecordedPlanTarget[], active: () => boolean): Promise<boolean> {
+        if (!batch.length || !active()) return false;
+        const gpu = this.requireGpu(), steps = this.steps;
+        gpu.beginRecordedSequence();
+        let commit = false;
+        try {
+            for (const { input, targets } of batch) {
+                if (!active()) return false;
+                await this.learnRecordedPlanAsync(input, targets);
+            }
+            if (!active()) return false;
+            gpu.endSequence(true);
+            commit = true;
+            return true;
+        } finally {
+            if (!commit) {
+                this.steps = steps;
+                gpu.endSequence(false);
+            }
+        }
     }
 
-    private async learnTargetsAsync(input: DrivingPolicyInput, targets: PlannedActionTarget[], countStep: boolean) {
+    async learnPlannedActionsAsync(input: DrivingPolicyInput, targets: PlannedActionTarget[],
+        objective: DrivingImitationObjective = 'standard'): Promise<void> {
+        await this.learnTargetsAsync(input, targets, false, objective);
+    }
+
+    private async learnTargetsAsync(input: DrivingPolicyInput, targets: PlannedActionTarget[], countStep: boolean,
+        objective: DrivingImitationObjective = 'standard', rememberState = countStep) {
         const gpu = this.requireGpu();
         if (!targets.length) return;
         this.validateTargets(targets);
-        gpu.learnTargets(input, targets, countStep);
+        gpu.learnTargets(input, targets, rememberState, objective);
         if (countStep) this.steps++;
     }
 
@@ -370,9 +400,7 @@ export class DrivingPolicy {
         }
     }
 
-    /** Keep a checkpoint from observing only part of a training batch.
-     * Each demonstrated origin trains its available targets together in one globally
-     * clipped update. Autonomous rollouts accumulate via learnSequenceAsync. */
+    /** Keep a checkpoint from observing only part of a training batch. */
     async trainBatchAsync(train: () => Promise<void>, onSubmitted?: () => void): Promise<void> {
         const gpu = this.requireGpu();
         let finish!: () => void;
@@ -432,7 +460,8 @@ export class DrivingPolicy {
             && (config.network.cameraLayerNorm ? matrix(encoder.cameraNormWeights, 2, drivingCameraInputs(config), Math.max(1, config.learning.weightLimit)) : encoder.cameraNormWeights === undefined)
             && (config.network.gruLayerNorm ? matrix(encoder.gruNormWeights, 2, gruRows, Math.max(1, config.learning.weightLimit)) : encoder.gruNormWeights === undefined);
         const criticSize = config.network.hiddenUnits * (config.network.hiddenUnits + config.actions.outputs.length + 1) + config.network.hiddenUnits + 1;
-        if (!data || Object.keys(data).some((key) => !['context', 'inputs', 'steps', 'cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'gruNormWeights', 'gruWeights', 'outputWeights', 'sac'].includes(key))
+        // Older checkpoints can carry fitted controls. Only the native model weights are restored.
+        if (!data || Object.keys(data).some((key) => !['context', 'inputs', 'steps', 'cameraWeights', 'cameraProjectionWeights', 'cameraNormWeights', 'gruNormWeights', 'gruWeights', 'outputWeights', 'recordedControlHeads', 'recordedShiftHeads', 'sac'].includes(key))
             || !Number.isInteger(data.inputs) || data.inputs < 1
             || !Number.isSafeInteger(data.steps) || data.steps < 0
             || !data.context || !['game', 'car', 'map'].every((key) => typeof (data.context as any)[key] === 'string' && (data.context as any)[key].length > 0)

@@ -1,20 +1,23 @@
-import { drivingMemoryInputs, drivingMemorySlotInputs, DrivingPolicyInput } from './driving-memory';
-import { DrivingModelConfig, drivingCameraInputs, drivingFeatureSizes, drivingMemorySlots, drivingObservationInputs, drivingPolicyInputs } from './driving-model-config';
+import { drivingMemoryInputs, drivingMemorySlotInputs, DrivingPolicyInput, RECORDED_BPTT_STEPS } from './driving-memory';
+import { DrivingModelConfig, drivingCameraInputs, drivingFeatureSizes, drivingMemorySlots, drivingObservationInputs, drivingPolicyInputs,
+    isReservedPositionFeature } from './driving-model-config';
 import type { PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
 
 /** Assemble present observations oldest first, in one shared feature layout.
- * Missing history bins are skipped; features omitted from history are zeroed. */
-export function assembleDrivingInput(input: DrivingPolicyInput, config: DrivingModelConfig, after = -Infinity) {
+ * Missing history bins are skipped. Omitted and reserved position features are zeroed. */
+export function assembleDrivingInput(input: DrivingPolicyInput, config: DrivingModelConfig, after = -Infinity,
+    recordedHistory?: DrivingPolicyInput['recordedHistory']) {
     const bins = drivingMemorySlots(config);
-    if (!input?.features || input.features.length !== drivingObservationInputs(config) + drivingMemoryInputs(config)
+    const observationInputs = drivingObservationInputs(config);
+    if (!input?.features || input.features.length !== observationInputs + drivingMemoryInputs(config)
         || !input.features.every(Number.isFinite) || input.cameras?.length !== bins + 1
         || !input.cameras[bins]) throw new Error('Invalid policy observation.');
     const sizes = drivingFeatureSizes(config), inputs = drivingPolicyInputs(config), features: number[] = [];
     const cameras: { offset: number; image: PolicyCameraImage }[] = [];
-    const append = (names: string[], cursor: number, image: PolicyCameraImage | null, age: number) => {
+    const append = (names: string[], values: readonly number[], cursor: number, image: PolicyCameraImage | null, age: number) => {
         const groups: Record<string, number[]> = {};
         for (const name of names) {
-            groups[name] = input.features.slice(cursor, cursor + sizes[name]);
+            if (!isReservedPositionFeature(name)) groups[name] = values.slice(cursor, cursor + sizes[name]);
             cursor += sizes[name];
         }
         features.push(1, age);
@@ -31,18 +34,32 @@ export function assembleDrivingInput(input: DrivingPolicyInput, config: DrivingM
             } else features.push(...(groups[name] ?? new Array(sizes[name]).fill(0)));
         }
     };
-    for (let bin = bins - 1; bin >= 0; bin--) {
-        const offset = bin * drivingMemorySlotInputs(config), present = input.features[offset], age = input.features[offset + 1];
-        if ((present !== 0 && present !== 1) || age < 0 || age > 1
-            || Boolean(input.cameras[bin]) !== Boolean(present && config.memory.features.includes('camera'))) {
-            throw new Error('Invalid policy camera history.');
+    if (recordedHistory) {
+        if (recordedHistory.length >= RECORDED_BPTT_STEPS) throw new Error('Invalid recorded observation history.');
+        let previous = -Infinity;
+        const current = input.recurrent?.capturedAt ?? Infinity;
+        for (const { capturedAt, features: values, camera } of recordedHistory) {
+            if (!Number.isFinite(capturedAt) || capturedAt <= previous || capturedAt >= current
+                || values.length !== observationInputs || !values.every(Number.isFinite) || !camera) {
+                throw new Error('Invalid recorded observation history.');
+            }
+            if (capturedAt > after) append(config.observation.features, values, 0, camera, 0);
+            previous = capturedAt;
         }
-        if (present && (input.recurrent?.historyTimes[bin] ?? Infinity) > after) {
-            append(config.memory.features, offset + 2, input.cameras[bin], age);
+    } else {
+        for (let bin = bins - 1; bin >= 0; bin--) {
+            const offset = bin * drivingMemorySlotInputs(config), present = input.features[offset], age = input.features[offset + 1];
+            if ((present !== 0 && present !== 1) || age < 0 || age > 1
+                || Boolean(input.cameras[bin]) !== Boolean(present && config.memory.features.includes('camera'))) {
+                throw new Error('Invalid policy camera history.');
+            }
+            if (present && (input.recurrent?.historyTimes[bin] ?? Infinity) > after) {
+                append(config.memory.features, input.features, offset + 2, input.cameras[bin], age);
+            }
         }
     }
     if ((input.recurrent?.capturedAt ?? Infinity) > after) {
-        append(config.observation.features, drivingMemoryInputs(config), input.cameras[bins], 0);
+        append(config.observation.features, input.features, drivingMemoryInputs(config), input.cameras[bins], 0);
     }
     return { features, cameras, steps: features.length / inputs };
 }

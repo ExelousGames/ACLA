@@ -13,7 +13,7 @@ export interface DrivingModelTimingSnapshot {
     capturedAt: number;
     source: ControlSource;
     training: boolean;
-    /** Delayed plan samples submitted this cycle, excluding the current transition/demonstration. */
+    /** Delayed plan samples submitted this cycle, excluding the current transition. */
     replayCount: number;
     /** Populated history bins in this cycle's input, excluding the current observation. */
     historyLength?: number;

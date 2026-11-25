@@ -285,8 +285,8 @@ function registerSessionVideo({ ipcMain, getMainWindow, getRecordingDirectory, s
     const source = annotations.get(id);
     if (source?.sender !== event.sender) throw new Error('Open the training annotation before editing it.');
     const { selection, video, telemetry } = await readAnnotation(source.filePath);
-    const { ranges, fullRecordingLabel, game = selection.game } = draft ?? {};
-    const updated = trainingSelection({ ...selection, ranges, fullRecordingLabel, game: game ?? undefined });
+    const { ranges, fullRecordingLabel, game = selection.game, offsetSeconds = selection.offsetSeconds } = draft ?? {};
+    const updated = trainingSelection({ ...selection, ranges, fullRecordingLabel, game: game ?? undefined, offsetSeconds });
     await writeTrainingSelection(source.filePath, updated, selection);
     return describeAnnotation(event, source.filePath, updated, video, telemetry);
   });
@@ -306,9 +306,10 @@ function registerSessionVideo({ ipcMain, getMainWindow, getRecordingDirectory, s
     const sameVideo = previous?.version === 1 || previous?.videoFileName === videoFileName;
     const samePair = sameVideo && (previous.version === 1 ? inferredTelemetry(videoFileName) === telemetryFileName
       : previous.telemetryFileName === telemetryFileName);
-    const { ranges, fullRecordingLabel, game = samePair ? previous.game : undefined } = draft ?? {};
+    const { ranges, fullRecordingLabel, game = samePair ? previous.game : undefined,
+      offsetSeconds = samePair ? previous.offsetSeconds : undefined } = draft ?? {};
     const selection = trainingSelection({ version: 2, videoFileName, telemetryFileName, ranges, fullRecordingLabel, game: game ?? undefined,
-      offsetSeconds: samePair ? previous.offsetSeconds : undefined });
+      offsetSeconds });
     await writeTrainingSelection(sidecar, selection, sameVideo ? previous : undefined);
     return describeAnnotation(event, sidecar, selection, video, telemetry);
   });

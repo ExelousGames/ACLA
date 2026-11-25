@@ -81,10 +81,9 @@ it('stops accumulating at a missing interval and bootstraps from the last contig
     expect(targets[1]).toMatchObject({ reward: -5, elapsedSeconds: 0.2, next: finalInput, terminal: false });
 });
 
-function setup(sequenceSeconds = 4, planTimesSeconds?: number[]) {
+function setup(sequenceSeconds = 4) {
     const fixture = trainingFixture(), config = cloneConfig();
     config.learning.sequenceSeconds = sequenceSeconds;
-    if (planTimesSeconds) config.actions.planTimesSeconds = planTimesSeconds;
     config.network.hiddenUnits = 2;
     config.network.cameraProjectionUnits = 2;
     config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
@@ -214,9 +213,9 @@ it('rolls back a stopped batch and keeps its checkpoint consistent', async () =>
     await run.loop.stop();
 });
 
-it.each(['ui', 'controller'] as const)('updates partial AI and final human samples on %s handoffs', async (control) => {
+it.each(['ui', 'controller'] as const)('flushes only AI-owned samples on %s handoffs', async (control) => {
     const run = setup(), learn = jest.spyOn(run.policy, 'learnSequenceAsync');
-    const demonstrate = jest.spyOn(run.policy, 'learnDemonstratedPlanAsync');
+    const trainBatch = jest.spyOn(run.policy, 'trainBatchAsync');
     const decide = jest.spyOn(run.policy, 'decideAsync');
     await run.loop.start(run.policy, true); await flush();
     const before = await run.policy.checkpointAsync();
@@ -224,7 +223,8 @@ it.each(['ui', 'controller'] as const)('updates partial AI and final human sampl
     expect(learn).not.toHaveBeenCalled();
     const endpoint = decide.mock.calls[decide.mock.calls.length - 1][0];
     const action = { pedal: 0.5, steering: 0.2 };
-    run.manual.mockResolvedValue({ action: drivingControllerAction(action), toggleControl: control === 'controller' });
+    const manualAction = drivingControllerAction(action);
+    run.manual.mockResolvedValue({ action: manualAction, toggleControl: control === 'controller' });
     if (control === 'ui') run.loop.setControlSource('manual');
     await run.frame(3100);
     expect(run.loop.state.source).toBe('manual');
@@ -234,30 +234,30 @@ it.each(['ui', 'controller'] as const)('updates partial AI and final human sampl
     expect(run.policy.steps).toBe(2);
     expect((await run.policy.checkpointAsync()).model.gruWeights).not.toEqual(before.model.gruWeights);
 
-    run.manual.mockResolvedValue({ action: drivingControllerAction(action), toggleControl: false });
-    await run.frame(4000); await run.frame(4500);
+    const afterTakeover = await run.policy.checkpointAsync();
+    const completedBatches = trainBatch.mock.calls.length;
+    run.manual.mockResolvedValue({ action: manualAction, toggleControl: false });
+    await run.frame(4000, true); await run.frame(4500, true);
+    expect(run.controller.apply).toHaveBeenLastCalledWith(expect.objectContaining(manualAction));
     const beforeReturn = await run.policy.checkpointAsync();
-    const demonstrations = demonstrate.mock.calls.length;
-    run.manual.mockResolvedValue({ action: drivingControllerAction(action), toggleControl: control === 'controller' });
+    expect(beforeReturn).toEqual(afterTakeover);
+    run.manual.mockResolvedValue({ action: manualAction, toggleControl: control === 'controller' });
     if (control === 'ui') run.loop.setControlSource('ai');
     await run.frame(4600);
     expect(run.loop.state.source).toBe('ai');
-    expect(demonstrate.mock.calls.length).toBeGreaterThan(demonstrations);
-    expect(demonstrate).toHaveBeenLastCalledWith(expect.anything(), expect.arrayContaining([
-        expect.objectContaining({ step: 0, action: expect.objectContaining(action), shifts: { up: true, down: true } }),
-    ]));
-    expect((await run.policy.checkpointAsync()).model.gruWeights).not.toEqual(beforeReturn.model.gruWeights);
+    expect(trainBatch).toHaveBeenCalledTimes(completedBatches);
+    expect(await run.policy.checkpointAsync()).toEqual(beforeReturn);
     expect(run.loop.state.steps).toBe(run.policy.steps);
     // The next rollout starts under AI ownership, with no human reward interval.
-    run.manual.mockResolvedValue({ action: drivingControllerAction(action), toggleControl: false });
+    run.manual.mockResolvedValue({ action: manualAction, toggleControl: false });
     for (const at of [5000, 6000, 7000, 8000, 9000]) await run.frame(at);
     expect(learn).toHaveBeenCalledTimes(2);
     expect(learn.mock.calls[1][0][0].startedAt).toBeGreaterThanOrEqual(4600);
     await run.loop.stop();
 });
 
-it.each(['partial', 'full'] as const)('finishes a pending %s AI batch before human learning without blocking controls', async (batch) => {
-    const run = setup(), demonstrate = jest.spyOn(run.policy, 'learnDemonstratedPlanAsync');
+it.each(['partial', 'full'] as const)('finishes a pending %s AI batch before granting human control', async (batch) => {
+    const run = setup(), trainBatch = jest.spyOn(run.policy, 'trainBatchAsync');
     await run.loop.start(run.policy, true); await flush();
     const before = await run.policy.checkpointAsync();
     const learn = run.policy.learnAsync.bind(run.policy);
@@ -272,8 +272,8 @@ it.each(['partial', 'full'] as const)('finishes a pending %s AI batch before hum
     const action = { pedal: -0.7, steering: -0.2 };
     run.manual.mockResolvedValue({ action: drivingControllerAction(action), toggleControl: false });
     await run.frame(5100); await run.frame(5200);
-    expect(run.controller.apply).toHaveBeenLastCalledWith(expect.objectContaining(drivingControllerAction(action)));
-    expect(demonstrate).not.toHaveBeenCalled();
+    expect(run.loop.state.source).toBeNull();
+    expect(run.controller.apply).toHaveBeenLastCalledWith(NEUTRAL);
     let saved = false;
     const checkpoint = run.policy.checkpointAsync().then((value) => { saved = true; return value; });
     await flush(); expect(saved).toBe(false);
@@ -283,13 +283,15 @@ it.each(['partial', 'full'] as const)('finishes a pending %s AI batch before hum
     const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
     expect(gpu.endSequence).toHaveBeenCalledWith(true);
     expect(run.loop.state.steps).toBe(run.policy.steps);
+    const completedBatches = trainBatch.mock.calls.length;
     await run.frame(5400); await run.frame(5600);
+    expect(run.controller.apply).toHaveBeenLastCalledWith(expect.objectContaining(drivingControllerAction(action)));
     run.loop.setControlSource('ai'); await flush();
-    expect(demonstrate).toHaveBeenCalled();
+    expect(trainBatch).toHaveBeenCalledTimes(completedBatches);
     await run.loop.stop();
 });
 
-it('flushes a partial rollout once across rapid repeated handoffs', async () => {
+it('flushes a partial rollout once across rapid repeated takeover requests', async () => {
     const run = setup(), learn = jest.spyOn(run.policy, 'learnSequenceAsync');
     await run.loop.start(run.policy, true); await flush();
     await run.frame(2000); await run.frame(3000);
@@ -297,41 +299,9 @@ it('flushes a partial rollout once across rapid repeated handoffs', async () => 
     await flush();
     expect(learn).toHaveBeenCalledTimes(1);
     expect(run.policy.steps).toBe(2);
-    expect(run.loop.state).toMatchObject({ source: 'ai', steps: 2, plan: null });
+    expect(run.loop.state).toMatchObject({ source: 'manual', steps: 2, plan: null });
+    run.loop.setControlSource('ai'); await flush();
     await run.frame(4000);
-    expect(run.loop.state.plan).not.toBeNull();
-    await run.loop.stop();
-});
-
-it('finishes pending and final human learning before resuming AI inference', async () => {
-    const run = setup(4, [0, 0.1, 0.2]), decide = jest.spyOn(run.policy, 'decideAsync');
-    const demonstrate = jest.spyOn(run.policy, 'learnDemonstratedPlanAsync');
-    await run.loop.start(run.policy, true); await flush();
-    run.loop.setControlSource('manual'); await flush();
-    const first = { pedal: 0.6, steering: 0.1 };
-    run.manual.mockResolvedValue({ action: drivingControllerAction(first), toggleControl: false });
-    await run.frame(2000);
-    const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
-    let finish!: () => void;
-    jest.mocked(gpu.finishTraining).mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
-    const last = { pedal: -0.4, steering: -0.2 };
-    run.manual.mockResolvedValue({ action: drivingControllerAction(last), toggleControl: false });
-    await run.frame(2200); await run.frame(2300);
-    expect(demonstrate).toHaveBeenCalledTimes(1);
-    run.loop.setControlSource('ai');
-    await run.frame(2400);
-    expect(decide).toHaveBeenCalledTimes(1);
-    expect(demonstrate).toHaveBeenCalledTimes(1);
-    finish(); await flush();
-    expect(demonstrate).toHaveBeenCalledTimes(3);
-    expect(demonstrate.mock.calls.map(([, targets]) => targets[0].action)).toEqual([
-        expect.objectContaining(first), expect.objectContaining(last), expect.objectContaining(last),
-    ]);
-    expect(demonstrate.mock.calls[0][1]).toContainEqual(
-        expect.objectContaining({ step: 2, action: expect.objectContaining(last) }));
-    expect(run.loop.state).toMatchObject({ source: 'ai', steps: 3, plan: null });
-    await run.frame(2500);
-    expect(decide).toHaveBeenCalledTimes(2);
     expect(run.loop.state.plan).not.toBeNull();
     await run.loop.stop();
 });

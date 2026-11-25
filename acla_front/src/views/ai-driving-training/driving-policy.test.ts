@@ -1,4 +1,4 @@
-import { DrivingPolicy } from './driving-policy';
+import { DrivingPolicy, readTrainingDocument } from './driving-policy';
 import { DrivingGpuModel } from './driving-gpu-model';
 import { mockDrivingGpu } from './driving-gpu-test-model';
 import { DrivingMemory } from './driving-memory';
@@ -27,7 +27,6 @@ it('requires GPU initialization for every prediction and learning entry point', 
     await expect(policy.decideAsync(input, false)).rejects.toThrow(/Initialize.*GPU/);
     await expect(policy.learnAsync({} as any, 1, input, 0.2, [])).rejects.toThrow(/Initialize.*GPU/);
     await expect(policy.learnDemonstrationAsync(input, action, shifts)).rejects.toThrow(/Initialize.*GPU/);
-    await expect(policy.learnDemonstratedPlanAsync(input, [])).rejects.toThrow(/Initialize.*GPU/);
     await expect(policy.learnPlannedActionsAsync(input, [])).rejects.toThrow(/Initialize.*GPU/);
     const train = jest.fn(async () => undefined);
     await expect(policy.trainBatchAsync(train)).rejects.toThrow(/Initialize.*GPU/);
@@ -346,34 +345,75 @@ it('sends raw demonstration and delayed targets straight to GPU learning without
     await policy.learnDemonstrationAsync(input, action, shifts);
     const targets = [{ step: 6, action, shifts }];
     await policy.learnPlannedActionsAsync(input, targets);
-    expect(gpu.learnTargets).toHaveBeenNthCalledWith(1, input, [{ step: 0, action, shifts }], true);
-    expect(gpu.learnTargets).toHaveBeenNthCalledWith(2, input, targets, false);
+    expect(gpu.learnTargets).toHaveBeenNthCalledWith(1, input, [{ step: 0, action, shifts }], true, 'standard');
+    expect(gpu.learnTargets).toHaveBeenNthCalledWith(2, input, targets, false, 'standard');
     expect(gpu.forward).not.toHaveBeenCalled();
     expect(gpu.weights).not.toHaveBeenCalled();
     expect(policy.steps).toBe(1);
 });
 
-it('trains all available outputs of a demonstrated future together and counts the origin once', async () => {
+it('sends both recorded target types to the recorded loss, including neutral steering', async () => {
     const { policy, input } = setup();
     await policy.initializeGpu();
     const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
-    const targets = policy.planTimes.map((_, step) => ({ step, action: {
-        pedal: step / 50, steering: -step / 50, shiftUp: step === 3, shiftDown: step === 15,
-    }, shifts: { up: true, down: true } }));
-    await policy.learnDemonstratedPlanAsync(input, targets);
-    expect(gpu.learnTargets).toHaveBeenCalledTimes(1);
-    expect(gpu.learnTargets).toHaveBeenLastCalledWith(input, targets, true);
+    const neutralSteering = { ...action, steering: 0 };
+    const future = [{ step: 2, action, shifts }];
+    await policy.learnDemonstrationAsync(input, neutralSteering, shifts, 'recorded');
+    await policy.learnPlannedActionsAsync(input, future, 'recorded');
+    expect(gpu.learnTargets).toHaveBeenNthCalledWith(1, input,
+        [{ step: 0, action: neutralSteering, shifts }], true, 'recorded');
+    expect(gpu.learnTargets).toHaveBeenNthCalledWith(2, input, future, false, 'recorded');
     expect(policy.steps).toBe(1);
-    const available = targets.filter(({ step }) => [0, 2, 9].includes(step));
-    await policy.learnDemonstratedPlanAsync(input, available);
-    expect(gpu.learnTargets).toHaveBeenCalledTimes(2);
-    expect(gpu.learnTargets).toHaveBeenLastCalledWith(input, available, true);
-    expect(policy.steps).toBe(2);
-    await policy.learnDemonstratedPlanAsync(input, []);
-    expect(gpu.learnTargets).toHaveBeenCalledTimes(2);
-    expect(policy.steps).toBe(2);
-    expect(gpu.forward).not.toHaveBeenCalled();
-    expect(gpu.weights).not.toHaveBeenCalled();
+});
+
+it('counts a grouped recorded plan once without replacing a past recurrent snapshot', async () => {
+    const { policy, input } = setup();
+    await policy.initializeGpu();
+    const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
+    const targets = [0, 1, 8].map((step) => ({ step, action, shifts }));
+    await policy.learnRecordedPlanAsync(input, targets);
+    expect(gpu.learnTargets).toHaveBeenCalledTimes(1);
+    expect(gpu.learnTargets).toHaveBeenCalledWith(input, targets, false, 'recorded');
+    expect(policy.steps).toBe(1);
+});
+
+it('commits recorded optimizer batches together and rolls back interrupted sample counts', async () => {
+    const { policy, input } = setup();
+    await policy.initializeGpu();
+    const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
+    const sample = { input, targets: [{ step: 0, action, shifts }] };
+    const batch = [sample, sample];
+
+    expect(await policy.learnRecordedBatchAsync(batch, () => policy.steps < 1)).toBe(false);
+    expect(gpu.endSequence).toHaveBeenLastCalledWith(false);
+    const cancelled = await policy.checkpointAsync();
+    expect(cancelled.model.steps).toBe(0);
+
+    jest.mocked(gpu.endSequence).mockImplementationOnce(() => { throw new Error('GPU submission failed'); });
+    await expect(policy.learnRecordedBatchAsync(batch, () => true)).rejects.toThrow('GPU submission failed');
+    expect(policy.steps).toBe(0);
+
+    expect(await policy.learnRecordedBatchAsync(batch, () => true)).toBe(true);
+    expect(gpu.beginRecordedSequence).toHaveBeenCalledTimes(3);
+    expect(gpu.endSequence).toHaveBeenLastCalledWith(true);
+    const committed = await policy.checkpointAsync();
+    expect(committed.model.steps).toBe(2);
+    expect(committed.model.gruWeights[0][0]).not.toBe(cancelled.model.gruWeights[0][0]);
+});
+
+it('loads old checkpoints and saves only the native weights and step count', async () => {
+    const { policy } = setup();
+    policy.steps = 37;
+    const checkpoint = policy.checkpoint();
+    const oldCheckpoint = { ...checkpoint, model: { ...checkpoint.model,
+        recordedControlHeads: [{ featureEncoding: 'vehicle-motion-v1' }],
+        recordedShiftHeads: [{ featureEncoding: 'vehicle-shift-v1' }],
+    } };
+    expect(readTrainingDocument(oldCheckpoint)).toEqual(checkpoint);
+    const restored = DrivingPolicy.restore(oldCheckpoint);
+    await restored.initializeGpu();
+    expect(await restored.checkpointAsync()).toEqual(checkpoint);
+    restored.dispose();
 });
 
 it.each([false, true])('sends reward and every executed plan slot to GPU actor/critic learning (terminal=%s)', async (terminal) => {

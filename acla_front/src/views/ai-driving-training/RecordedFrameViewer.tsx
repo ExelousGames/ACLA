@@ -45,7 +45,12 @@ interface Props {
 }
 interface Example { seconds: number; score: number; thumbnail: string }
 interface Gallery { layer: number; examples: Example[][]; sampled: number; interval: number; complete: boolean }
-interface SelectionState { selection: TrainingSelection; dirty?: boolean; error?: string }
+interface SelectionState {
+    selection: TrainingSelection;
+    dirty?: boolean;
+    error?: string;
+    offsetEdit?: { telemetry: File | null; seconds: number };
+}
 interface ListedAnnotation extends TrainingAnnotation { folderPath?: string; imported?: boolean }
 const FULL_RECORDING: TrainingSelection = { version: 1, ranges: null };
 const videoFile = (file: File) => file.type.startsWith('video/') || /\.(mp4|webm|mkv|mov|m4v|avi|ogv|mpg|mpeg|3gp)$/i.test(file.name);
@@ -87,9 +92,11 @@ const readTelemetry = async (source: File | string, signal: AbortSignal) => {
     if (!response.ok) throw new Error('The annotation’s telemetry file could not be read.');
     return response.text();
 };
-const telemetryAtVideoStart = (session: RecordedDrivingSession, videoTiming?: number | null, selection?: TrainingSelection) => {
-    if (videoTiming != null && session.timestampField === 'Graphics_analyst_session_time') return videoTiming;
-    return session.startTimeSeconds - (selection?.offsetSeconds ?? 0);
+const hasUsableVideoTiming = (session: RecordedDrivingSession, videoTiming?: number | null): videoTiming is number =>
+    videoTiming != null && session.timestampField === 'Graphics_analyst_session_time';
+const telemetryAtVideoStart = (session: RecordedDrivingSession, videoTiming?: number | null, offsetSeconds = 0) => {
+    if (hasUsableVideoTiming(session, videoTiming)) return videoTiming;
+    return session.startTimeSeconds - offsetSeconds;
 };
 const alignedRange = (duration: number, session: RecordedDrivingSession, telemetryStart: number): TrainingRange | null => {
     const start = Math.max(0, session.startTimeSeconds - telemetryStart);
@@ -216,18 +223,22 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
     const selectionKey = annotation?.id ?? (adding ? selectedVideo : null);
     const selectedSettings = selectionKey ? selections.get(selectionKey) : undefined;
     const draft = selectedSettings?.selection ?? annotation?.selection;
+    const savedTelemetry = selectedVideo && (draft?.version === 2
+        ? telemetryFiles.find((file) => fileLabel(file) === fileLabel(selectedVideo).replace(/[^/]+$/, () => draft.telemetryFileName))
+        : matchingTelemetry(selectedVideo, telemetryFiles));
     const selectedTelemetry = (() => {
         if (!adding || !selectedVideo) return null;
         const override = telemetryOverrides.get(selectedVideo);
         if (override === null) return null;
         if (override && telemetryFiles.some((file) => sameFile(file, override))) return override;
-        if (draft?.version === 2) {
-            const savedLabel = fileLabel(selectedVideo).replace(/[^/]+$/, () => draft.telemetryFileName);
-            return telemetryFiles.find((file) => fileLabel(file) === savedLabel) ?? null;
-        }
-        return matchingTelemetry(selectedVideo, telemetryFiles)
-            ?? (videoFiles.length === 1 && folderVideoCount === folderVideos.length && telemetryFiles.length === 1 ? telemetryFiles[0] : null);
+        const allowSinglePair = draft?.version !== 2 && videoFiles.length === 1 && folderVideoCount === folderVideos.length;
+        return savedTelemetry ?? (allowSinglePair && telemetryFiles.length === 1 ? telemetryFiles[0] : null);
     })();
+    const offsetEdit = selectedSettings?.offsetEdit;
+    const editedOffset = offsetEdit && (annotation || (selectedTelemetry && offsetEdit.telemetry && sameFile(selectedTelemetry, offsetEdit.telemetry)))
+        ? offsetEdit.seconds : undefined;
+    const savedPair = annotation || (selectedTelemetry && savedTelemetry && sameFile(selectedTelemetry, savedTelemetry));
+    const previewOffset = editedOffset ?? (savedPair ? draft?.offsetSeconds : undefined);
     const previewVideo = annotation?.videoUrl ?? (adding ? selectedVideo : null);
     const previewTelemetry = annotation?.telemetryUrl ?? selectedTelemetry;
     const previewGame = draft?.game ?? inferRecordedGame(annotation?.selection.telemetryFileName ?? selectedTelemetry?.name);
@@ -277,7 +288,7 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
         const videoSeconds = frames?.player === player ? frames.read() : player.currentTime;
         try {
             current.current.onFrame({ session: recording, videoSeconds,
-                telemetrySeconds: telemetryAtVideoStart(recording, videoTiming, draft) + videoSeconds,
+                telemetrySeconds: telemetryAtVideoStart(recording, videoTiming, previewOffset) + videoSeconds,
                 camera: capturePolicyCameraImage(originalFrame(player)) });
         }
         catch (reason) { setError(message(reason)); current.current.onFrame(null); }
@@ -347,7 +358,7 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
         publishFrame();
         // Refresh the playhead when recorded timing or legacy annotation timing becomes available.
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [session, timingPending, videoTiming, draft?.offsetSeconds]);
+    }, [session, timingPending, videoTiming, previewOffset]);
     useEffect(() => {
         onReplayReadyChange?.(replayReady);
     }, [onReplayReadyChange, replayReady]);
@@ -405,7 +416,7 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
                             player.crossOrigin = 'anonymous';
                             await loadReplayVideo(player, videoUrl, active);
                         }
-                        const telemetryStart = telemetryAtVideoStart(recording, videoTelemetryStartSeconds, selection);
+                        const telemetryStart = telemetryAtVideoStart(recording, videoTelemetryStartSeconds, selection.offsetSeconds);
                         const overlap = alignedRange(player.duration, recording, telemetryStart);
                         if (!overlap) throw new Error('The video and telemetry timelines do not overlap.');
                         const clips = (ranges ?? [{ ...overlap, label: fullRecordingLabel }]).map((range, index) => {
@@ -540,9 +551,14 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
     const editSelection = (changes: Partial<TrainingRangeDraft>) => {
         if (!selectionKey || !draft || selectedSettings?.error) return;
         setSavedName('');
-        setSelections((previous) => new Map(previous).set(selectionKey, {
-            selection: { ...(previous.get(selectionKey)?.selection ?? draft), ...changes }, dirty: true,
-        }));
+        const { offsetSeconds, ...selectionChanges } = changes;
+        setSelections((previous) => {
+            const prior = previous.get(selectionKey);
+            return new Map(previous).set(selectionKey, {
+                selection: { ...(prior?.selection ?? draft), ...selectionChanges }, dirty: true,
+                offsetEdit: offsetSeconds === undefined ? prior?.offsetEdit : { telemetry: selectedTelemetry, seconds: offsetSeconds },
+            });
+        });
     };
     const openEditor = (next: typeof editor) => {
         setSavedName('');
@@ -620,7 +636,8 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
         if (!canSave || !bridge || !selectionKey || !draft) return;
         const fullRecordingLabel = draft.ranges === null ? draft.fullRecordingLabel?.trim() : undefined;
         const changes = { ranges: draft.ranges, ...(fullRecordingLabel ? { fullRecordingLabel } : {}),
-            ...(draft.game !== undefined ? { game: draft.game } : {}) };
+            ...(draft.game !== undefined ? { game: draft.game } : {}),
+            ...(editedOffset !== undefined ? { offsetSeconds: editedOffset } : {}) };
         const persist = annotation ? () => bridge.update(annotation.id, changes)
             : selectedVideo && selectedTelemetry ? () => bridge.write(selectedVideo, selectedTelemetry, changes) : null;
         if (!persist) return;
@@ -778,12 +795,15 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
             <label className="recorded-timeline">Recorded frame · {timestamp(time)} / {timestamp(duration)}
                 <input type="range" min="0" max={Math.max(0, duration - 0.001)} step="0.01" value={time} disabled={locked || !duration}
                     onChange={(event) => seek(Number(event.target.value))} /></label>
-            {draft && !selectedSettings?.error && <RecordedTrainingRanges key={annotation?.id ?? url} selection={draft}
+            {draft && !selectedSettings?.error && <RecordedTrainingRanges key={annotation?.id ?? JSON.stringify([url, selectedTelemetry && fileLabel(selectedTelemetry)])}
+                selection={{ ...draft, offsetSeconds: previewOffset }}
                 duration={duration} time={time} step={Math.max(0.1, props.configuration.runtime.controlIntervalMs / 1000)}
-                overlap={session && !timingPending ? alignedRange(duration, session, telemetryAtVideoStart(session, videoTiming, draft)) : null}
+                overlap={session && !timingPending ? alignedRange(duration, session, telemetryAtVideoStart(session, videoTiming, previewOffset)) : null}
                 disabled={locked || !duration} dirty={dirty} canSave={canSave}
                 playhead={() => video.current?.currentTime ?? time} seek={seek}
                 change={({ ranges, fullRecordingLabel }) => editSelection({ ranges, fullRecordingLabel })}
+                changeOffset={session && !timingPending && !hasUsableVideoTiming(session, videoTiming)
+                    ? (offsetSeconds) => editSelection({ offsetSeconds }) : undefined}
                 save={() => { void saveSelection(); }} />}
             <h3>Camera model inspection</h3>
             <p>Inspect the loaded driving model’s camera CNN. Feature maps show learned activations; they are diagnostic views, not a recognition accuracy score. {props.policy ? `Model: ${props.policy.steps.toLocaleString()} training steps.` : 'Open a model with camera weights to inspect it.'}</p>

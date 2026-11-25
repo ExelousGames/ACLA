@@ -2,7 +2,7 @@ import React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import trainingLabels from 'data/recorded-training-labels.json';
 import { encodeVideoTelemetryStart, VIDEO_TIMING_BYTES } from 'data/session-video-timing';
-import RecordedFrameViewer, { RecordedFrameViewerHandle } from './RecordedFrameViewer';
+import RecordedFrameViewer, { RecordedFrameViewerHandle, type RecordedReplayFrame } from './RecordedFrameViewer';
 import { cloneConfig } from './driving-model-config';
 import type { DrivingPolicy } from './driving-policy';
 import { parseRecordedDrivingSession, RecordedDrivingSession } from './recorded-driving-session';
@@ -53,8 +53,8 @@ async function loadVideo(duration = 2.5, file = new File(['video'], 'drive.mp4',
     fireEvent.loadedMetadata(video); fireEvent.loadedData(video);
     return video;
 }
-async function loadTelemetry() {
-    const file = new File(['telemetry'], 'drive.jsonl');
+async function loadTelemetry(name = 'drive.jsonl') {
+    const file = new File(['telemetry'], name);
     Object.defineProperty(file, 'text', { value: () => Promise.resolve('telemetry') });
     fireEvent.change(screen.getByLabelText('Telemetry JSONL'), { target: { files: [file] } });
     await waitFor(() => expect(screen.queryByText('Reading telemetry…')).not.toBeInTheDocument());
@@ -105,13 +105,87 @@ it('pairs local frames using timing saved in the video and revokes its video URL
     expect(readTail).toHaveBeenCalledWith(-VIDEO_TIMING_BYTES);
     expect(onFrame).toHaveBeenLastCalledWith(expect.objectContaining({ session: recording, videoSeconds: 0, telemetrySeconds: 100.125,
         camera: expect.objectContaining({ width: 384, height: 216, rgb: expect.any(Uint8Array) }) }));
-    expect(screen.queryByLabelText('First telemetry at video time (seconds)')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Telemetry offset (ms)')).not.toBeInTheDocument();
     await act(async () => { video.currentTime = 0.125; });
     expect(onFrame).toHaveBeenLastCalledWith(expect.objectContaining({ telemetrySeconds: 100.25 }));
     expect(screen.getByRole('button', { name: 'Inspect current frame' })).toBeDisabled();
     view.unmount();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:recorded-video');
     expect(onFrame).toHaveBeenLastCalledWith(null);
+});
+
+it('previews, saves and replays an edited offset for a legacy annotation and supports resetting to zero', async () => {
+    const ranges = [{ start: 0.1, end: 0.3, label: 'Qualifying' }];
+    const annotation = savedAnnotation('drive.json', 'drive.mp4', 'drive.jsonl', undefined, ranges);
+    mockAnnotationPicker([annotation]);
+    const update = jest.mocked(window.recordedTrainingRanges!.update).mockImplementation(async (_, draft) => ({
+        ...annotation, selection: { ...annotation.selection, ...draft },
+    }));
+    const onFrame = jest.fn();
+    const ref = React.createRef<RecordedFrameViewerHandle>();
+    render(<RecordedFrameViewer ref={ref} configuration={cloneConfig()} policy={null} disabled={false} onFrame={onFrame} />);
+    pickAnnotations(annotation.name);
+    const video = await loadAnnotationPreview(2.5);
+    await act(async () => { video.currentTime = 0.2; });
+    const offset = screen.getByRole('spinbutton', { name: 'Telemetry offset (ms)' });
+    expect(offset).toHaveValue(null);
+    expect(offset).toHaveAccessibleDescription('Positive values read earlier telemetry.');
+    expect(onFrame.mock.lastCall?.[0].telemetrySeconds).toBeCloseTo(100.2, 8);
+
+    fireEvent.change(offset, { target: { value: '93' } });
+    expect(onFrame.mock.lastCall?.[0].telemetrySeconds).toBeCloseTo(100.107, 8);
+    const save = screen.getByRole('button', { name: 'Save training annotation' });
+    fireEvent.click(save);
+    await screen.findByText('Saved drive.json beside the video.');
+    expect(update).toHaveBeenLastCalledWith(annotation.id, { ranges, offsetSeconds: 0.093 });
+
+    const consume = jest.fn(async (_frame: RecordedReplayFrame) => undefined);
+    await act(async () => ref.current!.measure(consume, new AbortController().signal));
+    expect(consume.mock.calls[0][0].telemetrySeconds).toBeCloseTo(100.007, 8);
+
+    fireEvent.change(offset, { target: { value: '0' } });
+    fireEvent.click(save);
+    await screen.findByText('Saved drive.json beside the video.');
+    expect(update).toHaveBeenLastCalledWith(annotation.id, { ranges, offsetSeconds: 0 });
+    expect(offset).toHaveValue(0);
+});
+
+it('allows negative manual alignment when embedded timing uses a different clock', async () => {
+    const onFrame = jest.fn();
+    parse.mockReturnValue({ ...recording, timestampField: 'Graphics_game_time' });
+    render(<RecordedFrameViewer configuration={cloneConfig()} policy={null} disabled={false} onFrame={onFrame} />);
+    const timing = encodeVideoTelemetryStart(100.125);
+    const file = new File(['video', timing], 'drive.mp4', { type: 'video/mp4' });
+    jest.spyOn(file, 'slice').mockReturnValue({ arrayBuffer: async () => timing.buffer } as Blob);
+    const video = await loadVideo(2.5, file);
+    await loadTelemetry();
+    await act(async () => { video.currentTime = 0.1; });
+    expect(onFrame.mock.lastCall?.[0].telemetrySeconds).toBeCloseTo(100.1, 8);
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Telemetry offset (ms)' }), { target: { value: '-25' } });
+    expect(onFrame.mock.lastCall?.[0].telemetrySeconds).toBeCloseTo(100.125, 8);
+});
+
+it('does not apply a saved or manually edited offset to replacement telemetry', async () => {
+    const first = savedAnnotation('drive.json', 'drive.mp4', 'drive.jsonl', 0.093, null);
+    const write = jest.fn(async (video: File, telemetry: File, draft: { offsetSeconds?: number }) =>
+        savedAnnotation('drive.json', video.name, telemetry.name, draft.offsetSeconds, null));
+    window.recordedTrainingRanges = { read: jest.fn(async () => first.selection), write, update: jest.fn(), open: jest.fn(), scan: jest.fn() };
+    const onFrame = jest.fn();
+    render(<RecordedFrameViewer configuration={cloneConfig()} policy={null} disabled={false} onFrame={onFrame} />);
+    const video = await loadVideo();
+    await loadTelemetry();
+    await act(async () => { video.currentTime = 0.2; });
+    const offset = () => screen.getByRole('spinbutton', { name: 'Telemetry offset (ms)' });
+    expect(offset()).toHaveValue(93);
+    fireEvent.change(offset(), { target: { value: '110' } });
+    expect(onFrame.mock.lastCall?.[0].telemetrySeconds).toBeCloseTo(100.09, 8);
+
+    await loadTelemetry('alternative.jsonl');
+    expect(offset()).toHaveValue(null);
+    expect(onFrame.mock.lastCall?.[0].telemetrySeconds).toBeCloseTo(100.2, 8);
+    fireEvent.click(screen.getByRole('button', { name: 'Save training annotation' }));
+    await screen.findByText('Saved drive.json beside the video.');
+    expect(write).toHaveBeenLastCalledWith(expect.any(File), expect.objectContaining({ name: 'alternative.jsonl' }), { ranges: null });
 });
 
 it('requires explicit file choices when a folder contains multiple recordings', () => {
@@ -272,7 +346,7 @@ it('marks, edits and removes saved ranges, and restores each video’s selection
     fireEvent.click(screen.getByRole('button', { name: 'Mark start here' }));
     await act(async () => { video.currentTime = 0.4; });
     fireEvent.click(screen.getByRole('button', { name: 'Mark end here' }));
-    fireEvent.change(label(), { target: { value: 'Race pace' } });
+    fireEvent.change(label(), { target: { value: 'Cornering' } });
     fireEvent.click(screen.getByRole('button', { name: 'Add range' }));
     expect(label()).toHaveValue('');
     await act(async () => { video.currentTime = 1; });
@@ -290,7 +364,7 @@ it('marks, edits and removes saved ranges, and restores each video’s selection
     fireEvent.click(save());
     await waitFor(() => expect(screen.queryByText('Unsaved annotation changes')).not.toBeInTheDocument());
     expect(write).toHaveBeenCalledWith(expect.objectContaining({ name: 'drive.mp4' }), expect.objectContaining({ name: 'drive.jsonl' }), {
-        ranges: [{ start: 0, end: 0.4, label: 'Race pace' }, { start: 1.1, end: 1.5 }] });
+        ranges: [{ start: 0, end: 0.4, label: 'Cornering' }, { start: 1.1, end: 1.5 }] });
     expect(screen.getByRole('checkbox', { name: /drive.mp4.training-ranges.json/ })).toBeChecked();
     view.unmount();
 
@@ -298,7 +372,7 @@ it('marks, edits and removes saved ranges, and restores each video’s selection
     await loadVideo();
     await loadTelemetry();
     expect(screen.getByRole('button', { name: 'Jump to start of range 1' })).toBeInTheDocument();
-    expect(screen.getByText(/· Race pace$/)).toBeVisible();
+    expect(screen.getByText(/· Cornering$/)).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Jump to start of range 2' }));
     fireEvent.click(screen.getByRole('button', { name: 'Remove range 2' }));
     fireEvent.click(screen.getByRole('button', { name: 'Remove range 1' }));
@@ -350,7 +424,7 @@ it('updates a clip label in a saved annotation and preserves its training checkb
 
 it('selects and clears a fixed label for the full recording', async () => {
     const annotation = savedAnnotation('drive.json', 'drive.mp4', 'drive.jsonl', 0, null);
-    const labeled = { ...annotation, selection: { ...annotation.selection, fullRecordingLabel: 'Warmup' } };
+    const labeled = { ...annotation, selection: { ...annotation.selection, fullRecordingLabel: 'Shifting' } };
     mockAnnotationPicker([annotation]);
     const update = jest.mocked(window.recordedTrainingRanges!.update).mockResolvedValueOnce(labeled).mockResolvedValueOnce(annotation);
     render(<RecordedFrameViewer configuration={cloneConfig()} policy={null} disabled={false} onFrame={jest.fn()} />);
@@ -359,10 +433,10 @@ it('selects and clears a fixed label for the full recording', async () => {
     const label = screen.getByRole('combobox', { name: 'Full recording label (optional)' });
     const save = screen.getByRole('button', { name: 'Save training annotation' });
     expect(label).toHaveValue('');
-    fireEvent.change(label, { target: { value: 'Warmup' } });
+    fireEvent.change(label, { target: { value: 'Shifting' } });
     fireEvent.click(save);
     await screen.findByText('Saved drive.json beside the video.');
-    expect(update).toHaveBeenLastCalledWith(annotation.id, { ranges: null, fullRecordingLabel: 'Warmup' });
+    expect(update).toHaveBeenLastCalledWith(annotation.id, { ranges: null, fullRecordingLabel: 'Shifting' });
 
     fireEvent.change(label, { target: { value: '' } });
     fireEvent.click(save);

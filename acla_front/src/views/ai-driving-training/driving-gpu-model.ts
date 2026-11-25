@@ -1,13 +1,13 @@
 import type { PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
-import type { DrivingPolicyInput } from './driving-memory';
+import { RECORDED_BPTT_STEPS, type DrivingPolicyInput } from './driving-memory';
 import { DRIVING_ANALOG_AXES, DRIVING_DEMONSTRATION_BACKLOG, DRIVING_GRU_GATES, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingMemorySlots, drivingPolicyInputs } from './driving-model-config';
 import { drivingGruDeltaWidth, drivingGruShaders, drivingGruStateWidth } from './driving-gru-shaders';
 import { drivingCameraShaders } from './driving-camera-shaders';
-import { drivingLearningShaders } from './driving-learning-shaders';
+import { drivingDemonstrationTargetStride, drivingLearningShaders } from './driving-learning-shaders';
 import { drivingSacShaders, sacPolicySampleFloats } from './driving-sac-shaders';
 import { drivingNormalizationShaders } from './driving-normalization-shaders';
 import { drivingUpdateShaders } from './driving-update-shaders';
-import type { PlannedActionTarget, PolicyModelState, PolicyWeights, ShiftAvailability } from './driving-policy';
+import type { DrivingImitationObjective, PlannedActionTarget, PolicyModelState, PolicyWeights, ShiftAvailability } from './driving-policy';
 import { assembleDrivingInput } from './driving-policy-input';
 import type { DrivingCameraInspection } from './driving-camera-inspection';
 import type { DrivingAction } from './driving-observation';
@@ -36,7 +36,9 @@ export class DrivingGpuModel {
     private idlePasses: GpuWorkspace[] = [];
     private passWorkspaces = new WeakMap<GpuPolicyPass, GpuWorkspace>();
     private training: GpuWorkspace = new Map();
-    private sequence?: { samples: number };
+    private sequence?: { samples: number; recorded: boolean };
+    private readonly recordedAdamMoments = new WeakMap<GPUBuffer, [GPUBuffer, GPUBuffer]>();
+    private recordedAdamCorrection?: GPUBuffer;
     private recurrentStates?: GPUBuffer;
     private readonly recurrentSnapshots: (RecurrentPoint | undefined)[];
     private recurrentCursor = 0;
@@ -88,7 +90,7 @@ export class DrivingGpuModel {
             gruWeights: this.upload(target.gruWeights.flat()),
             ...(target.cameraNormWeights && { cameraNormWeights: this.upload(target.cameraNormWeights.flat()) }),
             ...(target.gruNormWeights && { gruNormWeights: this.upload(target.gruNormWeights.flat()) }) };
-        this.times = Array.from({ length: drivingMemorySlots(config) + 1 },
+        this.times = Array.from({ length: Math.max(drivingMemorySlots(config) + 1, RECORDED_BPTT_STEPS) },
             (_, t) => this.upload(new Uint32Array([t])));
         device.lost.then((info) => { if (!this.disposed) this.failure = `Training GPU lost: ${info.message || info.reason}. Restart training.`; });
         device.addEventListener('uncapturederror', (event) => { this.failure = `Training GPU error: ${event.error.message}`; });
@@ -240,7 +242,7 @@ export class DrivingGpuModel {
     }
 
     private async predict(input: DrivingPolicyInput) {
-        const pass = this.forwardPass(input, false, true);
+        const pass = this.forwardPass(input, false, 'sequential');
         try {
             const values = await this.download([pass.outputs, this.logStds]);
             if (!values.every(Number.isFinite)) throw new Error('The training GPU produced invalid model outputs.');
@@ -278,15 +280,24 @@ export class DrivingGpuModel {
 
     /** Queue a prediction without mapping it back to the CPU. Sequence replays
      * use frozen weights; other replays see the preceding training update. */
-    private forwardPass(input: DrivingPolicyInput, target = false, continueEpisode = false): GpuPolicyPass {
+    private forwardPass(input: DrivingPolicyInput, target = false, mode: 'replay' | 'sequential' | 'recorded' = 'replay'): GpuPolicyPass {
         this.assertReady();
         const weights = target ? this.targetEncoder : { gruWeights: this.gruWeights, gruNormWeights: this.gruNormWeights };
         const point = input.recurrent;
-        // Live prediction advances from the latest state, or reuses it for a
-        // repeated capture. Replay starts strictly before the available history.
-        const seed = point && this.recurrentStateBefore(point, continueEpisode ? point.capturedAt
-            : Math.min(point.capturedAt, ...point.historyTimes.map((time) => time ?? Infinity)), continueEpisode);
-        const assembled = assembleDrivingInput(input, this.config, seed?.capturedAt);
+        const recordedHistory = mode === 'recorded' ? input.recordedHistory : undefined;
+        const sequential = mode === 'sequential';
+        let seed;
+        if (point) {
+            // Replay includes all retained inputs in backpropagation. Sequential
+            // prediction can reuse a state already saved for this exact capture.
+            let cutoff = point.capturedAt;
+            if (!sequential) {
+                cutoff = recordedHistory ? recordedHistory[0]?.capturedAt ?? cutoff
+                    : Math.min(cutoff, ...point.historyTimes.map((time) => time ?? Infinity));
+            }
+            seed = this.recurrentStateBefore(point, cutoff, sequential);
+        }
+        const assembled = assembleDrivingInput(input, this.config, seed?.capturedAt, recordedHistory);
         const workspace = this.idlePasses.pop() ?? new Map<string, GPUBuffer>();
         try {
             const commands = this.device.createCommandEncoder(), capacity = this.times.length;
@@ -329,12 +340,20 @@ export class DrivingGpuModel {
     replay(input: DrivingPolicyInput) { return this.forwardPass(input); }
 
     beginSequence(_next?: DrivingPolicyInput) {
+        this.beginGradientBatch(false);
+    }
+
+    beginRecordedSequence() {
+        this.beginGradientBatch(true);
+    }
+
+    private beginGradientBatch(recorded: boolean) {
         this.assertReady();
         if (this.sequence) throw new Error('A training sequence is already being updated.');
         const commands = this.device.createCommandEncoder();
         this.parameters().forEach(({ gradient }) => commands.clearBuffer(gradient));
         this.device.queue.submit([commands.finish()]);
-        this.sequence = { samples: 0 };
+        this.sequence = { samples: 0, recorded };
     }
 
     endSequence(commit: boolean) {
@@ -344,7 +363,7 @@ export class DrivingGpuModel {
         if (commit && sequence.samples) {
             this.assertReady();
             const commands = this.device.createCommandEncoder();
-            this.applyGradients(commands, sequence.samples);
+            this.applyGradients(commands, sequence.samples, sequence.recorded);
             this.device.queue.submit([commands.finish()]);
         }
     }
@@ -362,37 +381,63 @@ export class DrivingGpuModel {
             gradient: this.scratch(this.training, name, weights.size) }));
     }
 
-    private applyGradients(commands: GPUCommandEncoder, samples: number) {
+    private applyGradients(commands: GPUCommandEncoder, samples: number, recorded = false) {
         const parameters = this.parameters();
+        // Optimize as if the smaller telemetry inputs were scaled, while retaining the
+        // checkpoint's original parameter coordinates for inference and other training.
+        if (recorded) {
+            const gradient = this.scratch(this.training, 'gruGradient', this.gruWeights.size);
+            this.dispatch(commands, 'recordedAdamConditionGru', [gradient], Math.ceil(gradient.size / (4 * 64)));
+        }
         const count = this.scratch(this.training, 'gradientSamples', 4);
         const stats = this.scratch(this.training, 'gradientStats', 6 * 4);
         const partialCount = parameters.reduce((sum, { gradient }) => sum + Math.ceil(gradient.size / (4 * 256)), 0);
         const partials = this.scratch(this.training, 'gradientPartials', partialCount * 4);
         this.device.queue.writeBuffer(count, 0, new Uint32Array([samples]));
         let offset = 0;
-        parameters.forEach(({ gradient }, i) => {
+        const ranges = parameters.map(({ gradient }, i) => {
             const position = this.scratch(this.training, `gradientOffset${i}`, 4);
             this.device.queue.writeBuffer(position, 0, new Uint32Array([offset]));
             const groups = Math.ceil(gradient.size / (4 * 256));
             this.dispatch(commands, 'gradientPartialNorm', [gradient, partials, position], groups);
             offset += groups;
+            return { position, groups };
         });
         this.dispatch(commands, 'gradientGlobalNorm', [partials, count, stats], 1);
-        parameters.forEach(({ weights, gradient, normalized }) => this.dispatch(commands,
-            weights === this.logStds ? 'sacApplyLogStd' : normalized ? 'applyNormGradient' : 'applyGradient',
-            [weights, gradient, stats], Math.ceil(weights.size / (4 * 64))));
+        if (recorded) {
+            const correction = this.recordedAdamCorrection ??= this.upload([1, 1, 0, 0]);
+            this.dispatch(commands, 'recordedAdamAdvance', [stats, correction], 1);
+            parameters.forEach(({ weights, gradient, normalized }, index) => {
+                if (weights === this.criticWeights || weights === this.logStds) return;
+                let moments = this.recordedAdamMoments.get(weights);
+                if (!moments) {
+                    moments = [this.buffer(weights.size), this.buffer(weights.size)];
+                    this.recordedAdamMoments.set(weights, moments);
+                }
+                const { position, groups } = ranges[index];
+                const shader = weights === this.gruWeights ? 'recordedAdamApplyGru' : normalized ? 'recordedAdamApplyNorm' : 'recordedAdamApply';
+                this.dispatch(commands, shader,
+                    [weights, gradient, stats, ...moments, correction, partials, position], groups);
+            });
+            this.dispatch(commands, 'recordedAdamUpdateNorm', [partials, stats], 1);
+        } else {
+            parameters.forEach(({ weights, gradient, normalized }) => this.dispatch(commands,
+                weights === this.logStds ? 'sacApplyLogStd' : normalized ? 'applyNormGradient' : 'applyGradient',
+                [weights, gradient, stats], Math.ceil(weights.size / (4 * 64))));
+        }
         const targets: [GPUBuffer, GPUBuffer][] = [
             ...this.cameraWeights.map((weights, index): [GPUBuffer, GPUBuffer] => [weights, this.targetEncoder.cameraWeights[index]]),
             [this.cameraProjectionWeights, this.targetEncoder.cameraProjectionWeights],
-            [this.gruWeights, this.targetEncoder.gruWeights], [this.criticWeights, this.targetCriticWeights],
+            [this.gruWeights, this.targetEncoder.gruWeights],
         ];
+        if (!recorded) targets.push([this.criticWeights, this.targetCriticWeights]);
         if (this.cameraNormWeights) targets.push([this.cameraNormWeights, this.targetEncoder.cameraNormWeights!]);
         if (this.gruNormWeights) targets.push([this.gruNormWeights, this.targetEncoder.gruNormWeights!]);
         targets.forEach(([weights, target]) => this.dispatch(commands, 'sacTargetUpdate', [weights, target, stats], Math.ceil(weights.size / (4 * 64))));
     }
 
     /** Optional diagnostic readback; normal training keeps all gradients on the GPU.
-     * updateNorm is the proposed step before the final weight guard, an upper bound on the actual step. */
+     * updateNorm describes the SGD proposal or the applied Adam step. */
     async trainingDiagnostics() {
         const stats = this.training.get('gradientStats');
         if (!stats) return undefined;
@@ -402,23 +447,31 @@ export class DrivingGpuModel {
 
     /** Keep the recurrent history of a demonstration origin without updating weights. */
     observeDemonstration(input: DrivingPolicyInput) {
-        const pass = this.forwardPass(input);
+        const pass = this.forwardPass(input, false, 'sequential');
         try { this.rememberRecurrentState(input, pass); }
         finally { this.release(pass); }
     }
 
-    learnTargets(input: DrivingPolicyInput, targets: PlannedActionTarget[], rememberState = false) {
-        const stride = DRIVING_ANALOG_AXES + 4;
-        const values = new Array(this.config.actions.planTimesSeconds.length * stride).fill(0);
+    learnTargets(input: DrivingPolicyInput, targets: PlannedActionTarget[], rememberState = false,
+        objective: DrivingImitationObjective = 'standard') {
+        const recorded = objective === 'recorded';
+        if (this.sequence?.recorded && !recorded) throw new Error('Recorded training batches require recorded action targets.');
+        const stride = drivingDemonstrationTargetStride;
+        const hasImmediateTarget = recorded && targets.some(({ step }) => step === 0);
+        const delayedSlots = hasImmediateTarget ? new Set(targets.map(({ step }) => step)).size - 1 : 0;
+        const values = new Float32Array(this.config.actions.planTimesSeconds.length * stride);
         for (const { step, action, shifts } of targets) {
-            values.splice(step * stride, stride, 1, action.pedal, action.steering,
-                action.shiftUp ? 1 : action.shiftDown ? 2 : 0, Number(shifts.up), Number(shifts.down));
+            const offset = step * stride;
+            // A full recorded plan reserves the stronger signal for the action used now.
+            const weight = step > 0 && delayedSlots > 0 ? 0.5 / delayedSlots : 1;
+            values.set([weight, action.pedal, action.steering, action.shiftUp ? 1 : action.shiftDown ? 2 : 0,
+                Number(shifts.up), Number(shifts.down)], offset);
         }
-        const pass = this.forwardPass(input);
+        const pass = this.forwardPass(input, false, recorded ? 'recorded' : 'replay');
         try {
-            const target = this.scratch(this.training, 'demonstrationTarget', values.length * 4);
-            this.device.queue.writeBuffer(target, 0, new Float32Array(values));
-            this.update(pass, 'demonstrationGradient', [pass.outputs, target]);
+            const target = this.scratch(this.training, recorded ? 'recordedDemonstrationTarget' : 'demonstrationTarget', values.byteLength);
+            this.device.queue.writeBuffer(target, 0, values);
+            this.update(pass, recorded ? 'recordedDemonstrationGradient' : 'demonstrationGradient', [pass.outputs, target]);
             if (rememberState) this.rememberRecurrentState(input, pass);
         } finally { this.release(pass); }
     }
@@ -430,6 +483,7 @@ export class DrivingGpuModel {
         originInput?: DrivingPolicyInput;
     }) {
         this.assertReady();
+        if (this.sequence?.recorded) throw new Error('Recorded training batches require recorded action targets.');
         if (pass.released) throw new Error('The GPU training sample was already released.');
         const actions = target.actions.filter(({ weight, shiftWeight = weight }) => weight > 0 || shiftWeight > 0);
         if (!actions.length) return;

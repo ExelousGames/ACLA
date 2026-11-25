@@ -1,6 +1,8 @@
 import { DRIVING_ANALOG_AXES, DrivingModelConfig } from './driving-model-config';
 import { drivingLearningRate } from './driving-update-shaders';
 
+export const drivingDemonstrationTargetStride = DRIVING_ANALOG_AXES + 4;
+
 /** Learning targets enter from the CPU; predictions and output gradients stay on the GPU. */
 export function drivingLearningShaders(config: DrivingModelConfig): Record<string, string> {
     const l = config.learning;
@@ -30,9 +32,8 @@ fn shiftProbability(offset: u32, choice: u32, up: f32, down: f32) -> f32 {
     return exp((outputs[offset + choice] - maximum) / SHIFT_TEMPERATURE) / total;
 }
 `;
-    return {
-        demonstrationGradient: constants + `
-// Per plan slot: present, signed pedal, steering, shift choice, up allowed, down allowed.
+    const gradient = (recorded: boolean) => constants + `
+// Per plan slot: weight, signed pedal, steering, shift choice, up allowed, down allowed.
 @group(0) @binding(1) var<storage, read> targets: array<f32>;
 @group(0) @binding(2) var<storage, read_write> gradients: array<f32>;
 @compute @workgroup_size(64)
@@ -40,19 +41,29 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     if (id.x > CRITIC) { return; }
     gradients[id.x] = 0.0;
     if (id.x == CRITIC) { return; }
-    let slot = id.x / ACTIONS; let axis = id.x % ACTIONS; let base = slot * (AXES + 4u);
-    if (targets[base] == 0.0) { return; }
+    let slot = id.x / ACTIONS; let axis = id.x % ACTIONS;
+    let base = slot * ${drivingDemonstrationTargetStride}u;
+    let weight = targets[base];
+    if (weight == 0.0) { return; }
     if (axis < AXES) {
         let actionValue = targets[base + 1u + axis];
+        ${recorded ? `// Negative derivative of softplus(2 * logit) - (1 + target) * logit.
+        // It still corrects a prediction saturated in the wrong direction.
+        let predicted = tanh(clamp(outputs[id.x], -10.0, 10.0));
+        let residual = actionValue - predicted;` : `
         let p = clamp(actionValue, EPSILON - 1.0, 1.0 - EPSILON);
         let desired = 0.5 * log(max(EPSILON, 1.0 + p) / max(EPSILON, 1.0 - p));
-        gradients[id.x] = DEMONSTRATION_RATE * clamp(desired - outputs[id.x], -DEMONSTRATION_LIMIT, DEMONSTRATION_LIMIT);
+        let residual = desired - outputs[id.x];`}
+        gradients[id.x] = DEMONSTRATION_RATE * clamp(residual, -DEMONSTRATION_LIMIT, DEMONSTRATION_LIMIT) * weight;
     } else {
         let choice = axis - AXES;
-        let probability = shiftProbability(slot * ACTIONS + AXES, choice, targets[base + AXES + 2u], targets[base + AXES + 3u]);
-        let score = (select(0.0, 1.0, choice == u32(targets[base + AXES + 1u])) - probability) / SHIFT_TEMPERATURE;
-        gradients[id.x] = DEMONSTRATION_RATE * clamp(score, -DEMONSTRATION_LIMIT, DEMONSTRATION_LIMIT);
+        let expected = u32(targets[base + AXES + 1u]);
+        let up = targets[base + AXES + 2u]; let down = targets[base + AXES + 3u];
+        let shiftOffset = slot * ACTIONS + AXES;
+        let probability = shiftProbability(shiftOffset, choice, up, down);
+        let score = (select(0.0, 1.0, choice == expected) - probability) / SHIFT_TEMPERATURE;
+        gradients[id.x] = DEMONSTRATION_RATE * clamp(score, -DEMONSTRATION_LIMIT, DEMONSTRATION_LIMIT) * weight;
     }
-}`,
-    };
+}`;
+    return { demonstrationGradient: gradient(false), recordedDemonstrationGradient: gradient(true) };
 }

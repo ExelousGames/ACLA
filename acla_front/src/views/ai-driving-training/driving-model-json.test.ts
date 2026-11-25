@@ -1,5 +1,6 @@
 import { mockDrivingGpu } from './driving-gpu-test-model';
-import { cloneConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingObservationInputs, drivingPolicyInputs, validateDrivingConfig } from './driving-model-config';
+import { cloneConfig, DEFAULT_DRIVING_CONFIG, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs,
+    drivingObservationInputs, drivingPolicyInputs, emptyRecordedSamplingWeights, RECORDED_SAMPLING_CATEGORIES, validateDrivingConfig } from './driving-model-config';
 import { DrivingMemory, drivingMemoryInputs } from './driving-memory';
 import { DrivingPolicy, emptyTrainingDocument, readTrainingDocument } from './driving-policy';
 import { drivingReward, readDrivingObservation, NEUTRAL } from './driving-observation';
@@ -13,6 +14,7 @@ beforeEach(() => { mockDrivingGpu(); });
 afterEach(() => { jest.restoreAllMocks(); });
 
 const frequencyKeys = ['pedalExplorationUpdateHz', 'steeringExplorationUpdateHz', 'gearExplorationUpdateHz'];
+const defaultSamplingWeights = DEFAULT_DRIVING_CONFIG.recordedSamplingWeights;
 
 it.each([false, true])('rejects old actor-critic documents instead of migrating weights (trained=%s)', (trained) => {
     const config = cloneConfig();
@@ -23,6 +25,53 @@ it.each([false, true])('rejects old actor-critic documents instead of migrating 
         : emptyTrainingDocument(config);
     document.algorithm = 'online-actor-critic';
     expect(() => readTrainingDocument(document)).toThrow(/incompatible/);
+});
+
+it.each([false, true])('loads older model files with default sampling weights (trained=%s)', (trained) => {
+    const config = cloneConfig();
+    config.network.hiddenUnits = config.network.cameraProjectionUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    const { observation } = trainingFixture();
+    const document = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
+        : emptyTrainingDocument(config);
+    const previous = JSON.parse(JSON.stringify(document));
+    delete previous.configuration.recordedSamplingWeights;
+    const restored = readTrainingDocument(previous);
+    expect(restored.configuration.recordedSamplingWeights).toEqual(defaultSamplingWeights);
+    expect(previous.configuration).not.toHaveProperty('recordedSamplingWeights');
+    expect(restored.model).toEqual(document.model);
+
+    const weights = { ...emptyRecordedSamplingWeights(), Recovery: 62.5, Shifting: 37.5 };
+    restored.configuration.recordedSamplingWeights = weights;
+    expect(readTrainingDocument(restored).configuration.recordedSamplingWeights).toEqual(weights);
+});
+
+it('defines defaults for exactly the annotation labels and Unlabeled', () => {
+    expect(Object.keys(defaultSamplingWeights)).toEqual(RECORDED_SAMPLING_CATEGORIES);
+    expect(Object.values(defaultSamplingWeights).reduce((sum, value) => sum + value, 0)).toBe(100);
+});
+
+it('migrates a custom grouped mix to independent annotation percentages', () => {
+    const legacy = { general: 55.5, cornering: 10, shifting: 34.5 };
+    const document = emptyTrainingDocument();
+    const restored = readTrainingDocument({ ...document, configuration: { ...document.configuration, recordedSamplingWeights: legacy } });
+    const weights = restored.configuration.recordedSamplingWeights;
+    expect(weights).toMatchObject({ 'Race pace': 3.7, Recovery: 3.7, Unlabeled: 7.4, Cornering: 10, Shifting: 34.5 });
+    const formerGeneral = RECORDED_SAMPLING_CATEGORIES.filter((label) => label !== 'Cornering' && label !== 'Shifting');
+    expect(formerGeneral.reduce((sum, label) => sum + weights[label], 0)).toBeCloseTo(legacy.general);
+});
+
+it.each([
+    { ...defaultSamplingWeights, Cornering: 20 },
+    { ...defaultSamplingWeights, Warmup: -1, 'Race pace': 9 },
+    { ...defaultSamplingWeights, Cornering: NaN },
+    { ...defaultSamplingWeights, Unknown: 0 },
+    { Cornering: 100 },
+    { general: 100, cornering: 0 },
+])('rejects invalid recorded sampling weights %#', (weights) => {
+    const document = emptyTrainingDocument();
+    expect(() => readTrainingDocument({ ...document, configuration: { ...document.configuration,
+        recordedSamplingWeights: weights } })).toThrow(/configuration/);
 });
 
 it.each([
@@ -198,16 +247,21 @@ it('uses the JSON plan times and target tolerance for delayed training', async (
     config.actions.planTimesSeconds = [0, 0.3, 1.2];
     config.learning.planTargetToleranceMs = 20;
     const policy = DrivingPolicy.restore(new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint());
-    const learn = jest.spyOn(policy, 'learnPlannedActionsAsync').mockResolvedValue(undefined);
+    const learn = jest.spyOn(policy, 'learnRecordedPlanAsync').mockResolvedValue(undefined);
+    jest.spyOn(policy, 'learnRecordedBatchAsync').mockImplementation(async (plans) => {
+        for (const { input, targets } of plans) await policy.learnRecordedPlanAsync(input, targets);
+        return true;
+    });
     const training = new DrivingPlanTraining();
     const features = new DrivingMemory(config).encode(observation);
-    const shifts = { up: true, down: true };
-    await training.recordAsync(policy, features, { pedal: 0, steering: 0 }, shifts, 1000);
-    await training.recordAsync(policy, features, { pedal: 0, steering: 0 }, shifts, 1310);
-    expect(learn).toHaveBeenCalledWith(features, [{ step: 1, action: { pedal: 0, steering: 0 }, shifts }]);
-    learn.mockClear();
-    await training.recordAsync(policy, features, { pedal: 0, steering: 0 }, shifts, 2221);
+    const target = { action: { pedal: 0, steering: 0 }, shifts: { up: true, down: true } };
+    await training.recordAsync(policy, features, target, 1000);
+    await training.recordAsync(policy, undefined, target, 1310);
     expect(learn).not.toHaveBeenCalled();
+    await training.recordAsync(policy, undefined, target, 2221);
+    await training.finishAsync(policy);
+    expect(learn).toHaveBeenCalledTimes(1);
+    expect(learn).toHaveBeenCalledWith(features, [{ step: 0, ...target }, { step: 1, ...target }]);
 });
 
 it('uses configured reward coefficients and freshness instead of current defaults', () => {

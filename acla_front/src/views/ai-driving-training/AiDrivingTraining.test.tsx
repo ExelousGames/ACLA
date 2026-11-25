@@ -89,7 +89,19 @@ it('forwards every fresh telemetry event between controller ticks without a came
     expect(mockInput.observation).toBeUndefined();
 });
 
-it('passes the Live Map centerline and boundaries to observations and displays track rewards', async () => {
+it('shows unavailable centerline and position diagnostics while the model inputs are ready without lap position', async () => {
+    const { observation } = trainingFixture(Date.now());
+    mockInput = { observation: { ...observation, normalizedPosition: null, speedTargets: null, centerlineAvailable: false } };
+    await renderTraining();
+    expect(screen.getByText('All model inputs ready')).toBeInTheDocument();
+    expect(getDefinition('Centerline')).toHaveTextContent('Unavailable');
+    for (const label of ['Reference speed', 'Aggression target speed', 'Lap position']) {
+        expect(getDefinition(label)).toHaveTextContent('—');
+    }
+    expect(getDefinition('Speed')).toHaveTextContent('108.0 km/h');
+});
+
+it('passes the Live Map and boundaries to observations and displays centerline and track rewards', async () => {
     const circuitMap: CircuitMapDto = { id: 'monza', game: 'acc', source_track_key: 'monza', circuit_name: 'Monza', resolution: 1000,
         samples: { ...circuitMapFixture().samples, ...Object.fromEntries(([['left_boundary', -5], ['right_boundary', 5]] as const).map(([side, x]) => [side,
             [-10, 0, 10].map((y, i) => ({ x, y, z: 0, normalized_position: 0.24 + i * 0.01, bin: 240 + i * 10,
@@ -103,7 +115,7 @@ it('passes the Live Map centerline and boundaries to observations and displays t
     mockRead.mockImplementation((...args) => jest.requireActual('./driving-observation').readDrivingObservation(...args));
     await renderTraining();
     expect(mockRead).toHaveBeenLastCalledWith(fixture.live, screenFrame(fixture), referenceLap, 50, expect.any(Number), expect.anything(), circuitMap);
-    expect(getDefinition('Centerline')).toHaveTextContent('50 steps behind · 50 steps ahead');
+    expect(getDefinition('Centerline')).toHaveTextContent('50 samples behind · 50 samples ahead (~6 s)');
     expect(screen.getByLabelText('Off-track detection')).toHaveTextContent('Waiting for a scored transition.');
     expect(getDefinition('On-track reward').textContent).toBe('0');
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
@@ -710,6 +722,7 @@ it('locks the device choice during installation and reports failures without cla
 it('keeps training disabled until the controller and all live inputs are ready', async () => {
     const openLive = jest.fn();
     await renderTraining(openLive);
+    expect(getDefinition('Centerline')).toHaveTextContent('Waiting');
     expect(screen.getByRole('button', { name: 'Start training' })).toBeDisabled();
     expect(screen.getByLabelText('AI start status')).toHaveTextContent('Connect the virtual wheel.');
     fireEvent.click(screen.getByRole('button', { name: 'Open Live Session' }));
@@ -913,13 +926,17 @@ it('starts human driving without AI inputs, arms training without stealing contr
     act(() => { jest.advanceTimersByTime(250); }); await flush();
     fireEvent.click(screen.getByRole('button', { name: 'Start training' })); await flush();
     expect(screen.getByLabelText('Current control owner')).toHaveTextContent('Human');
+    expect(screen.getByText('Human control • learning off')).toBeInTheDocument();
+    expect(screen.getByText('Training armed')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Return to AI' })).toBeEnabled();
+    device.axes.axis1 = 0.8;
     mockInput = { error: 'Capture disconnected.' };
     act(() => { jest.advanceTimersByTime(20); }); await flush();
     act(() => { jest.advanceTimersByTime(230); }); await flush();
     expect(screen.getByRole('button', { name: 'Return to AI' })).toBeDisabled();
     expect(screen.getByLabelText('Current control owner')).toHaveTextContent('Human');
-    expect(screen.getByText(/Human control • learning paused/)).toBeInTheDocument();
+    expect(screen.getByText('Human control • learning off • Capture disconnected.')).toBeInTheDocument();
+    expect(window.virtualController!.apply).toHaveBeenLastCalledWith(expect.objectContaining({ throttle: 0.8, brake: 0.1, steering: 0 }));
     mockInput = { observation: { ...observation, capturedAt: Date.now(), measuredAt: Date.now() } };
     act(() => { jest.advanceTimersByTime(20); }); await flush();
     act(() => { jest.advanceTimersByTime(230); }); await flush();

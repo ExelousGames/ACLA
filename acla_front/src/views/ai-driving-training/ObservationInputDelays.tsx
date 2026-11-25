@@ -63,12 +63,12 @@ export default function ObservationInputDelays({ snapshot, telemetryMaxAgeMs, vi
             <dt>History length</dt><dd>{model?.historyLength ?? 'Unavailable'}</dd>
         </dl>
         <p className="driving-note">{model
-            ? `Latest model cycle: ${model.training ? 'Training' : 'Evaluation'} · ${model.source === 'ai' ? 'AI' : 'Human'} control.
+            ? `Latest model cycle: ${model.training ? 'Training' : 'Evaluation'} · AI control.
                 Observation age: ${milliseconds(age(now, model.capturedAt))}.${model.finishedAt === undefined ? ''
                     : ` Finished ${milliseconds(age(now, model.finishedAt))} ago.`}`
             : 'Waiting for a driving model cycle on fresh inputs.'}</p>
         <p className="driving-note">Training CPU preparation / submission measures elapsed CPU-side work through the last submission,
-            including learning from AI actions or human demonstrations and delayed plan replays.
+            including learning from AI actions and delayed plan replays.
             GPU completion wait measures the subsequent queue wait, including queued work and scheduling delays.
             Inference includes camera encoding, policy evaluation and output readback.
             These elapsed times are separate from GPU timestamp queries used to measure individual passes.

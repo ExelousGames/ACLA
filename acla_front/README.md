@@ -188,24 +188,17 @@ immediately and queues neutral after any in-flight write, so a late acknowledgem
 cannot restart driving. The Electron/Python bridge releases controls on disconnect or failure.
 `DrivingTrainingLoop` schedules the active source and keeps learning separate from
 output ownership. Human control updates on the control clock even between camera
-frames. AI actions use actor–critic learning. Human demonstrations record every
-acknowledged control sample and individual paddle press, with telemetry collected
-on its own stream events and camera observations captured independently of training.
-Completed demonstration futures supervise the existing actor through behavior cloning. Handover
-discards the pending transition and waits for a fresh observation before learning
-or resuming AI output, avoiding mixed-driver reward attribution. Human controller
-state and driver identity are **not added to model inputs**; the existing telemetry
-controls still describe what the simulator received. Evaluation does not update weights from either source.
+frames. Live actor–critic training learns from AI-controlled driving. Learning
+pauses during human control. Returning to AI starts a fresh segment and waits for
+a fresh observation before resuming AI output, keeping reward attribution within
+each AI-controlled segment. Evaluation also uses fixed weights.
 
 Disconnecting any mapped device while takeover is enabled stops the session,
 even if AI currently owns the controls. Telemetry/capture loss while AI is driving
 neutralizes vJoy controls and retries automatically without ending the session or
 resetting model progress. Fresh, matching observations resume AI driving. During human control, missing or
-mismatched AI observations prevent new demonstration origins; a camera-only gap
-still permits collecting the future of existing observations while telemetry is valid.
-Invalid telemetry, session/reference changes and position jumps discard interrupted
-demonstrations; physical input keeps driving vJoy. Valid observations can resume learning, but
-returning to AI still requires an explicit handoff. Stop, Escape in the app and
+mismatched AI observations still allow physical input to drive vJoy. Returning to AI
+requires valid observations and an explicit handoff. Stop, Escape in the app and
 disconnect release both sources. Calibration tests are exclusive and cannot run
 during either human or AI driving.
 
@@ -218,7 +211,7 @@ location (or **Open model** to resume a file). Then select **Start training**. T
 outputs one continuous throttle/brake value from −1 (full brake), through 0 (both
 pedals released), to 1 (full throttle), plus steering and the choice to hold gear,
 shift up or shift down. Positive pedal values apply throttle; negative values apply
-brake, so AI output never presses both pedals together. Live and recorded demonstrations
+brake, so AI output never presses both pedals together. Recorded demonstrations
 encode an applied brake as negative brake input and use throttle when brake is released.
 Create and train a new model for this output layout; older separate-pedal checkpoints
 are not converted.
@@ -247,18 +240,7 @@ the steps that actually controlled the car, weighted by their acknowledged execu
 and contribution to each interpolated command. Gear credit follows only the due
 step's executed choice and mask, independently of the analog blend.
 This includes the outgoing plan's actions while a replacement was computing;
-steps that neither execute nor contribute to a blend receive no actor gradient. Each
-human camera observation retains its input history and collects targets at capture
-time plus 0, 0.1, 0.2, …, 3.0 seconds. After the three-second horizon and 50 ms
-sampling tolerance, all available targets train together in one optimizer update.
-Analog targets use the nearest acknowledged control within 50 ms; missing targets
-are skipped. Paddle edges label their nearest slot once, independent of the held
-100 ms output pulse. Multiple presses in one slot suppress that slot's shift loss
-while preserving its analog targets. GPU completion time never selects labels.
-Collection continues during GPU work. The CPU buffer retains up to 512 observation
-origins, dropping the oldest completed samples first if training falls behind;
-the human-control status reports any drops. A handoff or **Stop** closes partial
-demonstrations using the controls already recorded. Escape cancels queued demonstrations.
+steps that neither execute nor contribute to a blend receive no actor gradient.
 
 By default, the SAC critics use up to **5 seconds** of observed rewards after each
 acknowledged action. To change this window for an existing model, set
@@ -283,11 +265,8 @@ the requested batch duration. Evaluation continues collection and reward reporti
 without updating weights. **Stop** releases the wheel immediately and saves the
 model after the queued updates and final partial window finish. Escape, invalid
 inputs and long telemetry gaps discard queued and incomplete sequences.
-Driver handoffs flush the outgoing partial window
-before starting a separate ownership segment. Human demonstration learning uses
-one grouped update per buffered observation, including its available future targets.
-Sequence and demonstrated-plan gradients are summed, then globally clipped once
-per update; they are not averaged by replay count or available plan-target count.
+Taking over flushes the outgoing AI's partial window before human control begins.
+Sequence gradients are summed, then globally clipped once per update.
 
 Gear choices learn from the same driving reward as the continuous controls.
 Human and AI shifts have no cooldown. Each shift presses one paddle for 100 ms
@@ -328,18 +307,16 @@ recent saved state before that window. If a seed has aged out of the bounded GPU
 buffer, the warm-up starts from zero. The existing history bins supply the burn-in,
 following the study's use of stored state with recurrent warm-up.
 [GT7 training and ablation](https://arxiv.org/html/2504.09021#S4.SS2)
-Actor–critic, human demonstrations and delayed action-plan training all backpropagate
+Live actor–critic and recorded action-plan training both backpropagate
 through the complete sequence, updating convolution and projection weights/biases as
 well as GRU input weights, recurrent weights and gate biases. Visual gradients accumulate
 across all camera timesteps before updating the shared encoder.
 CNN and GRU inference, learning-gradient calculations, backpropagation and weight
-updates run on a hardware WebGPU device. The CPU sends demonstration/plan targets or
+updates run on a hardware WebGPU device. The CPU sends recorded plan targets or
 reward, elapsed time and the sampled actions with per-slot execution weights. The GPU calculates target transforms,
 masked shift probabilities, the TD advantage and clipped gradients without intermediate
-readbacks. Weights, activations and training predictions stay on the GPU; only control
-decisions read the small action/value output. Each demonstration update waits once
-for GPU completion without copying results, while CPU collection continues into
-the bounded buffer.
+readbacks. Weights, activations and training predictions stay on the GPU. Control
+decisions read the small action/value output.
 Repeated images share convolution activations within a decision;
 each later decision re-encodes images with the current learned weights. Pending
 decisions retain their own activations while active; sequence training replays
@@ -411,7 +388,7 @@ squared position changes during that movement, each scaled by `100 ms / elapsedM
 
 **Brake-change penalty** applies that time-scaled squared change to every brake movement.
 All three weights default to 0.05. AI training scores acknowledged commands across plan
-steps and replacements. Manual driving uses the controls from camera-paired telemetry.
+steps and replacements.
 The three penalties appear under **Reward signal**.
 
 Compatible SAC checkpoints from the previous reward scheme load with the new pedal

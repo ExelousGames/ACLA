@@ -44,6 +44,12 @@
 .driving-exploration legend { padding: 0 6px; font-size: 14px; }
 .driving-exploration .driving-aggression { margin-top: 12px; }
 .driving-exploration input:disabled { opacity: .4; }
+.driving-sampling-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 130px), 1fr)); gap: 12px; }
+.driving-sampling-fields label { display: grid; grid-template-rows: 1fr auto; gap: 6px; font-size: 12px; }
+.driving-sampling-fields input { box-sizing: border-box; min-width: 0; width: 100%; padding: 8px; border: 1px solid #3a414d; border-radius: 6px; background: #232934; color: #edf3f2; color-scheme: dark; }
+.driving-sampling-fields input:focus-visible { outline: 2px solid #00e676; outline-offset: 3px; }
+.driving-sampling-weights .driving-buttons { align-items: center; }
+.driving-sampling-weights .driving-buttons p { margin: 0; }
 .driving-pedals { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
 .driving-pedals caption { text-align: left; color: #a3adb7; margin: 16px 0 8px; }
 .driving-pedals th, .driving-pedals td { padding: 8px 2px; text-align: right; overflow-wrap: anywhere; border-bottom: 1px solid #ffffff0d; }

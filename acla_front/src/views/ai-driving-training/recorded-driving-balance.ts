@@ -1,82 +1,59 @@
-import { getCircuitMapCenterlineSegments } from 'views/circuit-maps/centerline-segments';
-import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
-import type { DrivingModelConfig } from './driving-model-config';
+import { emptyRecordedSamplingWeights, RECORDED_SAMPLING_CATEGORIES, UNLABELED_RECORDED_SAMPLING_CATEGORY,
+    type DrivingModelConfig, type RecordedSamplingCategory, type RecordedSamplingWeights } from './driving-model-config';
 import type { DrivingObservation } from './driving-observation';
 import { isConsecutiveRecordedObservation } from './recorded-driving-replay';
-import { recordedTrackKey } from './recorded-driving-reference';
 
-type SavedRange = { start: number; end: number; length: number; key: string };
-const savedRanges = new WeakMap<CircuitMapDto, SavedRange[]>();
+const normalize = (label: string | undefined) => label?.trim().toLowerCase() ?? '';
+const categoriesByLabel = new Map(RECORDED_SAMPLING_CATEGORIES.map((category) => [normalize(category), category] as const));
+export interface RecordedDrivingCoverage { eligible: RecordedSamplingWeights }
 
-function rangeAt(map: CircuitMapDto | null, position: number): string {
-    if (!map) return '';
-    let ranges = savedRanges.get(map);
-    if (!ranges) {
-        ranges = getCircuitMapCenterlineSegments(map).flatMap(({ start_position: rawStart, end_position: rawEnd }) => {
-            if (![rawStart, rawEnd].every((point) => Number.isFinite(point) && point >= 0 && point <= 1)
-                || rawStart === rawEnd) return [];
-            const start = rawStart === 1 ? 0 : rawStart;
-            const end = rawEnd === 1 && start > 0 ? 0 : rawEnd;
-            const length = end < start ? 1 - start + end : end - start;
-            return length > 0 ? [{ start, end, length, key: `${start}:${end}` }] : [];
-        }).sort((a, b) => a.length - b.length || a.start - b.start || a.end - b.end);
-        savedRanges.set(map, ranges);
-    }
-    // The shortest matching range owns an overlap. A shared endpoint belongs
-    // to the range starting there, including at the start/finish line.
-    const point = position === 1 ? 0 : position;
-    for (const { start, end, key } of ranges) {
-        if (start < end ? start <= point && point < end : start <= point || point < end) return key;
-    }
-    return '';
-}
-
-export function recordedSampleGroup(observation: DrivingObservation, clipLabel: string | undefined,
-    map: CircuitMapDto | null): string {
-    const { game, map: track } = observation.context;
-    return JSON.stringify([clipLabel?.trim().toLowerCase() ?? '', game, recordedTrackKey(game, track),
-        rangeAt(map, observation.normalizedPosition)]);
-}
-
-interface SampleBucket {
-    count: number;
-    quota: number;
-    seen: number;
-}
-
-/** Count learnable origins before applying updates, then keep an evenly spaced
- * subset in each observed combination. Cameras and replay order stay streaming. */
+/** Count aligned origins before decoding video, so a category that starts late
+ * still gets its configured share throughout training. */
 export class RecordedDrivingBalance {
-    private buckets = new Map<string, SampleBucket>();
-    private previous?: { observation: DrivingObservation; group: string };
+    private samples: { label: string; category: RecordedSamplingCategory }[] = [];
+    private eligible = emptyRecordedSamplingWeights();
+    private previous?: { observation: DrivingObservation; label: string };
+    private replayIndex = 0;
+    weights = emptyRecordedSamplingWeights();
 
     constructor(private config: DrivingModelConfig) {}
 
-    count(observation: DrivingObservation | undefined, group: string | undefined, startsRange?: boolean) {
+    count(observation: DrivingObservation | undefined, clipLabel?: string, startsRange?: boolean) {
         const previous = this.previous;
-        if (observation && group !== undefined) {
-            if (!startsRange && previous && isConsecutiveRecordedObservation(previous.observation, observation, this.config)) {
-                const bucket = this.buckets.get(previous.group);
-                if (bucket) bucket.count++;
-                else this.buckets.set(previous.group, { count: 1, quota: 0, seen: 0 });
-            }
-            this.previous = { observation, group };
-        } else this.previous = undefined;
+        this.previous = observation && { observation, label: normalize(clipLabel) };
+        if (startsRange || !previous || !observation
+            || !isConsecutiveRecordedObservation(previous.observation, observation, this.config)) return;
+
+        const { label } = previous;
+        const category = categoriesByLabel.get(label) ?? UNLABELED_RECORDED_SAMPLING_CATEGORY;
+        this.eligible[category]++;
+        this.samples.push({ label, category });
     }
 
-    prepare() {
+    prepare(noSamplesError?: string): RecordedDrivingCoverage {
         this.previous = undefined;
-        let quota = Infinity;
-        this.buckets.forEach((bucket) => { quota = Math.min(quota, bucket.count); });
-        this.buckets.forEach((bucket) => { bucket.quota = quota; });
+        const configured = this.config.recordedSamplingWeights;
+        this.weights = { ...configured };
+        for (const category of RECORDED_SAMPLING_CATEGORIES) {
+            if (!this.eligible[category]) this.weights[category] = 0;
+        }
+        if (!RECORDED_SAMPLING_CATEGORIES.some((category) => this.eligible[category] > 0)) {
+            throw new Error(noSamplesError || 'No consecutive aligned samples were available for replay.');
+        }
+        if (!RECORDED_SAMPLING_CATEGORIES.some((category) => this.weights[category] > 0)) {
+            throw new Error('The recording has no examples with a positive sampling weight. Adjust the sampling weights or select different annotations.');
+        }
+        return { eligible: { ...this.eligible } };
     }
 
-    select(group: string) {
-        const bucket = this.buckets.get(group);
-        if (!bucket || bucket.seen >= bucket.count) return false;
-        const { quota, count } = bucket;
-        const before = Math.round(bucket.seen * quota / count);
-        bucket.seen++;
-        return Math.round(bucket.seen * quota / count) > before;
+    select(clipLabel?: string): RecordedSamplingCategory {
+        const sample = this.samples[this.replayIndex];
+        if (!sample || sample.label !== normalize(clipLabel)) {
+            throw new Error('The aligned samples changed after counting the recording.');
+        }
+        this.replayIndex++;
+        return sample.category;
     }
+
+    get complete() { return this.replayIndex === this.samples.length; }
 }
