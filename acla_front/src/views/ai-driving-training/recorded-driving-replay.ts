@@ -1,6 +1,6 @@
 import { DrivingMemory, DrivingPolicyInput } from './driving-memory';
 import { DrivingObservation, encodeDrivingAction } from './driving-observation';
-import { DrivingPlanTraining, RECORDED_PLAN_WINDOW } from './driving-plan-training';
+import { DrivingPlanTraining } from './driving-plan-training';
 import { DrivingPolicy } from './driving-policy';
 import type { DrivingModelConfig } from './driving-model-config';
 import type { RecordedDrivingBalance } from './recorded-driving-balance';
@@ -41,7 +41,7 @@ export class RecordedDrivingReplay {
         this.plans = new DrivingPlanTraining(balance?.weights);
     }
 
-    get sampled() { return this.plans.sampled; }
+    get trained() { return this.plans.trained; }
 
     async startRange(active = () => true) {
         await this.finish(active, false);
@@ -52,11 +52,11 @@ export class RecordedDrivingReplay {
 
     async finish(active = () => true, final = true) {
         while (this.plans.hasPending && active()) {
-            const result = { hasMoreDraws: false };
+            const window = { more: false };
             await this.policy.trainBatchAsync(async () => {
-                result.hasMoreDraws = await this.plans.finishAsync(this.policy, active, final, RECORDED_PLAN_WINDOW);
+                window.more = await this.plans.finishAsync(this.policy, active, final);
             });
-            if (!final || !result.hasMoreDraws) break;
+            if (!window.more) break;
         }
     }
 

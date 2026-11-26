@@ -1,42 +1,54 @@
 import type { PolicyDecision } from './driving-policy';
 
 type Plan = PolicyDecision['plan'];
-const TIME_EPSILON = 1e-9;
+const EPSILON = 1e-9;
+const CONTROL_AXES = ['pedal', 'steering'] as const;
 
-function intentAt(plan: Plan, seconds: number) {
-    let step = 0;
-    while (step + 1 < plan.length && plan[step + 1].timeSeconds <= seconds + TIME_EPSILON) step++;
-    const point = plan[step], next = plan[step + 1];
-    const weight = next ? (seconds - point.timeSeconds) / (next.timeSeconds - point.timeSeconds) : 0;
-    const axes = point.means.map((mean, axis) => {
-        const value = Math.tanh(mean);
-        const nextValue = next ? Math.tanh(next.means[axis]) : value;
-        return value + (nextValue - value) * weight;
-    });
-    const shift = point.shiftProbabilities.indexOf(Math.max(...point.shiftProbabilities));
-    return { axes, shift };
+export const DRIVING_PLAN_REFRESH_DIFFERENCE = 0.4;
+export const DRIVING_PLAN_REFRESH_SECONDS = 4;
+
+function gearActionsDiffer(pendingPlan: Plan, activeShift: Plan[number]['shift'], next: Plan, remainingSeconds: number): boolean {
+    const pending = pendingPlan.filter(({ shift }) => shift !== 0);
+    const fresh = next.filter(({ shift }) => shift !== 0);
+    const matches = (skip: number) => {
+        const extra = fresh[pending.length + skip];
+        // Match gear actions in order regardless of timing. A fresh-only tail
+        // outside the comparison window does not add a comparable action.
+        return pending.every(({ shift }, i) => shift === fresh[i + skip]?.shift)
+            && (!extra || extra.timeSeconds > Math.max(0, remainingSeconds) + EPSILON);
+    };
+    // An immediate repeat of the active step's shift is not a reason to re-press it.
+    return !matches(0) && !(activeShift !== 0 && next[0].shift === activeShift && matches(1));
 }
 
-/** Compare policy intent at matching future times, without comparing independent
- * exploration draws. Retaining a plan also retains its sampled actions and credit
- * owner. A fresh inference must cover the entire remaining plan. */
-export function drivingPlansAgree(previous: Plan, previousElapsedSeconds: number,
-    next: Plan, nextElapsedSeconds: number, tolerance: number): boolean {
-    if (!previous.length || !next.length || ![previousElapsedSeconds, nextElapsedSeconds, tolerance]
-        .every((value) => Number.isFinite(value) && value >= 0)) return false;
-    const remaining = previous[previous.length - 1].timeSeconds - previousElapsedSeconds;
-    const nextRemaining = next[next.length - 1].timeSeconds - nextElapsedSeconds;
-    if (remaining <= TIME_EPSILON || nextRemaining + TIME_EPSILON < remaining) return false;
-    // Linear analog differences reach their maxima at an endpoint or a knot of
-    // either plan. Including both grids also checks each categorical interval.
-    const times = [0, remaining,
-        ...previous.map(({ timeSeconds }) => timeSeconds - previousElapsedSeconds),
-        ...next.map(({ timeSeconds }) => timeSeconds - nextElapsedSeconds)]
-        .filter((time) => time >= 0 && time <= remaining);
-    return times.every((time) => {
-        const before = intentAt(previous, previousElapsedSeconds + time);
-        const after = intentAt(next, nextElapsedSeconds + time);
-        return before.shift === after.shift && before.axes.every((value, axis) =>
-            Math.abs(value - after.axes[axis]) <= tolerance + TIME_EPSILON);
-    });
+/** Compare the sampled controls over the plans' shared future, keeping the outgoing clock. */
+export function drivingPlanControlsDiffer(current: Plan, elapsedSeconds: number, next: Plan, lastAppliedStep?: number): boolean {
+    if (!current.length || !next.length || !Number.isFinite(elapsedSeconds) || elapsedSeconds < 0) return false;
+    const remaining = current[current.length - 1].timeSeconds - elapsedSeconds;
+    if (remaining > next[next.length - 1].timeSeconds + EPSILON) return false;
+
+    let activeStep = 0;
+    while (activeStep + 1 < current.length && current[activeStep + 1].timeSeconds <= elapsedSeconds + EPSILON) activeStep++;
+    // A shift in the active step is still pending until its controller write is acknowledged.
+    // Earlier skipped steps can no longer run and are not part of the outgoing sequence.
+    const activeStepApplied = (lastAppliedStep ?? activeStep) >= activeStep;
+    if (gearActionsDiffer(current.slice(activeStepApplied ? activeStep + 1 : activeStep),
+        activeStepApplied ? current[activeStep].shift : 0, next, remaining)) return true;
+
+    const differences = [0, 0]; // Signed pedal and steering, in normalized control units.
+    let count = 0, nextStep = 0;
+    for (let step = activeStep + 1; step < current.length; step++) {
+        const point = current[step];
+        const future = point.timeSeconds - elapsedSeconds;
+        while (nextStep + 1 < next.length && next[nextStep + 1].timeSeconds <= future + EPSILON) nextStep++;
+        const from = next[nextStep], to = next[nextStep + 1];
+        const weight = to ? Math.max(0, future - from.timeSeconds) / (to.timeSeconds - from.timeSeconds) : 0;
+        CONTROL_AXES.forEach((axis, i) => {
+            const start = from.action[axis];
+            const fresh = to ? start + (to.action[axis] - start) * weight : start;
+            differences[i] += Math.abs(point.action[axis] - fresh);
+        });
+        count++;
+    }
+    return count > 0 && differences.some((total) => total / count >= DRIVING_PLAN_REFRESH_DIFFERENCE - EPSILON);
 }

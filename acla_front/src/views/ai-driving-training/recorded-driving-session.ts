@@ -28,29 +28,60 @@ export interface RecordedDrivingSession {
     durationSeconds: number;
     timestampField: RecordedClock;
 }
+export interface RecordedGearShift {
+    direction: 'up' | 'down';
+    before: number;
+    after: number;
+}
 export type RecordedObservationResult = ObservationResult & { shiftGear?: number };
 
 let nextSessionId = 0;
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
-/** Imports the same flat telemetry JSONL written by the desktop recorder. */
-export function parseRecordedDrivingSession(text: string, fallbackGame: DesktopGame): RecordedDrivingSession {
+// Replay needs the observation inputs, reference-lap context and off-track reward data.
+const REPLAY_TELEMETRY_FIELDS = [
+    'Graphics_analyst_session_time', 'Graphics_game_time', 'Graphics_status', 'Graphics_normalized_car_position',
+    'Graphics_track_grip_status', 'Graphics_player_track_surface', 'Static_car_model', 'Static_track', 'Static_number_of_session',
+    'Physics_gas', 'Physics_brake', 'Physics_steer_angle', 'Physics_gear', 'Physics_rpm', 'Physics_speed_kmh',
+    'Physics_local_velocity_x', 'Physics_local_velocity_y', 'Physics_local_velocity_z',
+    'Physics_g_force_x', 'Physics_g_force_y', 'Physics_g_force_z',
+    'Physics_local_angular_vel_y', 'Physics_local_angular_vel_z', 'Physics_autoshifter_on',
+    'Physics_tyre_contact_point_front_left_x', 'Physics_tyre_contact_point_front_left_y',
+    'Physics_tyre_contact_point_front_right_x', 'Physics_tyre_contact_point_front_right_y',
+    'Physics_tyre_contact_point_rear_left_x', 'Physics_tyre_contact_point_rear_left_y',
+    'Physics_tyre_contact_point_rear_right_x', 'Physics_tyre_contact_point_rear_right_y',
+] as const satisfies readonly (keyof StandardTelemetrySample)[];
+
+function selectReplayTelemetry(sample: StandardTelemetrySample): StandardTelemetrySample {
+    return Object.fromEntries(REPLAY_TELEMETRY_FIELDS.filter((field) => sample[field] !== undefined)
+        .map((field) => [field, sample[field]]));
+}
+
+function createRecordedDrivingParser(fallbackGame: DesktopGame, projectSample?: typeof selectReplayTelemetry) {
     if (!isDesktopGame(fallbackGame)) throw new Error('Choose the simulator used for this recording.');
     const rows: RecordedDrivingRow[] = [];
     let game: DesktopGame | undefined;
     let timestampField: RecordedClock | undefined;
     let startTimeSeconds = 0, previousTime = -Infinity, segment = 0, previousContext: string | undefined;
-    text.replace(/^\uFEFF/, '').split(/\r?\n/).forEach((line, lineIndex) => {
+    let lineNumber = 0;
+
+    const addLine = (line: string) => {
+        if (++lineNumber === 1) line = line.replace(/^\uFEFF/, '');
         if (!line.trim()) return;
-        const fail = (message: string): never => { throw new Error(`Telemetry JSONL line ${lineIndex + 1}: ${message}`); };
+        const fail = (message: string): never => { throw new Error(`Telemetry JSONL line ${lineNumber}: ${message}`); };
         let parsed: unknown;
         try { parsed = JSON.parse(line); } catch { fail('invalid JSON.'); }
         if (!object(parsed)) return fail('expected a telemetry object.');
         // Source-frame exports may wrap the canonical row in { game, sample }.
         const source = object(parsed.sample) ? parsed.sample : parsed;
-        const { game: embeddedGame, ...flatSample } = source;
-        const declaredGame = parsed.game ?? embeddedGame;
+        let flatSample = source;
+        let declaredGame: unknown = parsed.game ?? undefined;
+        if (Object.prototype.hasOwnProperty.call(source, 'game')) {
+            const { game: embeddedGame, ...fields } = source;
+            declaredGame ??= embeddedGame;
+            flatSample = fields;
+        }
         if (declaredGame !== undefined && !isDesktopGame(declaredGame)) return fail('unknown simulator.');
         const rowGame = isDesktopGame(declaredGame) ? declaredGame : game ?? fallbackGame;
         if (game !== undefined && rowGame !== game) return fail('the simulator changed; import one simulator per recording.');
@@ -66,14 +97,59 @@ export function parseRecordedDrivingSession(text: string, fallbackGame: DesktopG
         if (!rows.length) startTimeSeconds = time;
         const context = JSON.stringify([sample.Static_car_model, sample.Static_track, sample.Static_number_of_session]);
         if (previousContext !== undefined && context !== previousContext) segment++;
-        rows.push({ sample, index: rows.length, timeSeconds: time - startTimeSeconds, segment });
+        rows.push({ sample: projectSample?.(sample) ?? sample, index: rows.length, timeSeconds: time - startTimeSeconds, segment });
         previousTime = time;
         previousContext = context;
-    });
-    if (!rows.length || !game || !timestampField) throw new Error('The telemetry JSONL file contains no samples.');
-    labelNeutralTransitions(rows);
-    return { id: `recorded-${++nextSessionId}`, game, rows, startTimeSeconds,
-        durationSeconds: rows[rows.length - 1].timeSeconds, timestampField };
+    };
+    const finish = (): RecordedDrivingSession => {
+        if (!rows.length || !game || !timestampField) throw new Error('The telemetry JSONL file contains no samples.');
+        labelNeutralTransitions(rows);
+        return { id: `recorded-${++nextSessionId}`, game, rows, startTimeSeconds,
+            durationSeconds: rows[rows.length - 1].timeSeconds, timestampField };
+    };
+    return { addLine, finish };
+}
+
+/** Imports flat telemetry JSONL already available as text. */
+export function parseRecordedDrivingSession(text: string, fallbackGame: DesktopGame): RecordedDrivingSession {
+    const parser = createRecordedDrivingParser(fallbackGame);
+    text.split(/\r?\n/).forEach(parser.addLine);
+    return parser.finish();
+}
+
+/** Imports buffered UTF-8 telemetry and retains the fields used for seeking and training. */
+export async function parseRecordedDrivingSessionStream(stream: ReadableStream<Uint8Array>, fallbackGame: DesktopGame,
+    signal?: AbortSignal): Promise<RecordedDrivingSession> {
+    const checkAbort = () => {
+        if (signal?.aborted) throw new DOMException('Recording operation cancelled.', 'AbortError');
+    };
+    checkAbort();
+    const parser = createRecordedDrivingParser(fallbackGame, selectReplayTelemetry);
+    // Keep BOM handling in the shared line parser.
+    const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
+    const reader = stream.getReader();
+    const cancel = () => { void reader.cancel().catch(() => undefined); };
+    signal?.addEventListener('abort', cancel, { once: true });
+    let pending = '';
+    let exhausted = false;
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            checkAbort();
+            if (done) {
+                exhausted = true;
+                parser.addLine(pending + decoder.decode());
+                return parser.finish();
+            }
+            const lines = (pending + decoder.decode(value, { stream: true })).split('\n');
+            pending = lines.pop()!;
+            lines.forEach(parser.addLine);
+        }
+    } finally {
+        signal?.removeEventListener('abort', cancel);
+        if (!exhausted && !signal?.aborted) cancel();
+        reader.releaseLock();
+    }
 }
 
 function labelNeutralTransitions(rows: RecordedDrivingRow[]) {
@@ -97,6 +173,33 @@ function labelNeutralTransitions(rows: RecordedDrivingRow[]) {
         engaged = { index, segment, gear };
         maxGapSeconds = 0;
     }
+}
+
+/** Finds single forward-gear changes bracketed by live samples on the recording clock. */
+export function findRecordedGearShifts({ rows }: RecordedDrivingSession, maxSeconds: number): RecordedGearShift[] {
+    const shifts: RecordedGearShift[] = [];
+    let previous: { time: number; gear: number; segment: number } | undefined;
+    for (let index = 0; index < rows.length; index++) {
+        const { sample, segment, timeSeconds } = rows[index];
+        // Match telemetry lookup, which takes the last sample at a shared timestamp.
+        if (rows[index + 1]?.timeSeconds === timeSeconds) continue;
+        if (previous?.segment !== segment) previous = undefined;
+        const gear = sample.Physics_gear;
+        if (sample.Graphics_status !== ACC_STATUS.ACC_LIVE || !finite(gear) || !Number.isInteger(gear) || gear < 1) {
+            previous = undefined;
+            continue;
+        }
+        if (gear === 1) continue; // Allow brief neutral between forward gears.
+        if (previous) {
+            const delta = gear - previous.gear;
+            const elapsed = timeSeconds - previous.time;
+            if (Math.abs(delta) === 1 && elapsed > 0 && elapsed <= maxSeconds + 1e-9) {
+                shifts.push({ direction: delta > 0 ? 'up' : 'down', before: previous.time, after: timeSeconds });
+            }
+        }
+        previous = { gear, segment, time: timeSeconds };
+    }
+    return shifts;
 }
 
 /** Finds the most recent sample at the frame's time on the telemetry clock. */

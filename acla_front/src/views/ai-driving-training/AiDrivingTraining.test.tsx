@@ -453,6 +453,8 @@ it('displays the complete action plan in one table and clears it on Stop', async
     act(() => { jest.advanceTimersByTime(250); });
     fireEvent.click(screen.getByRole('button', { name: 'Run trained model' })); await flush();
     expect(screen.getByText(/One action plan predicts 51 control steps from 0 to 5 seconds/)).toBeInTheDocument();
+    expect(screen.getByText(/the remaining gear actions change \(not just their timing\)/)).toHaveTextContent('Exploration can trigger a refresh too.');
+    expect(screen.getByText(/at least 40% on average across the remaining steps, or once the current plan has run for 4 seconds/)).toBeInTheDocument();
     expect(within(table).getAllByRole('row')).toHaveLength(52);
     expect(within(table).getAllByRole('rowheader').map((cell) => cell.textContent))
         .toEqual(Array.from({ length: 51 }, (_, step) => `${(step / 10).toFixed(1)} s`));

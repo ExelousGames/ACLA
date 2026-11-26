@@ -6,9 +6,14 @@ import { capturePolicyCameraImage, PolicyCameraImage } from 'views/live-session/
 import type { DrivingModelConfig } from './driving-model-config';
 import type { DrivingPolicy } from './driving-policy';
 import { cameraChannelStats, DrivingCameraInspection } from './driving-camera-inspection';
-import { parseRecordedDrivingSession, RecordedDrivingSession } from './recorded-driving-session';
+import { findRecordedGearShifts, parseRecordedDrivingSessionStream, RecordedDrivingSession } from './recorded-driving-session';
+import RecordedTimeline from './RecordedTimeline';
 import RecordedTrainingRanges, { timestamp, TrainingAnnotation, TrainingRange, TrainingRangeDraft, TrainingSelection } from './RecordedTrainingRanges';
 import './RecordedFrameViewer.css';
+
+const MIN_PLAYBACK_SPEED = 0.25;
+const MAX_PLAYBACK_SPEED = 2;
+const PLAYBACK_SPEED_STEP = 0.25;
 
 export interface RecordedReplayFrame {
     session: RecordedDrivingSession;
@@ -86,11 +91,12 @@ const matchingTelemetry = (video: File, files: File[]) => {
 const abortError = () => new DOMException('Recording operation cancelled.', 'AbortError');
 const checkAbort = (signal: AbortSignal) => { if (signal.aborted) throw abortError(); };
 const message = (error: unknown) => error instanceof Error ? error.message : 'Could not read the recording.';
-const readTelemetry = async (source: File | string, signal: AbortSignal) => {
-    if (typeof source !== 'string') return source.text();
+const readTelemetry = async (source: File | string, game: DesktopGame, signal: AbortSignal) => {
+    checkAbort(signal);
+    if (typeof source !== 'string') return parseRecordedDrivingSessionStream(source.stream(), game, signal);
     const response = await fetch(source, { signal });
-    if (!response.ok) throw new Error('The annotation’s telemetry file could not be read.');
-    return response.text();
+    if (!response.ok || !response.body) throw new Error('The annotation’s telemetry file could not be read.');
+    return parseRecordedDrivingSessionStream(response.body, game, signal);
 };
 const hasUsableVideoTiming = (session: RecordedDrivingSession, videoTiming?: number | null): videoTiming is number =>
     videoTiming != null && session.timestampField === 'Graphics_analyst_session_time';
@@ -251,10 +257,16 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
     const [url, setUrl] = useState('');
     const [session, setSession] = useState<RecordedDrivingSession | null>(null);
     const [loadingTelemetry, setLoadingTelemetry] = useState(false);
+    const { maxTransitionSeconds, telemetryMaxAgeMs } = props.configuration.runtime;
+    const maxShiftSeconds = Math.min(0.5, maxTransitionSeconds, telemetryMaxAgeMs / 1000);
+    const gearShifts = useMemo(() => session ? findRecordedGearShifts(session, maxShiftSeconds) : [], [session, maxShiftSeconds]);
+    const telemetryStart = session ? telemetryAtVideoStart(session, videoTiming, previewOffset) : 0;
+    const shiftVideoOffset = session ? session.startTimeSeconds - telemetryStart : 0;
     const sessionRef = useRef(session); sessionRef.current = session;
     const presentedFrames = useRef<ReturnType<typeof watchPresentedVideoFrames> | null>(null);
     const [time, setTime] = useState(0);
     const [duration, setDuration] = useState(0);
+    const [playbackSpeed, setPlaybackSpeed] = useState(1);
     const [error, setError] = useState('');
     const [inspection, setInspection] = useState<DrivingCameraInspection | null>(null);
     const [inspectedImage, setInspectedImage] = useState('');
@@ -340,15 +352,21 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
         };
     }, [url]);
     useEffect(() => {
+        const player = video.current;
+        if (!player) return;
+        player.defaultPlaybackRate = playbackSpeed;
+        player.playbackRate = playbackSpeed;
+    }, [url, playbackSpeed]);
+    useEffect(() => {
         setSession(null); sessionRef.current = null; current.current.onFrame(null); setError('');
         resetInspection();
         if (!previewTelemetry) { setLoadingTelemetry(false); return; }
         const controller = new AbortController();
         const { signal } = controller;
         setLoadingTelemetry(true);
-        void readTelemetry(previewTelemetry, signal).then((text) => {
+        void readTelemetry(previewTelemetry, previewGame, signal).then((recording) => {
             if (signal.aborted) return;
-            setSession(parseRecordedDrivingSession(text, previewGame));
+            setSession(recording);
         }).catch((reason) => { if (!signal.aborted) setError(message(reason)); })
             .finally(() => { if (!signal.aborted) setLoadingTelemetry(false); });
         return () => controller.abort();
@@ -410,7 +428,7 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
                     try {
                         player.pause();
                         const recording = (preview && previewGame === replayGame && sessionRef.current)
-                            || parseRecordedDrivingSession(await readTelemetry(telemetryUrl, active), replayGame);
+                            || await readTelemetry(telemetryUrl, replayGame, active);
                         checkAbort(active);
                         if (!preview) {
                             player.crossOrigin = 'anonymous';
@@ -786,19 +804,29 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
             <video key={`video:${url}`} ref={video} className="recorded-video" crossOrigin={annotation ? 'anonymous' : undefined}
                 src={url} controls={!locked} preload="auto" aria-label="Original recorded video"
                 onLoadedMetadata={(event) => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
+                onRateChange={(event) => {
+                    const rate = event.currentTarget.playbackRate;
+                    if (rate >= MIN_PLAYBACK_SPEED && rate <= MAX_PLAYBACK_SPEED && rate % PLAYBACK_SPEED_STEP === 0) setPlaybackSpeed(rate);
+                }}
                 onLoadedData={publishFrame} onTimeUpdate={publishFrame} onSeeked={publishFrame}
                 onSeeking={() => {
                     presentedFrames.current?.clear();
                     if (!busyRef.current) current.current.onFrame(null);
                 }}
                 onError={() => { setError('The recorded video could not be decoded. Try an MP4 or WebM recording.'); current.current.onFrame(null); }} />
-            <label className="recorded-timeline">Recorded frame · {timestamp(time)} / {timestamp(duration)}
-                <input type="range" min="0" max={Math.max(0, duration - 0.001)} step="0.01" value={time} disabled={locked || !duration}
-                    onChange={(event) => seek(Number(event.target.value))} /></label>
+            <RecordedTimeline key={url} time={time} duration={duration} disabled={locked || duration <= 0.001} seek={seek}
+                session={timingPending ? null : session}
+                telemetryStart={telemetryStart} />
+            <label className="recorded-playback-speed">
+                <span>Playback speed <span aria-hidden="true">· {playbackSpeed}×</span></span>
+                <input type="range" min={MIN_PLAYBACK_SPEED} max={MAX_PLAYBACK_SPEED} step={PLAYBACK_SPEED_STEP}
+                    value={playbackSpeed} aria-valuetext={`${playbackSpeed} times normal speed`} disabled={locked}
+                    onChange={(event) => setPlaybackSpeed(event.target.valueAsNumber)} /></label>
             {draft && !selectedSettings?.error && <RecordedTrainingRanges key={annotation?.id ?? JSON.stringify([url, selectedTelemetry && fileLabel(selectedTelemetry)])}
                 selection={{ ...draft, offsetSeconds: previewOffset }}
                 duration={duration} time={time} step={Math.max(0.1, props.configuration.runtime.controlIntervalMs / 1000)}
-                overlap={session && !timingPending ? alignedRange(duration, session, telemetryAtVideoStart(session, videoTiming, previewOffset)) : null}
+                overlap={session && !timingPending ? alignedRange(duration, session, telemetryStart) : null}
+                gearShifts={gearShifts} shiftVideoOffset={shiftVideoOffset}
                 disabled={locked || !duration} dirty={dirty} canSave={canSave}
                 playhead={() => video.current?.currentTime ?? time} seek={seek}
                 change={({ ranges, fullRecordingLabel }) => editSelection({ ranges, fullRecordingLabel })}

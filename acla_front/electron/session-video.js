@@ -36,13 +36,14 @@ function trainingSelection(document) {
     throw new Error('Invalid training range file.');
   }
   if (game !== undefined && !DESKTOP_GAME_SET.has(game)) throw new Error('Choose a recognized simulator for the training annotation.');
-  let previousEnd = -Infinity;
+  let previousStart = -Infinity;
   const validated = ranges?.map((range) => {
     const { start, end, label } = range ?? {};
-    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || start <= previousEnd) {
-      throw new Error('Training ranges must be sorted and separated.');
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) {
+      throw new Error('Training ranges need a nonnegative start and an end after the start.');
     }
-    previousEnd = end;
+    if (start < previousStart) throw new Error('Training ranges must be sorted by start time.');
+    previousStart = start;
     const trimmedLabel = trainingLabel(label);
     return trimmedLabel ? { start, end, label: trimmedLabel } : { start, end };
   }) ?? null;

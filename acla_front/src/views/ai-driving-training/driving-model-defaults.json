@@ -79,9 +79,8 @@
   },
   "recordedSamplingWeights": {
     "Warmup": 4,
-    "Race pace": 4,
-    "Shifting": 15,
-    "Cornering": 25,
+    "Shift down": 7.5,
+    "Shift up": 7.5,
     "Overtake": 4,
     "Defend": 4,
     "Traffic": 4,
@@ -91,7 +90,9 @@
     "Reverse back": 4,
     "Pit entry": 4,
     "Pit exit": 4,
-    "Unlabeled": 16
+    "Switch lane left": 0,
+    "Switch lane right": 0,
+    "Unlabeled": 45
   },
   "reward": {
     "referenceTiming": "live-phrase-speed-profile",

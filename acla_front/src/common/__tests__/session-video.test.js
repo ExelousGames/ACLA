@@ -123,22 +123,26 @@ it('saves and reloads independent annotations with both filenames', async () => 
     const second = path.join(directory, 'second.mp4');
     await Promise.all([fs.writeFile(first, 'video one'), fs.writeFile(second, 'video two')]);
     const selected = { version: 2, videoFileName: 'first.webm', telemetryFileName: 'acc.jsonl', game: 'acc', offsetSeconds: -0.25,
-        ranges: [{ start: 1, end: 2, label: 'Cornering' }, { start: 4, end: 5 }] };
-    const other = { ...selected, videoFileName: 'second.mp4', game: 'iracing', ranges: null, fullRecordingLabel: 'Shifting' };
+        ranges: [{ start: 1, end: 3, label: 'Shift down' }, { start: 1, end: 3 },
+            { start: 2, end: 3.5, label: 'Switch lane left' }, { start: 3.5, end: 5, label: 'Switch lane right' }] };
+    const other = { ...selected, videoFileName: 'second.mp4', game: 'iracing', ranges: null, fullRecordingLabel: 'Shift up' };
     await expect(call('training-read', first)).resolves.toBeNull();
     const draft = { ...selected,
-        ranges: [{ start: 1, end: 2, label: '  Cornering ' }, { start: 4, end: 5, label: ' ' }] };
+        ranges: [{ ...selected.ranges[0], label: '  Shift down ' },
+            { ...selected.ranges[1], label: ' ' }, ...selected.ranges.slice(2)] };
     await expect(call('training-write', first, telemetry, draft)).resolves.toMatchObject({ selection: selected });
     await call('training-write', second, telemetry, other);
     await expect(call('training-read', first)).resolves.toEqual(selected);
     await expect(call('training-read', second)).resolves.toEqual(other);
     await call('training-write', second, telemetry, { ranges: [], game: null });
     expect(await call('training-read', second)).not.toHaveProperty('game');
-    await expect(call('training-write', first, telemetry, { ...selected, ranges: [{ start: 1, end: 3 }, { start: 2, end: 4 }] }))
-        .rejects.toThrow('sorted and separated');
+    await expect(call('training-write', first, telemetry, { ...selected, ranges: [{ start: 2, end: 4 }, { start: 1, end: 3 }] }))
+        .rejects.toThrow('sorted by start time');
+    await expect(call('training-write', first, telemetry, { ranges: [{ start: 2, end: 2 }] }))
+        .rejects.toThrow('an end after the start');
     await expect(call('training-write', first, telemetry, { ranges: [{ start: 1, end: 2, label: 123 }] }))
         .rejects.toThrow('Training range labels must be text');
-    await expect(call('training-write', first, telemetry, { ranges: [{ start: 1, end: 2, label: 'Custom label' }] }))
+    await expect(call('training-write', first, telemetry, { ranges: [{ start: 1, end: 2, label: 'Shifting' }] }))
         .rejects.toThrow('Choose a training label from the list');
     await expect(call('training-write', first, telemetry, { ...selected, game: 'unknown' }))
         .rejects.toThrow('Choose a recognized simulator');
@@ -164,7 +168,7 @@ it('edits renamed annotations in place and streams byte ranges for video seeking
     const { id, videoUrl, telemetryUrl, selection, name } = await call('training-open', annotation);
     expect(name).toBe('turns.json');
     expect(selection).toMatchObject({ videoFileName: 'camera.webm', telemetryFileName: 'acc.jsonl', game: 'iracing', offsetSeconds: 0.2 });
-    const ranges = [{ start: 2, end: 3, label: 'Clean corner' }];
+    const ranges = [{ start: 2, end: 3, label: 'Clean corner' }, { start: 2.5, end: 3.5 }];
     const updated = { ...selection, ranges, offsetSeconds: 0.4 };
     await expect(call('training-update', id, { ranges, offsetSeconds: 0.4 })).resolves.toMatchObject({ id, name, selection: updated });
     await expect(call('training-update', id, { ranges: [...ranges, { start: 4, end: 5, label: 'Clean corner' }] }))
@@ -197,7 +201,7 @@ it('edits renamed annotations in place and streams byte ranges for video seeking
 it('persists a full recording label and clears it when clips are selected', async () => {
     const video = path.join(directory, 'aligned.mp4');
     await fs.writeFile(video, 'video');
-    await expect(call('training-write', video, telemetry, { ranges: null, fullRecordingLabel: 'Custom label' }))
+    await expect(call('training-write', video, telemetry, { ranges: null, fullRecordingLabel: 'Cornering' }))
         .rejects.toThrow('Choose a training label from the list');
     const { id, selection } = await call('training-write', video, telemetry, { ranges: null, fullRecordingLabel: '  Warmup ' });
     expect(selection.fullRecordingLabel).toBe('Warmup');
@@ -212,7 +216,7 @@ it('persists a full recording label and clears it when clips are selected', asyn
 it('retains legacy sidecars and rejects missing or out-of-folder media in imported JSON', async () => {
     const video = `${telemetry}.video-1-abc.mp4`;
     const annotation = `${video}.training-ranges.json`;
-    const legacy = { version: 1, offsetSeconds: 0.2, ranges: null, fullRecordingLabel: 'Practice setup' };
+    const legacy = { version: 1, offsetSeconds: 0.2, ranges: null, fullRecordingLabel: 'Cornering' };
     await fs.writeFile(video, 'video');
     await fs.writeFile(annotation, JSON.stringify(legacy));
     await expect(call('training-read', video)).resolves.toEqual(legacy);

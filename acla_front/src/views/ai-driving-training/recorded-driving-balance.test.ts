@@ -5,7 +5,7 @@ import { trainingFixture } from './training-fixtures';
 function setup() {
     const base = trainingFixture().observation;
     const config = cloneConfig();
-    config.recordedSamplingWeights = { ...emptyRecordedSamplingWeights(), Unlabeled: 30, 'Race pace': 30, Cornering: 25, Shifting: 15 };
+    config.recordedSamplingWeights = { ...emptyRecordedSamplingWeights(), Unlabeled: 30, 'Shift down': 30, 'Shift up': 15, Hairpin: 25 };
     const balance = new RecordedDrivingBalance(config);
     const count = (at: number, { label, startsRange, steering = 0, gear = 3 }:
         { label?: string; startsRange?: boolean; steering?: number; gear?: number } = {}) => {
@@ -17,25 +17,27 @@ function setup() {
 
 it('uses only the origin annotation to categorize examples, even during gear changes and steering', () => {
     const { balance, count } = setup();
-    count(1000, { label: ' Cornering ' });
-    count(1100, { label: 'SHIFTING' });
-    count(1200, { label: 'Race pace' });
+    count(1000, { label: ' Hairpin ' });
+    count(1100, { label: 'SHIFT UP' });
+    count(1200, { label: 'Shift down' });
     count(1300, { steering: 0.3, gear: 4 });
-    count(1400, { steering: -0.3, gear: 4 });
-    count(1500, { label: 'Legacy annotation', gear: 5 });
-    count(1600, { gear: 5 });
+    count(1400, { label: 'Race pace', steering: -0.3, gear: 4 });
+    count(1500, { label: 'Shifting', gear: 5 });
+    count(1600, { label: 'Cornering', gear: 5 });
+    count(1700, { gear: 5 });
 
-    expect(balance.prepare()).toEqual({ eligible: { ...emptyRecordedSamplingWeights(), Unlabeled: 3, 'Race pace': 1,
-        Cornering: 1, Shifting: 1 } });
-    expect(balance.weights).toEqual({ ...emptyRecordedSamplingWeights(), Unlabeled: 30, 'Race pace': 30,
-        Cornering: 25, Shifting: 15 });
-    expect(() => balance.select('Race pace')).toThrow('The aligned samples changed');
-    expect(balance.select('Cornering')).toBe('Cornering');
-    expect(balance.select('shifting')).toBe('Shifting');
-    expect(balance.select('Race pace')).toBe('Race pace');
+    expect(balance.prepare()).toEqual({ eligible: { ...emptyRecordedSamplingWeights(), Unlabeled: 4, 'Shift down': 1,
+        'Shift up': 1, Hairpin: 1 } });
+    expect(balance.weights).toEqual({ ...emptyRecordedSamplingWeights(), Unlabeled: 30, 'Shift down': 30,
+        'Shift up': 15, Hairpin: 25 });
+    expect(() => balance.select('Shift down')).toThrow('The aligned samples changed');
+    expect(balance.select('Hairpin')).toBe('Hairpin');
+    expect(balance.select('shift up')).toBe('Shift up');
+    expect(balance.select('Shift down')).toBe('Shift down');
     expect(balance.select()).toBe('Unlabeled');
-    expect(balance.select()).toBe('Unlabeled');
-    expect(balance.select('Legacy annotation')).toBe('Unlabeled');
+    expect(balance.select('Race pace')).toBe('Unlabeled');
+    expect(balance.select('Shifting')).toBe('Unlabeled');
+    expect(balance.select('Cornering')).toBe('Unlabeled');
     expect(balance.complete).toBe(true);
 });
 
@@ -56,7 +58,7 @@ it.each(['clip', 'gap', 'invalid'])('does not count origins across a %s boundary
 
 it('explains when none of the available categories has a positive weight', () => {
     const { balance, config, count } = setup();
-    config.recordedSamplingWeights = { ...emptyRecordedSamplingWeights(), Cornering: 100 };
+    config.recordedSamplingWeights = { ...emptyRecordedSamplingWeights(), Hairpin: 100 };
     count(1000);
     count(1100, { steering: 0.3 });
     expect(() => balance.prepare()).toThrow('Adjust the sampling weights or select different annotations.');

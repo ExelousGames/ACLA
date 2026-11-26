@@ -7,7 +7,7 @@ import { ControlLease, DrivingControlOutput } from './driving-control-output';
 import { DrivingMemory, DrivingPolicyInput, drivingMemorySlotInputs } from './driving-memory';
 import { DrivingConsequenceBatch, DrivingConsequenceBuffer } from './driving-consequence-buffer';
 import { DrivingModelTimer } from './driving-model-timing';
-import { drivingPlansAgree } from './driving-plan-agreement';
+import { DRIVING_PLAN_REFRESH_SECONDS, drivingPlanControlsDiffer } from './driving-plan-agreement';
 import type { ControllerAction } from './virtual-controller';
 import type { DrivingImpact } from './driving-impact';
 import { DrivingBlockedMotionMonitor } from './driving-blocked-motion';
@@ -555,10 +555,13 @@ export class DrivingTrainingLoop {
                 const outgoing = this.activePlan;
                 // Plan zero is its acknowledged execution start. The candidate
                 // would start now; the outgoing plan keeps its original clock.
-                const agrees = outgoing && drivingPlansAgree(outgoing.decision.plan,
-                    Math.max(0, (this.now() - outgoing.startedAt) / 1000), decision.plan, 0,
-                    this.config.actions.planAgreementTolerance);
-                if (agrees) {
+                const elapsed = outgoing ? Math.max(0, (this.now() - outgoing.startedAt) / 1000) : 0;
+                // The old per-step tolerance is kept in checkpoints for compatibility,
+                // but refresh thresholds are a runtime rule shared by all models.
+                const keep = outgoing && elapsed < DRIVING_PLAN_REFRESH_SECONDS
+                    && !drivingPlanControlsDiffer(outgoing.decision.plan, elapsed, decision.plan,
+                        outgoing.executions[outgoing.executions.length - 1]?.step);
+                if (keep) {
                     // A confirming inference did not execute: keep credit and
                     // sampled exploration attached to the original decision.
                     policy.releaseDecision(decision);

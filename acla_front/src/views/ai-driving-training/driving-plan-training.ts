@@ -1,37 +1,71 @@
-import { emptyRecordedSamplingWeights, RECORDED_SAMPLING_CATEGORIES, UNLABELED_RECORDED_SAMPLING_CATEGORY,
+import { emptyRecordedSamplingWeights, UNLABELED_RECORDED_SAMPLING_CATEGORY,
     type RecordedSamplingCategory, type RecordedSamplingWeights } from './driving-model-config';
 import type { DrivingPolicy, PlannedActionTarget, RecordedPlanTarget } from './driving-policy';
 import type { DrivingPolicyInput } from './driving-memory';
 
 type ObservedAction = Omit<PlannedActionTarget, 'step'>;
 type PendingPlan = { features: DrivingPolicyInput; appliedAt: number; nextStep: number;
-    targets: PlannedActionTarget[]; pool: SamplePool };
-type SamplePool = { plans: RecordedPlanTarget[]; seen: number; capacity: number };
+    targets: PlannedActionTarget[]; category: RecordedSamplingCategory };
+type TrainingPlan = RecordedPlanTarget & { category: RecordedSamplingCategory };
 const BATCH_SIZE = 8;
 export const RECORDED_PLAN_WINDOW = 256;
 
-/** Align plan labels in time, then draw optimizer batches from fixed category proportions. */
+function shuffle<T>(items: T[], random: () => number) {
+    for (let i = items.length - 1; i > 0; i--) {
+        const j = Math.floor(random() * (i + 1));
+        [items[i], items[j]] = [items[j], items[i]];
+    }
+}
+
+/** Pick from each shuffled label pool without replacement, then shuffle the selected batch. */
+function prepareBatches(plans: TrainingPlan[], weights: RecordedSamplingWeights, random: () => number) {
+    const byCategory = new Map<RecordedSamplingCategory, TrainingPlan[]>();
+    for (const plan of plans) {
+        const pool = byCategory.get(plan.category);
+        if (pool) pool.push(plan);
+        else byCategory.set(plan.category, [plan]);
+    }
+    const pools = Array.from(byCategory, ([category, candidates]) => {
+        shuffle(candidates, random);
+        return { candidates, weight: weights[category], credit: 0 };
+    });
+
+    const batches: TrainingPlan[][] = [];
+    for (let remaining = plans.length; remaining > 0;) {
+        const batch: TrainingPlan[] = [];
+        const size = Math.min(remaining, BATCH_SIZE);
+        for (let i = 0; i < size; i++) {
+            // Carry fractional quotas across batches, and redistribute slots as pools run out.
+            let selected = pools[0], totalWeight = 0;
+            for (const pool of pools) {
+                totalWeight += pool.weight;
+                pool.credit += pool.weight;
+                if (pool.credit > selected.credit) selected = pool;
+            }
+            selected.credit -= totalWeight;
+            batch.push(selected.candidates.pop()!);
+            if (!selected.candidates.length) pools.splice(pools.indexOf(selected), 1);
+        }
+        shuffle(batch, random);
+        batches.push(batch);
+        remaining -= size;
+    }
+    return batches;
+}
+
+/** Align targets in time before shuffling; keep only one training window of decoded inputs ready. */
 export class DrivingPlanTraining {
     private pending: PendingPlan[] = [];
-    private pools = new Map<RecordedSamplingCategory, SamplePool>();
-    private readyDraws = 0;
-    private credit = emptyRecordedSamplingWeights();
-    private counts = emptyRecordedSamplingWeights();
+    private ready: TrainingPlan[] = [];
+    private batches: TrainingPlan[][] = [];
+    private readonly counts = emptyRecordedSamplingWeights();
 
-    constructor(private weights: RecordedSamplingWeights = {
+    constructor(private readonly weights: RecordedSamplingWeights = {
         ...emptyRecordedSamplingWeights(), [UNLABELED_RECORDED_SAMPLING_CATEGORY]: 100,
-    },
-        private random = Math.random) {
-        const categories = RECORDED_SAMPLING_CATEGORIES.filter((category) => weights[category] > 0);
-        const totalWeight = categories.reduce((sum, category) => sum + weights[category], 0);
-        for (const category of categories) {
-            const capacity = Math.ceil(RECORDED_PLAN_WINDOW * weights[category] / totalWeight);
-            this.pools.set(category, { plans: [], seen: 0, capacity });
-        }
-    }
+    }, private readonly random = Math.random) {}
 
-    get hasPending() { return this.pending.length > 0 || this.readyDraws > 0; }
-    get sampled() { return { ...this.counts }; }
+    get hasPending() { return Boolean(this.pending.length || this.ready.length || this.batches.length); }
+    get trained() { return { ...this.counts }; }
 
     async recordAsync(policy: DrivingPolicy, features: DrivingPolicyInput | undefined, target: ObservedAction,
         appliedAt: number, active = () => true, category: RecordedSamplingCategory = UNLABELED_RECORDED_SAMPLING_CATEGORY) {
@@ -49,67 +83,48 @@ export class DrivingPlanTraining {
                 plan.nextStep++;
             }
         }
-        const pool = this.pools.get(category);
-        if (features && pool) {
+        if (features && this.weights[category] > 0) {
             const cameras = features.cameras.slice();
             // Recorded plans already own the consecutive history images used for training.
             if (features.recordedHistory) cameras.fill(null, 0, cameras.length - 1);
             this.pending.push({ features: { ...features, features: features.features.slice(), cameras },
-                appliedAt, nextStep: 1, targets: [{ step: 0, ...target }], pool });
+                appliedAt, nextStep: 1, targets: [{ step: 0, ...target }], category });
         }
         this.completePlans(policy.planTimes.length);
-        await this.submit(policy, false, active, RECORDED_PLAN_WINDOW);
+        await this.trainWindow(policy, active, false);
     }
 
     private completePlans(slots: number) {
         while (this.pending.length) {
-            const { features, targets, nextStep, pool } = this.pending[0];
+            const { features, targets, nextStep, category } = this.pending[0];
             if (nextStep < slots) break;
-            // Reservoir sampling retains a cross-section even when a category is first seen late.
-            const index = pool.seen < pool.capacity ? pool.seen : Math.floor(this.random() * (pool.seen + 1));
-            if (index < pool.capacity) pool.plans[index] = { input: features, targets };
-            pool.seen++;
-            this.readyDraws++;
+            this.ready.push({ input: features, targets, category });
             this.pending.shift();
         }
     }
 
-    async finishAsync(policy: DrivingPolicy, active = () => true, final = true, maxDraws = Infinity) {
+    /** Close a consecutive range. Return whether another window is ready to submit. */
+    async finishAsync(policy: DrivingPolicy, active = () => true, final = true) {
         if (!active()) return false;
         this.completePlans(0);
-        return this.submit(policy, final, active, maxDraws);
+        return this.trainWindow(policy, active, final);
     }
 
-    private async submit(policy: DrivingPolicy, final: boolean, active: () => boolean, maxDraws: number) {
-        if (!this.readyDraws || (!final && this.readyDraws < RECORDED_PLAN_WINDOW)) return false;
-        const available = Array.from(this.pools).filter(([, pool]) => pool.plans.length > 0);
-        if (!available.length || (!final && available.length < this.pools.size)) return false;
-        const total = available.reduce((sum, [category]) => sum + this.weights[category], 0);
-        const budget = Math.min(this.readyDraws, maxDraws);
-        let remaining = budget;
-        while (remaining >= (final ? 1 : BATCH_SIZE) && active()) {
-            const credit = { ...this.credit }, counts = { ...this.counts };
-            const batch: RecordedPlanTarget[] = [];
-            const size = Math.min(remaining, BATCH_SIZE);
-            for (let i = 0; i < size; i++) {
-                // Carry fractional quotas across batches, including shares smaller than one slot.
-                let selected = available[0];
-                for (const entry of available) {
-                    const [category] = entry;
-                    credit[category] += this.weights[category];
-                    if (credit[category] > credit[selected[0]]) selected = entry;
-                }
-                const [next, { plans }] = selected;
-                credit[next] -= total;
-                batch.push(plans[counts[next] % plans.length]);
-                counts[next]++;
-            }
-            if (!await policy.learnRecordedBatchAsync(batch, active)) break;
-            this.credit = credit;
-            this.counts = counts;
-            this.readyDraws -= size;
-            remaining -= size;
+    private windowReady(final: boolean) {
+        return final ? this.ready.length > 0 : this.ready.length >= RECORDED_PLAN_WINDOW;
+    }
+
+    private async trainWindow(policy: DrivingPolicy, active: () => boolean, final: boolean) {
+        if (!this.batches.length && active() && this.windowReady(final)) {
+            this.batches = prepareBatches(this.ready.splice(0, RECORDED_PLAN_WINDOW), this.weights, this.random);
         }
-        return remaining < budget && this.readyDraws > 0;
+        while (this.batches.length && active()) {
+            const batch = this.batches[0];
+            if (!await policy.learnRecordedBatchAsync(batch, active)) return false;
+            // A cancelled optimizer batch is rolled back; leave those examples queued for a graceful stop.
+            this.batches.shift();
+            for (const { category } of batch) this.counts[category]++;
+        }
+        return this.windowReady(final);
     }
 }

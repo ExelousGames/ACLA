@@ -1,4 +1,4 @@
-import { DrivingPlanTraining } from './driving-plan-training';
+import { DrivingPlanTraining, RECORDED_PLAN_WINDOW } from './driving-plan-training';
 import { DrivingPolicy, type PlannedActionTarget } from './driving-policy';
 import { DrivingMemory } from './driving-memory';
 import { cloneConfig, emptyRecordedSamplingWeights, RECORDED_SAMPLING_CATEGORIES, type RecordedSamplingWeights } from './driving-model-config';
@@ -18,6 +18,7 @@ function setup(weights?: RecordedSamplingWeights, random?: () => number) {
 }
 const shifts = { up: true, down: true };
 const neutralTarget = { action: { pedal: 0, steering: 0 }, shifts };
+const learnInputIds = (plans: readonly { input: { features: number[] } }[]) => plans.map(({ input }) => input.features[0]);
 
 it('keeps immediate and delayed targets together using the original input snapshot', async () => {
     const { policy, learn, training, features } = setup();
@@ -72,7 +73,7 @@ it.each([
     expect(learn).toHaveBeenCalledWith(features, [{ step: 0, ...neutralTarget }, { step: 1, action, shifts }]);
 });
 
-it('flushes partial origins in order once without inventing missing targets', async () => {
+it('flushes partial origins once without inventing missing targets', async () => {
     const { policy, learn, training, features } = setup();
     await training.recordAsync(policy, features, neutralTarget, 1000);
     const next = { ...features, features: [1, ...features.features.slice(1)] };
@@ -80,10 +81,11 @@ it('flushes partial origins in order once without inventing missing targets', as
     await training.recordAsync(policy, next, target, 1100);
     await training.finishAsync(policy);
     await training.finishAsync(policy);
-    expect(learn.mock.calls).toEqual([
+    expect(learn.mock.calls).toHaveLength(2);
+    expect(learn.mock.calls).toEqual(expect.arrayContaining([
         [features, [{ step: 0, ...neutralTarget }, { step: 1, ...target }]],
         [next, [{ step: 0, ...target }]],
-    ]);
+    ]));
     expect(training.hasPending).toBe(false);
 });
 
@@ -105,56 +107,54 @@ it('does not collect a cancelled frame or submit additional origins after cancel
     expect(training.hasPending).toBe(false);
 });
 
-it('fills each optimizer batch from preset category percentages and reuses rare examples', async () => {
-    const { policy, batch, training, features } = setup({ ...emptyRecordedSamplingWeights(), 'Race pace': 50, Cornering: 25, Shifting: 25 });
+it('uses weights to fill optimizer batches, then shuffles the chosen label mix', async () => {
+    const { policy, batch, training, features } = setup({ ...emptyRecordedSamplingWeights(), Traffic: 75, Hairpin: 25 }, () => 0);
     for (let i = 0; i < 16; i++) {
-        const category = i === 15 ? 'Shifting' : i === 14 ? 'Cornering' : 'Race pace';
-        const action = { pedal: 0.5, steering: i === 14 ? 0.4 : 0, shiftUp: i === 15 };
-        await training.recordAsync(policy, features, { action, shifts }, 1000 + i * 100, undefined, category);
+        const category = i < 12 ? 'Traffic' : 'Hairpin';
+        const input = { ...features, features: [i, ...features.features.slice(1)] };
+        await training.recordAsync(policy, input, neutralTarget, 1000 + i * 100, undefined, category);
     }
     await training.finishAsync(policy);
     expect(batch).toHaveBeenCalledTimes(2);
     for (const [plans] of batch.mock.calls) {
-        const immediate = plans.map(({ targets }) => targets[0].action);
-        expect(immediate.filter(({ steering, shiftUp }) => steering === 0 && !shiftUp)).toHaveLength(4);
-        expect(immediate.filter(({ steering }) => steering === 0.4)).toHaveLength(2);
-        expect(immediate.filter(({ shiftUp }) => shiftUp)).toHaveLength(2);
+        // The final shuffle changes the weighted order, keeping the 6:2 mix intact.
+        expect(learnInputIds(plans).map((id) => id < 12 ? 'Traffic' : 'Hairpin')).toEqual([
+            'Traffic', 'Hairpin', 'Traffic', 'Traffic', 'Traffic', 'Hairpin', 'Traffic', 'Traffic',
+        ]);
     }
-    expect(training.sampled).toEqual({ ...emptyRecordedSamplingWeights(), 'Race pace': 8, Cornering: 4, Shifting: 4 });
+    const ids = learnInputIds(batch.mock.calls.flatMap(([plans]) => plans));
+    expect(ids.slice(0, 8)).toEqual([11, 12, 10, 9, 8, 15, 7, 0]);
+    expect(ids.sort((a, b) => a - b)).toEqual(Array.from({ length: 16 }, (_, i) => i));
+    expect(training.trained).toEqual({ ...emptyRecordedSamplingWeights(), Traffic: 12, Hairpin: 4 });
 });
 
-it('waits for late categories and retains a cross-section of earlier origins for their fixed mix', async () => {
-    const weights = { ...emptyRecordedSamplingWeights(), 'Race pace': 60, Cornering: 25, Shifting: 15 };
+it('trains full windows without waiting for late labels and uses every origin once', async () => {
+    const weights = { ...emptyRecordedSamplingWeights(), Traffic: 60, Hairpin: 25, 'Shift down': 15 };
     const { policy, batch, training, features } = setup(weights, () => 0.99);
     for (let i = 0; i < 400; i++) {
         const input = { ...features, features: [i, ...features.features.slice(1)] };
-        const category = i === 399 ? 'Shifting' : i === 398 ? 'Cornering' : 'Race pace';
+        const category = i === 399 ? 'Shift down' : i === 398 ? 'Hairpin' : 'Traffic';
         await training.recordAsync(policy, input, neutralTarget, 1000 + i * 100, undefined, category);
     }
-    expect(batch).not.toHaveBeenCalled();
-    for (let i = 400; i < 430; i++) {
-        await training.recordAsync(policy, undefined, neutralTarget, 1000 + i * 100);
-    }
-    expect(batch).toHaveBeenCalledTimes(32);
+    expect(batch).toHaveBeenCalledTimes(RECORDED_PLAN_WINDOW / 8);
+    expect(training.trained.Traffic).toBe(RECORDED_PLAN_WINDOW);
     await training.finishAsync(policy);
     expect(batch).toHaveBeenCalledTimes(50);
-    expect(training.sampled).toEqual({ ...emptyRecordedSamplingWeights(), 'Race pace': 240, Cornering: 100, Shifting: 60 });
-    expect(batch.mock.calls.flatMap(([plans]) => plans).some(({ input }) => input.features[0] === 0)).toBe(true);
-    for (const [plans] of batch.mock.calls) {
-        expect(plans.filter(({ input }) => input.features[0] === 398)).toHaveLength(2);
-        expect(plans.filter(({ input }) => input.features[0] === 399).length).toBeGreaterThanOrEqual(1);
-    }
+    expect(training.trained).toEqual({ ...emptyRecordedSamplingWeights(), Traffic: 398, Hairpin: 1, 'Shift down': 1 });
+    const ids = learnInputIds(batch.mock.calls.flatMap(([plans]) => plans));
+    expect(ids.sort((a, b) => a - b)).toEqual(Array.from({ length: 400 }, (_, i) => i));
+    expect(training.hasPending).toBe(false);
 });
 
 it('uses available categories to flush a stopped replay before every measured category arrives', async () => {
-    const { policy, batch, training, features } = setup({ ...emptyRecordedSamplingWeights(), Traffic: 60, Cornering: 25, Shifting: 15 });
+    const { policy, batch, training, features } = setup({ ...emptyRecordedSamplingWeights(), Traffic: 60, Hairpin: 25, 'Shift down': 15 });
     for (let i = 0; i < 8; i++) {
-        await training.recordAsync(policy, features, neutralTarget, 1000 + i * 100, undefined, i < 7 ? 'Traffic' : 'Cornering');
+        await training.recordAsync(policy, features, neutralTarget, 1000 + i * 100, undefined, i < 7 ? 'Traffic' : 'Hairpin');
     }
     await training.finishAsync(policy, undefined, false);
     expect(batch).not.toHaveBeenCalled();
     await training.finishAsync(policy);
-    expect(training.sampled).toEqual({ ...emptyRecordedSamplingWeights(), Traffic: 6, Cornering: 2 });
+    expect(training.trained).toEqual({ ...emptyRecordedSamplingWeights(), Traffic: 7, Hairpin: 1 });
 });
 
 it('draws from all configured labels across batches smaller than the number of categories', async () => {
@@ -170,5 +170,24 @@ it('draws from all configured labels across batches smaller than the number of c
         await training.recordAsync(policy, features, neutralTarget, 1000 + index * 100, undefined, category);
     }
     await training.finishAsync(policy);
-    expect(training.sampled).toEqual(expected);
+    expect(training.trained).toEqual(expected);
+});
+
+it('counts only committed batches and retries a cancelled partial batch without reshuffling it', async () => {
+    const { policy, batch, training, features } = setup(undefined, () => 0);
+    const learnBatch = batch.getMockImplementation()!;
+    let active = true;
+    batch.mockImplementationOnce(learnBatch).mockImplementationOnce(async () => { active = false; return false; });
+    for (let id = 0; id < 11; id++) {
+        await training.recordAsync(policy, { ...features, features: [id, ...features.features.slice(1)] }, neutralTarget, 1000 + id * 100);
+    }
+    await training.finishAsync(policy, () => active);
+    expect(training.trained.Unlabeled).toBe(8);
+    expect(training.hasPending).toBe(true);
+
+    await training.finishAsync(policy);
+    expect(batch.mock.calls.map(([plans]) => plans.length)).toEqual([8, 3, 3]);
+    expect(batch.mock.calls[1][0]).toBe(batch.mock.calls[2][0]);
+    expect(training.trained.Unlabeled).toBe(11);
+    expect(training.hasPending).toBe(false);
 });

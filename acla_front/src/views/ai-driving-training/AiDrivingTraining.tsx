@@ -12,6 +12,7 @@ import { cloneConfig, DEFAULT_DRIVING_CONFIG, MAX_EXPLORATION_GEAR, RECORDED_SAM
     validRecordedSamplingWeights, type RecordedSamplingCategory, type RecordedSamplingWeights } from './driving-model-config';
 import { discardBrowserModels, drivingModelFiles, loadDrivingModel, saveDrivingModel, trackDrivingModelSave } from './driving-model-storage';
 import { DrivingTrainingLoop, initialTrainingState } from './driving-training-loop';
+import { DRIVING_PLAN_REFRESH_DIFFERENCE, DRIVING_PLAN_REFRESH_SECONDS } from './driving-plan-agreement';
 import { DrivingControlOutput } from './driving-control-output';
 import type { ControlSource } from './driving-control';
 import { DrivingImpactMonitor } from './driving-impact-monitor';
@@ -43,9 +44,9 @@ const EXPLORATION_FREQUENCIES = [
     { key: 'gearExplorationUpdateHz', label: 'Gear', control: 'gear' },
 ] as const;
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'Self-driving training failed.';
-function recordedCoverageStatus({ eligible }: RecordedDrivingCoverage, sampled: RecordedSamplingWeights) {
-    return ' · Training draws (eligible origins) · ' + RECORDED_SAMPLING_CATEGORIES.filter((label) => eligible[label] > 0)
-        .map((label) => `${label} ${sampled[label]} (${eligible[label]})`).join(' · ');
+function recordedCoverageStatus({ eligible }: RecordedDrivingCoverage, trained: RecordedSamplingWeights) {
+    return ' · Examples trained (eligible) · ' + RECORDED_SAMPLING_CATEGORIES.filter((label) => eligible[label] > 0)
+        .map((label) => `${label} ${trained[label]} (${eligible[label]})`).join(' · ');
 }
 
 type RecordingReferences = { sessionId: string; data?: RecordedDrivingReferences; error?: string };
@@ -563,7 +564,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 if (!active()) return;
                 if (!replay || !progress.samples) throw new Error(progress.lastError || 'No consecutive aligned samples were available for replay.');
                 setModelSteps(policy.current?.steps ?? null);
-                const summary = coverage ? recordedCoverageStatus(coverage, replay.sampled) : '';
+                const summary = coverage ? recordedCoverageStatus(coverage, replay.trained) : '';
                 setReplayStatus((status) => `Completed. ${status}${summary}`);
             }
         } catch (reason) {
@@ -758,7 +759,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 <p>CNN–GRU soft actor–critic · {config.network.hiddenUnits} recurrent units · continuous throttle/brake and steering, plus learned hold gear, shift up and shift down. Throttle/brake ranges from −1 (full brake) through 0 (both released) to 1 (full throttle).</p>
                 <p>{config.memory.windowMs / 1000}-second observation history covers {fullObservationHistory ? 'all AI observation inputs' : 'the observation inputs selected in this saved model'} during training and evaluation, sampled in {config.memory.intervalMs} ms bins. Memory starts fresh after stopping, changing drivers or interrupted inputs.</p>
                 {inputSource === 'live' && <p>Live training learns from the AI’s own driving. SAC uses up to {config.learning.sequenceSeconds} seconds of rewards to learn how earlier controls affect later outcomes. The current plan keeps running as the model learns.</p>}
-                <p>One action plan predicts {config.actions.planTimesSeconds.length} control steps from 0 to {planEnd} seconds. The AI smoothly blends the signed pedal command and steering between steps while computing. Gear shifts occur at their scheduled steps. The remaining plan continues when fresh inference agrees, and is replaced when it disagrees or expires. During training, each step that contributes to a command learns which controls are likely to earn more reward after penalties. Exploration adds random variation around those choices.</p>
+                <p>One action plan predicts {config.actions.planTimesSeconds.length} control steps from 0 to {planEnd} seconds. The AI smoothly blends the signed pedal command and steering between steps, and gear shifts occur at their scheduled steps. The AI switches to a fresh plan if the remaining gear actions change (not just their timing), if planned throttle/brake or steering differs by at least {DRIVING_PLAN_REFRESH_DIFFERENCE * 100}% on average across the remaining steps, or once the current plan has run for {DRIVING_PLAN_REFRESH_SECONDS} seconds. Exploration can trigger a refresh too. During training, each step that contributes to a command learns which controls are likely to earn more reward after penalties.</p>
                 <p className="driving-note">Each model JSON contains its inputs, memory, network, training settings and weights. Training and evaluation load that JSON each time they start.</p>
                 {inputSource === 'live' && <p className="driving-note">Use the same model across games, cars and maps. After switching, stop and restart training or evaluation with fresh live inputs and a matching Live Map reference lap. Learned weights are preserved.</p>}
                 {inputSource === 'live' && <fieldset className="driving-exploration"
@@ -863,8 +864,8 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     <div ref={setTrainingPickerContainer} />
                     <fieldset className="driving-exploration driving-sampling-weights" aria-describedby="driving-sampling-description"
                         disabled={!filePath || !documentReady.current || fileBusy || saving || initializingGpu || running || replaying || viewerBusy}>
-                        <legend>Fixed sampling weights</legend>
-                        <p id="driving-sampling-description">Set the share of training draws for each annotation label. The share for any label with no examples goes to the available categories with positive weights.</p>
+                        <legend>Label sampling weights</legend>
+                        <p id="driving-sampling-description">Training shuffles selected examples before each batch and uses each example from a positive-weight label once per run. Higher weights prioritize labels when their examples are available. Set a label to 0% to skip it.</p>
                         <div className="driving-sampling-fields">
                             {RECORDED_SAMPLING_CATEGORIES.map((category) => <label key={category}>
                                 {category} (%)

@@ -7,8 +7,7 @@ const normalize = (label: string | undefined) => label?.trim().toLowerCase() ?? 
 const categoriesByLabel = new Map(RECORDED_SAMPLING_CATEGORIES.map((category) => [normalize(category), category] as const));
 export interface RecordedDrivingCoverage { eligible: RecordedSamplingWeights }
 
-/** Count aligned origins before decoding video, so a category that starts late
- * still gets its configured share throughout training. */
+/** Count and verify aligned origins without decoding video, including zero-weight labels. */
 export class RecordedDrivingBalance {
     private samples: { label: string; category: RecordedSamplingCategory }[] = [];
     private eligible = emptyRecordedSamplingWeights();

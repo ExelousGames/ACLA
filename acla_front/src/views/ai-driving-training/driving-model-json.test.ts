@@ -1,3 +1,4 @@
+import trainingLabels from 'data/recorded-training-labels.json';
 import { mockDrivingGpu } from './driving-gpu-test-model';
 import { cloneConfig, DEFAULT_DRIVING_CONFIG, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs,
     drivingObservationInputs, drivingPolicyInputs, emptyRecordedSamplingWeights, RECORDED_SAMPLING_CATEGORIES, validateDrivingConfig } from './driving-model-config';
@@ -41,13 +42,15 @@ it.each([false, true])('loads older model files with default sampling weights (t
     expect(previous.configuration).not.toHaveProperty('recordedSamplingWeights');
     expect(restored.model).toEqual(document.model);
 
-    const weights = { ...emptyRecordedSamplingWeights(), 'Recover off track': 62.5, Shifting: 37.5 };
+    const weights = { ...emptyRecordedSamplingWeights(), 'Recover off track': 62.5, 'Shift down': 12.5, 'Shift up': 25 };
     restored.configuration.recordedSamplingWeights = weights;
     expect(readTrainingDocument(restored).configuration.recordedSamplingWeights).toEqual(weights);
 
-    const retiredWeights = { 'Recover off track': 45, Shifting: 37.5, Qualifying: 7.5, Recovery: 2.5, 'Save fuel': 5, Unlabeled: 2.5 };
+    const retiredWeights = { 'Recover off track': 45, 'Shift down': 12.5, Cornering: 10, Shifting: 15, 'Race pace': 7.5, Recovery: 2.5,
+        'Save fuel': 5, Unlabeled: 2.5 };
     const migrated = readTrainingDocument({ ...restored, configuration: { ...restored.configuration, recordedSamplingWeights: retiredWeights } });
-    expect(migrated.configuration.recordedSamplingWeights).toEqual({ ...weights, 'Recover off track': 45, Unlabeled: 17.5 });
+    expect(migrated.configuration.recordedSamplingWeights).toEqual({ ...emptyRecordedSamplingWeights(),
+        'Recover off track': 45, 'Shift down': 12.5, Unlabeled: 42.5 });
     expect(migrated.model).toEqual(document.model);
 });
 
@@ -59,8 +62,21 @@ it('combines weights from a wholly retired label set and accounts for rounding',
 });
 
 it('defines defaults for exactly the annotation labels and Unlabeled', () => {
-    expect(Object.keys(defaultSamplingWeights)).toEqual(RECORDED_SAMPLING_CATEGORIES);
+    const categories = [...trainingLabels, 'Unlabeled'];
+    expect(RECORDED_SAMPLING_CATEGORIES).toEqual(categories);
+    expect(Object.keys(defaultSamplingWeights)).toEqual(categories);
+    expect(defaultSamplingWeights).not.toHaveProperty('Cornering');
+    expect(defaultSamplingWeights.Hairpin).toBe(0);
+    expect(defaultSamplingWeights.Unlabeled).toBe(45);
     expect(Object.values(defaultSamplingWeights).reduce((sum, value) => sum + value, 0)).toBe(100);
+});
+
+it('adds new labels to saved sampling weights without changing the saved percentages', () => {
+    const document = emptyTrainingDocument();
+    const savedWeights = { Warmup: 35, Traffic: 45, Unlabeled: 20 };
+    const restored = readTrainingDocument({ ...document, configuration: { ...document.configuration, recordedSamplingWeights: savedWeights } });
+    expect(restored.configuration.recordedSamplingWeights).toEqual({ ...emptyRecordedSamplingWeights(), ...savedWeights });
+    expect(restored.configuration.recordedSamplingWeights.Hairpin).toBe(0);
 });
 
 it('migrates a custom grouped mix to independent annotation percentages', () => {
@@ -68,14 +84,15 @@ it('migrates a custom grouped mix to independent annotation percentages', () => 
     const document = emptyTrainingDocument();
     const restored = readTrainingDocument({ ...document, configuration: { ...document.configuration, recordedSamplingWeights: legacy } });
     const weights = restored.configuration.recordedSamplingWeights;
-    expect(weights).toMatchObject({ 'Race pace': 3.7, 'Recover off track': 3.7, Unlabeled: 14.8, Cornering: 10, Shifting: 34.5 });
-    const formerGeneral = RECORDED_SAMPLING_CATEGORIES.filter((label) => label !== 'Cornering' && label !== 'Shifting');
-    expect(formerGeneral.reduce((sum, label) => sum + weights[label], 0)).toBeCloseTo(legacy.general);
+    expect(weights).toMatchObject({ Warmup: 3.7, 'Recover off track': 3.7, Unlabeled: 63, 'Shift down': 0, 'Shift up': 0 });
+    expect(weights).not.toHaveProperty('Cornering');
+    const formerGeneral = RECORDED_SAMPLING_CATEGORIES.filter((label) => label !== 'Shift down' && label !== 'Shift up');
+    expect(formerGeneral.reduce((sum, label) => sum + weights[label], 0) - legacy.shifting - legacy.cornering).toBeCloseTo(legacy.general);
 });
 
 it.each([
     { ...defaultSamplingWeights, Cornering: 20 },
-    { ...defaultSamplingWeights, Warmup: -1, 'Race pace': 9 },
+    { ...defaultSamplingWeights, Warmup: -1, 'Shift down': 12.5 },
     { ...defaultSamplingWeights, Cornering: NaN },
     { ...defaultSamplingWeights, 'Save fuel': 1 },
     { ...defaultSamplingWeights, 'Save fuel': -1, Unlabeled: 17 },

@@ -1,8 +1,7 @@
 [
   "Warmup",
-  "Race pace",
-  "Shifting",
-  "Cornering",
+  "Shift down",
+  "Shift up",
   "Overtake",
   "Defend",
   "Traffic",
@@ -11,5 +10,16 @@
   "Avoid wall",
   "Reverse back",
   "Pit entry",
-  "Pit exit"
+  "Pit exit",
+  "Switch lane left",
+  "Switch lane right",
+  "Hairpin",
+  "Chicane",
+  "Esses",
+  "Kink",
+  "Sweeper",
+  "Multi-apex corner",
+  "Constant radius corner",
+  "Increasing radius corner",
+  "Decreasing radius corner"
 ]

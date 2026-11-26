@@ -1,18 +1,30 @@
-import recordedTrainingLabels from 'data/recorded-training-labels.json';
+import trainingLabels from 'data/recorded-training-labels.json';
 import defaults from './driving-model-defaults.json';
 import { POLICY_CAMERA_HEIGHT, POLICY_CAMERA_WIDTH } from 'views/live-session/live-session-recording/policy-camera';
 
-export type DrivingModelConfig = typeof defaults;
-export type RecordedSamplingWeights = DrivingModelConfig['recordedSamplingWeights'];
-export type RecordedSamplingCategory = keyof RecordedSamplingWeights;
 export const UNLABELED_RECORDED_SAMPLING_CATEGORY = 'Unlabeled';
-export const RECORDED_SAMPLING_CATEGORIES: readonly RecordedSamplingCategory[] =
-    [...recordedTrainingLabels, UNLABELED_RECORDED_SAMPLING_CATEGORY] as RecordedSamplingCategory[];
-export const DEFAULT_DRIVING_CONFIG: DrivingModelConfig = defaults;
-export const cloneConfig = (config = DEFAULT_DRIVING_CONFIG): DrivingModelConfig => JSON.parse(JSON.stringify(config));
+export const RECORDED_SAMPLING_CATEGORIES: readonly string[] = [...trainingLabels, UNLABELED_RECORDED_SAMPLING_CATEGORY];
+export type RecordedSamplingCategory = typeof RECORDED_SAMPLING_CATEGORIES[number];
+export type RecordedSamplingWeights = Record<RecordedSamplingCategory, number>;
+export type DrivingModelConfig = Omit<typeof defaults, 'recordedSamplingWeights'> & { recordedSamplingWeights: RecordedSamplingWeights };
 
 export const emptyRecordedSamplingWeights = (): RecordedSamplingWeights =>
-    Object.fromEntries(RECORDED_SAMPLING_CATEGORIES.map((label) => [label, 0])) as RecordedSamplingWeights;
+    Object.fromEntries(RECORDED_SAMPLING_CATEGORIES.map((label) => [label, 0]));
+
+function normalizeRecordedSamplingWeights(saved: RecordedSamplingWeights): RecordedSamplingWeights {
+    const weights = emptyRecordedSamplingWeights();
+    for (const [label, percentage] of Object.entries(saved)) {
+        const category = Object.prototype.hasOwnProperty.call(weights, label) ? label : UNLABELED_RECORDED_SAMPLING_CATEGORY;
+        weights[category] += percentage;
+    }
+    weights.Unlabeled = Math.min(100, weights.Unlabeled);
+    return weights;
+}
+
+export const DEFAULT_DRIVING_CONFIG: DrivingModelConfig = {
+    ...defaults, recordedSamplingWeights: normalizeRecordedSamplingWeights(defaults.recordedSamplingWeights),
+};
+export const cloneConfig = (config = DEFAULT_DRIVING_CONFIG): DrivingModelConfig => JSON.parse(JSON.stringify(config));
 
 function validSamplingPercentages(values: unknown[]): values is number[] {
     return values.every((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100)
@@ -26,39 +38,29 @@ export function validRecordedSamplingWeights(weights: Record<RecordedSamplingCat
 function migrateRecordedSamplingWeights(value: unknown): RecordedSamplingWeights | undefined {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
     const saved = value as Record<string, unknown>;
-    const labels = Object.keys(saved);
-    const weights = emptyRecordedSamplingWeights();
-    const addWeight = (label: string, percentage: number) => {
-        const category = Object.prototype.hasOwnProperty.call(weights, label)
-            ? label as RecordedSamplingCategory : UNLABELED_RECORDED_SAMPLING_CATEGORY;
-        weights[category] += percentage;
-    };
     if (Object.prototype.hasOwnProperty.call(saved, UNLABELED_RECORDED_SAMPLING_CATEGORY)) {
-        const percentages = labels.map((label) => saved[label]);
-        if (!validSamplingPercentages(percentages)) return undefined;
-        labels.forEach((label, index) => addWeight(label, percentages[index]));
-    } else {
-        // The original grouped format stored General, Cornering and Shifting separately.
-        if (labels.length !== 3) return undefined;
-        const percentages = [saved.general, saved.cornering, saved.shifting];
-        if (!validSamplingPercentages(percentages)) return undefined;
-        const [general, cornering, shifting] = percentages;
-        const generalLabels = RECORDED_SAMPLING_CATEGORIES.filter((label) => label !== 'Cornering' && label !== 'Shifting'
-            && label !== UNLABELED_RECORDED_SAMPLING_CATEGORY);
-        const defaultWeights = defaults.recordedSamplingWeights;
-        const generalDefault = generalLabels.reduce((sum, label) => sum + defaultWeights[label], defaultWeights.Unlabeled);
-        let remaining = general;
-        for (const label of generalLabels) {
-            const share = generalDefault > 0 ? Number((general * defaultWeights[label] / generalDefault).toPrecision(3)) : 0;
-            weights[label] = Math.min(remaining, share);
-            remaining -= weights[label];
-        }
-        weights.Unlabeled = Number(remaining.toPrecision(15));
-        addWeight('Cornering', cornering);
-        addWeight('Shifting', shifting);
+        if (!validSamplingPercentages(Object.values(saved))) return undefined;
+        return normalizeRecordedSamplingWeights(saved as RecordedSamplingWeights);
     }
-    weights.Unlabeled = Math.min(100, weights.Unlabeled);
-    return weights;
+
+    // The original grouped format stored General, Cornering and Shifting separately.
+    if (Object.keys(saved).length !== 3) return undefined;
+    const percentages = [saved.general, saved.cornering, saved.shifting];
+    if (!validSamplingPercentages(percentages)) return undefined;
+    const [general, cornering, shifting] = percentages;
+    const generalLabels = RECORDED_SAMPLING_CATEGORIES.filter((label) => label !== 'Shift down'
+        && label !== 'Shift up' && label !== UNLABELED_RECORDED_SAMPLING_CATEGORY);
+    const defaultWeights = DEFAULT_DRIVING_CONFIG.recordedSamplingWeights;
+    // Preserve the old General split, before Cornering's weight moved to Unlabeled.
+    const generalDefault = generalLabels.reduce((sum, label) => sum + defaultWeights[label], 20);
+    const weights = emptyRecordedSamplingWeights();
+    let remaining = general;
+    for (const label of generalLabels) {
+        const share = generalDefault > 0 ? Number((general * defaultWeights[label] / generalDefault).toPrecision(3)) : 0;
+        weights[label] = Math.min(remaining, share);
+        remaining -= weights[label];
+    }
+    return normalizeRecordedSamplingWeights({ ...weights, Unlabeled: Number(remaining.toPrecision(15)) + cornering + shifting });
 }
 
 export const DRIVING_ANALOG_AXES = 2;
@@ -81,7 +83,7 @@ export function readDrivingConfig(value: unknown): DrivingModelConfig {
     }
     if (value && typeof value === 'object' && !Array.isArray(value)) {
         const weights = 'recordedSamplingWeights' in value ? migrateRecordedSamplingWeights(value.recordedSamplingWeights)
-            : defaults.recordedSamplingWeights;
+            : DEFAULT_DRIVING_CONFIG.recordedSamplingWeights;
         if (weights) value = { ...value, recordedSamplingWeights: { ...weights } };
     }
     const learning = (value as { learning?: Record<string, unknown> } | null)?.learning;
@@ -192,7 +194,7 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
             if (typeof actual !== 'boolean') invalid();
         } else if (actual !== expected) invalid();
     };
-    shape(value, defaults);
+    shape(value, DEFAULT_DRIVING_CONFIG);
     const c = value as DrivingModelConfig, o = c.observation, l = c.learning;
     const integer = (n: number, min: number, max: number) => Number.isSafeInteger(n) && n >= min && n <= max;
     if (c.network.cameraLayers.some((layer, i) => layer.kernelSize !== defaults.network.cameraLayers[i].kernelSize

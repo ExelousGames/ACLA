@@ -1,9 +1,10 @@
+import trainingLabels from 'data/recorded-training-labels.json';
 import { mockDrivingGpu } from './driving-gpu-test-model';
 import React from 'react';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import AiDrivingTraining from './AiDrivingTraining';
 import { emptyTrainingDocument } from './driving-policy';
-import { cloneConfig, DEFAULT_DRIVING_CONFIG, RECORDED_SAMPLING_CATEGORIES } from './driving-model-config';
+import { cloneConfig, DEFAULT_DRIVING_CONFIG } from './driving-model-config';
 import { circuitMapFixture, trainingFixture } from './training-fixtures';
 import { parseRecordedDrivingSession } from './recorded-driving-session';
 import type { RecordedDrivingFrame, RecordedFrameViewerHandle } from './RecordedFrameViewer';
@@ -106,7 +107,7 @@ it('locks source and model changes during replay, stops and saves on cancellatio
     expect(progress).toHaveAttribute('value', '1');
     expect(progress).toHaveAttribute('aria-valuetext', 'Recording 1 of 1 · 3 / 3 frames processed');
     expect(screen.getByLabelText('AI observation input source')).toBeDisabled();
-    expect(aiDriver.getByRole('spinbutton', { name: 'Shifting (%)' })).toBeDisabled();
+    expect(aiDriver.getByRole('spinbutton', { name: 'Shift down (%)' })).toBeDisabled();
     expect(aiDriver.getByText('Model file')).toBeInTheDocument();
     for (const name of ['New model', 'Open model', 'Save model']) {
         expect(aiDriver.getByRole('button', { name })).toBeDisabled();
@@ -178,7 +179,7 @@ it('trains one model across recordings and clears imitation history between clos
     expect(screen.getByText(/Completed\. Learning from recording · second\.mp4.*3 samples/)).toBeInTheDocument();
 });
 
-it('saves a fixed sampling mix, trains on tagged origins, and evaluates every aligned pair', async () => {
+it('saves label sampling weights, trains every eligible example once, and evaluates every aligned pair', async () => {
     const { session: source, camera } = mockFrames[0];
     const session = parseRecordedDrivingSession(Array.from({ length: 12 }, (_, index) => JSON.stringify({
         ...source.rows[0].sample, Graphics_analyst_session_time: index / 10,
@@ -186,16 +187,27 @@ it('saves a fixed sampling mix, trains on tagged origins, and evaluates every al
     })).join('\n'), 'acc');
     mockFrames = session.rows.map((row, index) => ({ session, videoSeconds: row.timeSeconds, telemetrySeconds: row.timeSeconds,
         camera, startsRange: [0, 5, 8, 10].includes(index),
-        clipLabel: index < 5 ? 'Race pace' : index < 8 ? 'Recover off track' : index < 10 ? 'Cornering' : 'Shifting' }));
+        clipLabel: index < 5 ? 'Shift down' : index < 8 ? 'Recover off track' : index < 10 ? 'Hairpin' : 'Shift up' }));
     await loadRecording();
-    const weights = within(screen.getByRole('group', { name: 'Fixed sampling weights' }));
-    expect(weights.getAllByRole('spinbutton')).toHaveLength(RECORDED_SAMPLING_CATEGORIES.length);
-    RECORDED_SAMPLING_CATEGORIES.forEach((label) => expect(weights.getByRole('spinbutton', { name: `${label} (%)` })).toBeInTheDocument());
-    const racePace = weights.getByRole('spinbutton', { name: 'Race pace (%)' });
+    const weights = within(screen.getByRole('group', { name: 'Label sampling weights' }));
+    const categories = [...trainingLabels, 'Unlabeled'];
+    expect(weights.getAllByRole('spinbutton')).toHaveLength(categories.length);
+    categories.forEach((label) => expect(weights.getByRole('spinbutton', { name: `${label} (%)` })).toBeInTheDocument());
+    expect(weights.queryByRole('spinbutton', { name: 'Race pace (%)' })).not.toBeInTheDocument();
+    expect(weights.queryByRole('spinbutton', { name: 'Shifting (%)' })).not.toBeInTheDocument();
+    expect(weights.queryByRole('spinbutton', { name: 'Cornering (%)' })).not.toBeInTheDocument();
+    const shiftDown = weights.getByRole('spinbutton', { name: 'Shift down (%)' });
+    const shiftUp = weights.getByRole('spinbutton', { name: 'Shift up (%)' });
+    const hairpin = weights.getByRole('spinbutton', { name: 'Hairpin (%)' });
     const unlabeled = weights.getByRole('spinbutton', { name: 'Unlabeled (%)' });
     const saveWeights = weights.getByRole('button', { name: 'Save sampling weights' });
-    expect(racePace).toHaveValue(4);
-    fireEvent.change(racePace, { target: { value: '12' } });
+    expect(shiftDown).toHaveValue(7.5);
+    expect(shiftUp).toHaveValue(7.5);
+    expect(hairpin).toHaveValue(0);
+    expect(unlabeled).toHaveValue(45);
+    fireEvent.change(hairpin, { target: { value: '25' } });
+    fireEvent.change(shiftDown, { target: { value: '12' } });
+    fireEvent.change(shiftUp, { target: { value: '15' } });
     expect(saveWeights).toBeDisabled();
     fireEvent.change(unlabeled, { target: { value: '8' } });
     expect(saveWeights).toBeEnabled();
@@ -205,18 +217,18 @@ it('saves a fixed sampling mix, trains on tagged origins, and evaluates every al
     expect(saveWeights).toBeEnabled();
     fireEvent.click(saveWeights); await flush();
     expect(JSON.parse(savedJson).configuration.recordedSamplingWeights).toEqual({
-        ...DEFAULT_DRIVING_CONFIG.recordedSamplingWeights, 'Race pace': 12, Unlabeled: 8,
+        ...DEFAULT_DRIVING_CONFIG.recordedSamplingWeights, 'Shift down': 12, 'Shift up': 15, Hairpin: 25, Unlabeled: 8,
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Train from annotations' })); await flush();
-    expect(screen.getByText(/Completed\. Learning from recording.*8 samples.*Race pace 2 \(4\).*Shifting 2 \(1\).*Cornering 3 \(1\).*Recover off track 1 \(2\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Completed\. Learning from recording.*8 samples.*Shift down 4 \(4\).*Shift up 1 \(1\).*Recover off track 2 \(2\).*Hairpin 1 \(1\)/)).toBeInTheDocument();
     expect(JSON.parse(savedJson).model.steps).toBe(8);
-    fireEvent.change(racePace, { target: { value: '13' } });
+    fireEvent.change(shiftDown, { target: { value: '13' } });
     fireEvent.click(screen.getByRole('button', { name: 'Evaluate annotations' })); await flush();
     expect(screen.getByText(/Completed\. Evaluating recording.*8 samples/)).toBeInTheDocument();
     expect(JSON.parse(savedJson).model.steps).toBe(8);
-    expect(racePace).toHaveValue(13);
-    expect(JSON.parse(savedJson).configuration.recordedSamplingWeights['Race pace']).toBe(12);
+    expect(shiftDown).toHaveValue(13);
+    expect(JSON.parse(savedJson).configuration.recordedSamplingWeights['Shift down']).toBe(12);
 });
 
 it('uses the same telemetry times when counting samples and replaying decoded frames', async () => {
@@ -231,13 +243,13 @@ it('uses the same telemetry times when counting samples and replaying decoded fr
         ...fixture.live.currentTelemetry, Graphics_analyst_session_time: index / 10, Graphics_normalized_car_position: position,
     })).join('\n'), 'acc');
     mockFrames = session.rows.map(({ timeSeconds }) => ({ session, videoSeconds: timeSeconds, telemetrySeconds: timeSeconds,
-        camera: fixture.observation.camera, clipLabel: 'Race pace' }));
+        camera: fixture.observation.camera, clipLabel: 'Warmup' }));
     mockReplayTimeOffset = -0.015;
 
     await loadRecording();
     fireEvent.click(screen.getByRole('button', { name: 'Train from annotations' })); await flush();
 
-    expect(screen.getByText(/Completed\. Learning from recording.*9 samples.*Race pace 9 \(9\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Completed\. Learning from recording.*9 samples.*Warmup 9 \(9\)/)).toBeInTheDocument();
     expect(JSON.parse(savedJson).model.steps).toBe(9);
 });
 
@@ -259,13 +271,13 @@ it('samples across simulators and tracks and reuses the measured recording refer
             ...fixture.live.currentTelemetry, Static_track: track, Graphics_analyst_session_time: index / 10,
         })).join('\n'), game);
         return session.rows.map(({ timeSeconds }, index) => ({ session, recordingId: session.id, startsRange: index === 0,
-            videoSeconds: timeSeconds, telemetrySeconds: timeSeconds, camera: fixture.observation.camera, clipLabel: 'Race pace' }));
+            videoSeconds: timeSeconds, telemetrySeconds: timeSeconds, camera: fixture.observation.camera, clipLabel: 'Warmup' }));
     });
 
     await loadRecording();
     fireEvent.click(screen.getByRole('button', { name: 'Train from annotations' })); await flush();
 
-    expect(screen.getByText(/Completed\. Learning from recording.*12 samples.*Race pace 12 \(12\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Completed\. Learning from recording.*12 samples.*Warmup 12 \(12\)/)).toBeInTheDocument();
     expect(JSON.parse(savedJson).model.steps).toBe(12);
     expect(references).toHaveBeenCalledTimes(recordings.length);
 });
