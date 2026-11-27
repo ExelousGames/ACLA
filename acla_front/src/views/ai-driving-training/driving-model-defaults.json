@@ -77,6 +77,8 @@
     "weightLimit": 5,
     "planTargetToleranceMs": 50
   },
+  "recordedBatchSize": 8,
+  "recordedBatchCount": 100,
   "recordedSamplingWeights": {
     "Warmup": 4,
     "Shift down": 7.5,

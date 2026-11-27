@@ -34,10 +34,11 @@ export interface RecordedReplayPosition {
     totalFrames: number;
 }
 export interface RecordedFrameViewerHandle {
+    countTrainingClips(): number;
     measure(consume: (frame: RecordedReplayFrame) => Promise<void>, signal: AbortSignal,
-        onProgress?: (position: RecordedReplayPosition) => void): Promise<void>;
+        onProgress?: (position: RecordedReplayPosition) => void, controlIntervalMs?: number): Promise<void>;
     replay(consume: (frame: RecordedDrivingFrame) => Promise<void>, signal: AbortSignal,
-        onProgress?: (position: RecordedReplayPosition) => void): Promise<void>;
+        onProgress?: (position: RecordedReplayPosition) => void, controlIntervalMs?: number): Promise<void>;
 }
 interface Props {
     configuration: DrivingModelConfig;
@@ -47,6 +48,7 @@ interface Props {
     onFrame: (frame: RecordedDrivingFrame | null) => void;
     onBusyChange?: (busy: boolean) => void;
     onReplayReadyChange?: (ready: boolean) => void;
+    onReplaySelectionChange?: () => void;
 }
 interface Example { seconds: number; score: number; thumbnail: string }
 interface Gallery { layer: number; examples: Example[][]; sampled: number; interval: number; complete: boolean }
@@ -199,7 +201,7 @@ function thumbnail(source: HTMLCanvasElement): string {
 }
 
 const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(function RecordedFrameViewer(props, ref) {
-    const { onReplayReadyChange } = props;
+    const { onReplayReadyChange, onReplaySelectionChange } = props;
     const current = useRef(props); current.current = props;
     const video = useRef<HTMLVideoElement>(null);
     const mounted = useRef(true);
@@ -277,7 +279,7 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
     const [gallery, setGallery] = useState<Gallery | null>(null);
     const [progress, setProgress] = useState('');
     const locked = props.disabled || Boolean(busy) || loadingTelemetry || timingPending;
-    const queued = annotations.filter((item) => included.includes(item.id));
+    const queued = useMemo(() => annotations.filter((item) => included.includes(item.id)), [annotations, included]);
     const replayReady = queued.length > 0;
     const folderPairCount = annotations.filter((item) => item.folderPath).length;
     const folderError = workingFolder && ((!pickedVideos.length && !folderVideoCount) || !telemetryFiles.length)
@@ -380,6 +382,7 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
     useEffect(() => {
         onReplayReadyChange?.(replayReady);
     }, [onReplayReadyChange, replayReady]);
+    useEffect(() => { onReplaySelectionChange?.(); }, [onReplaySelectionChange, queued]);
     useEffect(() => {
         if (busyRef.current === 'Inspecting frame' || busyRef.current === 'Scanning recording') operation.current?.abort();
         resetInspection(); setLayerIndex(0); setChannel(0);
@@ -409,11 +412,12 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
             if (operation.current === controller) { operation.current = null; changeBusy(''); if (mounted.current) publishFrame(); }
         }
     };
-    const walkReplay = async (consume: (frame: RecordedReplayFrame, player: HTMLVideoElement) => Promise<void>,
-        signal: AbortSignal, onProgress?: (position: RecordedReplayPosition) => void) => {
+    const walkReplay = async (label: string, consume: (frame: RecordedReplayFrame, player: HTMLVideoElement) => Promise<void>,
+        signal: AbortSignal, onProgress?: (position: RecordedReplayPosition) => void,
+        controlIntervalMs = current.current.configuration.runtime.controlIntervalMs) => {
             if (!replayReady) throw new Error('Select at least one training annotation with footage.');
-            await runOperation('Replaying recordings', async (active) => {
-                const step = Math.max(0.1, current.current.configuration.runtime.controlIntervalMs / 1000);
+            await runOperation(label, async (active) => {
+                const step = Math.max(0.1, controlIntervalMs / 1000);
                 for (let recordingIndex = 0; recordingIndex < queued.length; recordingIndex++) {
                     checkAbort(active);
                     const item = queued[recordingIndex];
@@ -476,10 +480,11 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
             }, signal);
     };
     useImperativeHandle(ref, () => ({
-        measure: (consume, signal, onProgress) => walkReplay((frame) => consume(frame), signal, onProgress),
-        replay: (consume, signal, onProgress) => walkReplay((frame, player) => consume({ ...frame,
+        countTrainingClips: () => queued.reduce((count, { selection }) => count + (selection.ranges?.length ?? 1), 0),
+        measure: (consume, signal, onProgress, controlIntervalMs) => walkReplay('Counting aligned samples', (frame) => consume(frame), signal, onProgress, controlIntervalMs),
+        replay: (consume, signal, onProgress, controlIntervalMs) => walkReplay('Replaying recordings', (frame, player) => consume({ ...frame,
             camera: capturePolicyCameraImage(originalFrame(player)),
-        }), signal, onProgress),
+        }), signal, onProgress, controlIntervalMs),
     }));
 
     const reportError = (reason: unknown) => { if (mounted.current && !(reason instanceof Error && reason.name === 'AbortError')) setError(message(reason)); };

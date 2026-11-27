@@ -1,7 +1,6 @@
 import { RecordedDrivingReplay } from './recorded-driving-replay';
 import { RecordedDrivingBalance } from './recorded-driving-balance';
 import { cloneConfig, emptyRecordedSamplingWeights } from './driving-model-config';
-import { RECORDED_PLAN_WINDOW } from './driving-plan-training';
 import type { DrivingPolicy, PlannedActionTarget, PolicyDecision, RecordedPlanTarget } from './driving-policy';
 import type { DrivingObservation } from './driving-observation';
 import type { DrivingPolicyInput } from './driving-memory';
@@ -9,8 +8,13 @@ import { assembleDrivingInput } from './driving-policy-input';
 import { parseRecordedDrivingSession, readRecordedDrivingObservation } from './recorded-driving-session';
 import { referenceLapFixture, trainingFixture } from './training-fixtures';
 
-function setup(train = true) {
+beforeEach(() => { jest.spyOn(Math, 'random').mockReturnValue(0.999); });
+afterEach(() => { jest.restoreAllMocks(); });
+
+function setup(train = true, batchSize = 2, batchCount = 1) {
     const configuration = cloneConfig();
+    configuration.recordedBatchSize = batchSize;
+    configuration.recordedBatchCount = batchCount;
     configuration.memory.windowMs = 300;
     configuration.memory.intervalMs = 100;
     configuration.memory.features = ['speed', 'camera'];
@@ -37,13 +41,53 @@ function setup(train = true) {
     const frame = (at: number, overrides: Partial<DrivingObservation> = {}): DrivingObservation => ({
         ...trainingFixture(at, 50, lap).observation, ...overrides,
     });
-    const learnedByOrigin = () => learnRecordedPlanAsync.mock.calls.slice()
-        .sort(([left], [right]) => left.recurrent!.capturedAt - right.recurrent!.capturedAt);
-    return { fake, replay, frame, learnedByOrigin };
+    return { fake, replay, frame };
 }
 
+it.each([1, 3])('runs exactly %i full batches from the same recording ranges', async (batchCount) => {
+    const { fake, replay, frame } = setup(true, 24, batchCount);
+    for (let index = 0; index < 15; index++) {
+        await replay.consume({ observation: frame(1000 + index * 100) });
+    }
+    replay.startRange();
+    for (let index = 0; index < 14; index++) {
+        await replay.consume({ observation: frame(3000 + index * 100) });
+    }
+    expect(fake.learnRecordedBatchAsync).not.toHaveBeenCalled();
+
+    await replay.finish();
+    expect(fake.learnRecordedBatchAsync.mock.calls.map(([batch]) => batch.length)).toEqual(new Array(batchCount).fill(24));
+    expect(replay.completedBatches).toBe(batchCount);
+    expect(replay.sampled.Unlabeled).toBe(24 * batchCount);
+    expect(fake.learnRecordedPlanAsync.mock.calls.some(([input]) => input.recurrent!.capturedAt >= 3000)).toBe(true);
+});
+
+it('reports committed batches outside the checkpoint lock when a chunk is cancelled', async () => {
+    const { fake, replay, frame } = setup(true, 8, 10);
+    await replay.consume({ observation: frame(1000) });
+    await replay.consume({ observation: frame(1100) });
+    let locked = false;
+    let active = true;
+    fake.trainBatchAsync.mockImplementation(async (run) => {
+        locked = true;
+        try { await run(); } finally { locked = false; }
+    });
+    fake.learnRecordedBatchAsync.mockResolvedValueOnce(true).mockImplementationOnce(async () => {
+        active = false;
+        return false;
+    });
+    const progress = jest.fn(async () => { expect(locked).toBe(false); });
+
+    await replay.finish(() => active, progress);
+
+    expect(fake.learnRecordedBatchAsync).toHaveBeenCalledTimes(2);
+    expect(progress.mock.calls).toEqual([[1]]);
+    expect(replay.completedBatches).toBe(1);
+    expect(replay.sampled.Unlabeled).toBe(8);
+});
+
 it('keeps zero-weight origins in recurrent history and uses their controls for other plans', async () => {
-    const { fake, frame, learnedByOrigin } = setup();
+    const { fake, frame } = setup();
     fake.configuration.recordedSamplingWeights = { ...emptyRecordedSamplingWeights(), Unlabeled: 100 };
     const frames = [frame(1000), frame(1100),
         frame(1200, { controls: { throttle: 0.4, brake: 0, steering: 0 } }), frame(1300)];
@@ -59,60 +103,18 @@ it('keeps zero-weight origins in recurrent history and uses their controls for o
     expect(fake.observeDemonstration.mock.calls.map(([input]) => input.recurrent?.capturedAt)).toEqual([1000, 1100, 1200]);
     expect(fake.learnRecordedPlanAsync).not.toHaveBeenCalled();
     await replay.finish();
-    const learned = learnedByOrigin();
-    expect(learned.map(([input]) => input.recurrent?.capturedAt)).toEqual([1000, 1200]);
-    expect(learned[1][0].recurrent?.historyTimes).toEqual([1100, 1000, null]);
-    const targets = learned[0][1];
+    expect(fake.learnRecordedPlanAsync.mock.calls.map(([input]) => input.recurrent?.capturedAt)).toEqual([1000, 1200]);
+    expect(fake.learnRecordedPlanAsync.mock.calls[1][0].recurrent?.historyTimes).toEqual([1100, 1000, null]);
+    const targets = fake.learnRecordedPlanAsync.mock.calls[0][1];
     expect(targets.map(({ step }) => step)).toEqual([0, 1, 2]);
     expect(targets[1].action.pedal).toBe(0.4);
     expect(replay.progress.samples).toBe(3);
-    expect(replay.trained).toEqual({ ...emptyRecordedSamplingWeights(), Unlabeled: 2 });
+    expect(replay.sampled).toEqual({ ...emptyRecordedSamplingWeights(), Unlabeled: 2 });
     expect(balance.complete).toBe(true);
-});
-
-it('trains every aligned origin once across uneven label ranges and drains the final batch', async () => {
-    const { fake, frame, learnedByOrigin } = setup();
-    fake.configuration.recordedSamplingWeights = { ...emptyRecordedSamplingWeights(), Unlabeled: 10, Hairpin: 90 };
-    const unlabeled = Array.from({ length: 12 }, (_, index) => frame(1000 + index * 100));
-    const hairpin = [frame(4000), frame(4100), frame(4200)];
-    const balance = new RecordedDrivingBalance(fake.configuration);
-    unlabeled.forEach((observation) => balance.count(observation));
-    hairpin.forEach((observation, index) => balance.count(observation, 'Hairpin', index === 0));
-    balance.prepare();
-    const replay = new RecordedDrivingReplay(fake as unknown as DrivingPolicy, true, balance);
-
-    for (const observation of unlabeled) await replay.consume({ observation });
-    await replay.startRange();
-    for (const observation of hairpin) await replay.consume({ observation }, undefined, 'Hairpin');
-    await replay.finish();
-
-    expect(learnedByOrigin().map(([input]) => input.recurrent?.capturedAt)).toEqual(
-        [...unlabeled.slice(0, -1), ...hairpin.slice(0, -1)].map(({ capturedAt }) => capturedAt));
-    expect(fake.learnRecordedBatchAsync.mock.calls.map(([batch]) => batch.length)).toEqual([8, 5]);
-    expect(replay.trained).toEqual({ ...emptyRecordedSamplingWeights(), Unlabeled: 11, Hairpin: 2 });
-    expect(balance.complete).toBe(true);
-});
-
-it('drains another window when closing the last range makes more than one window ready', async () => {
-    const { fake, replay, frame, learnedByOrigin } = setup();
-    fake.planTimes.push(1);
-    const first = frame(1000);
-    const origins = RECORDED_PLAN_WINDOW + 5;
-    const times = Array.from({ length: origins + 1 }, (_, i) => first.capturedAt + i * 100);
-    for (const at of times) {
-        await replay.consume({ observation: { ...first, capturedAt: at, measuredAt: at } });
-    }
-    expect(fake.learnRecordedBatchAsync).not.toHaveBeenCalled();
-
-    await replay.finish();
-
-    expect(learnedByOrigin().map(([input]) => input.recurrent?.capturedAt)).toEqual(times.slice(0, -1));
-    expect(fake.learnRecordedBatchAsync.mock.calls.at(-1)?.[0]).toHaveLength(5);
-    expect(replay.trained.Unlabeled).toBe(origins);
 });
 
 it('learns next-sample controls from earlier observations and shifts future analog targets by one sample', async () => {
-    const { fake, replay, frame, learnedByOrigin } = setup();
+    const { fake, replay, frame } = setup();
     const first = frame(1000, { gear: 3 });
     const second = frame(1100, { gear: 4, controls: { throttle: 0, brake: 0.6, steering: -0.4 } });
     const third = frame(1200, { gear: 3, controls: { throttle: 0.15, brake: 0, steering: 0.25 } });
@@ -123,7 +125,7 @@ it('learns next-sample controls from earlier observations and shifts future anal
     expect(fake.learnRecordedPlanAsync).not.toHaveBeenCalled();
     await replay.finish();
     expect(fake.learnRecordedPlanAsync).toHaveBeenCalledTimes(2);
-    const [[firstInput, firstTargets], [secondInput, secondTargets]] = learnedByOrigin();
+    const [[firstInput, firstTargets], [secondInput, secondTargets]] = fake.learnRecordedPlanAsync.mock.calls;
     expect(firstInput.recurrent?.capturedAt).toBe(first.capturedAt);
     expect(secondInput.recurrent?.capturedAt).toBe(second.capturedAt);
     expect(firstInput.features.slice(0, 9)).toEqual(new Array(9).fill(0));
@@ -148,7 +150,7 @@ it('learns next-sample controls from earlier observations and shifts future anal
 });
 
 it('labels immediate and future recorded targets with brake throughout pedal overlap', async () => {
-    const { fake, replay, frame, learnedByOrigin } = setup();
+    const { fake, replay, frame } = setup(true, 6);
     const pedals = [[0.6, 0], [0.7, 0.2], [0.7, 0.2], [0.8, 0.1], [0.8, 0], [0, 0]];
     for (let i = 0; i < pedals.length; i++) {
         const [throttle, brake] = pedals[i];
@@ -160,7 +162,7 @@ it('labels immediate and future recorded targets with brake throughout pedal ove
     await replay.consume({ observation: frame(2000) });
     await replay.consume({ observation: frame(2100, { controls: { throttle: 0.6, brake: 0.1, steering: 0 } }) });
     await replay.finish();
-    const groupedTargets = learnedByOrigin().map(([, targets]) => targets);
+    const groupedTargets = fake.learnRecordedPlanAsync.mock.calls.map(([, targets]) => targets);
     expect(groupedTargets.map(([target]) => target.action.pedal)).toEqual([-0.2, -0.2, -0.1, 0.8, 0, -0.1]);
     expect(groupedTargets[0].map(({ action }) => action.pedal)).toEqual([-0.2, -0.2, -0.1, 0.8]);
     expect(groupedTargets[2].map(({ action }) => action.pedal)).toEqual([-0.1, 0.8, 0]);
@@ -171,14 +173,14 @@ it('labels immediate and future recorded targets with brake throughout pedal ove
 });
 
 it('keeps steering unwind to zero in immediate and delayed targets', async () => {
-    const { replay, frame, learnedByOrigin } = setup();
+    const { fake, replay, frame } = setup(true, 3);
     const steering = [0, -0.06, 0, 0.001];
     for (let index = 0; index < steering.length; index++) {
         await replay.consume({ observation: frame(1000 + index * 100,
             { controls: { throttle: 0, brake: 0, steering: steering[index] } }) });
     }
     await replay.finish();
-    const groupedTargets = learnedByOrigin().map(([, targets]) => targets);
+    const groupedTargets = fake.learnRecordedPlanAsync.mock.calls.map(([, targets]) => targets);
     expect(groupedTargets.map(([target]) => target.action.steering)).toEqual([-0.06, 0, 0.001]);
     expect(groupedTargets[0]).toEqual([
         expect.objectContaining({ step: 0 }),
@@ -188,11 +190,11 @@ it('keeps steering unwind to zero in immediate and delayed targets', async () =>
 });
 
 it('labels each consecutive gear transition and masks ambiguous multi-gear jumps', async () => {
-    const { replay, frame, learnedByOrigin } = setup();
+    const { fake, replay, frame } = setup(true, 4);
     const gears = [3, 4, 3, 6, 6];
     for (let index = 0; index < gears.length; index++) await replay.consume({ observation: frame(1000 + index * 100, { gear: gears[index] }) });
     await replay.finish();
-    expect(learnedByOrigin().map(([, [{ action, shifts }]]) => ({ action, shifts }))).toEqual([
+    expect(fake.learnRecordedPlanAsync.mock.calls.map(([, [{ action, shifts }]]) => ({ action, shifts }))).toEqual([
         { action: expect.objectContaining({ shiftUp: true, shiftDown: false }), shifts: { up: true, down: true } },
         { action: expect.objectContaining({ shiftUp: false, shiftDown: true }), shifts: { up: true, down: true } },
         { action: expect.objectContaining({ shiftUp: false, shiftDown: false }), shifts: { up: false, down: false } },
@@ -211,7 +213,7 @@ it.each([
     { gears: [0, 1, 0], targets: ['up', 'down'] },
     { gears: [1, 0, 2], targets: ['down'], times: [0, 0.1, 2] },
 ])('learns $targets from a recording with gears $gears', async ({ gears, targets, times = gears.map((_, i) => i / 10) }) => {
-    const { fake, replay, learnedByOrigin } = setup();
+    const { fake, replay } = setup(true, targets.length);
     const fixture = trainingFixture();
     const session = parseRecordedDrivingSession(gears.map((gear, index) => JSON.stringify({ ...fixture.live.currentTelemetry,
         Graphics_analyst_session_time: times[index], Physics_gear: gear + 1 })).join('\n'), 'acc');
@@ -224,7 +226,7 @@ it.each([
     }
 
     await replay.finish();
-    expect(learnedByOrigin().map(([, [{ action, shifts }]]) => ({ action, shifts }))).toEqual(
+    expect(fake.learnRecordedPlanAsync.mock.calls.map(([, [{ action, shifts }]]) => ({ action, shifts }))).toEqual(
         targets.map((target) => ({ action: expect.objectContaining({ shiftUp: target === 'up', shiftDown: target === 'down' }),
             shifts: { up: target !== 'unknown', down: target !== 'unknown' } })));
     expect(replay.progress.samples).toBe(targets.length);
@@ -232,7 +234,7 @@ it.each([
 
 it.each(['gap', 'missing replay tick', 'session', 'reference', 'position', 'duplicate clock', 'telemetry still at the prior frame', 'range start'])(
     'keeps the preceding targets available for batching and resets history at %s', async (kind) => {
-        const { fake, replay, frame, learnedByOrigin } = setup();
+        const { fake, replay, frame } = setup();
         await replay.consume({ observation: frame(1000) });
         const previous = frame(1100);
         if (kind === 'telemetry still at the prior frame') previous.measuredAt = 1050;
@@ -244,7 +246,7 @@ it.each(['gap', 'missing replay tick', 'session', 'reference', 'position', 'dupl
         if (kind === 'reference') changed.reference = { ...changed.reference };
         if (kind === 'position') changed.normalizedPosition = 0.55;
         if (kind === 'telemetry still at the prior frame') changed.measuredAt = previous.capturedAt;
-        if (kind === 'range start') await replay.startRange();
+        if (kind === 'range start') replay.startRange();
         await replay.consume({ observation: changed });
         expect(fake.learnRecordedPlanAsync).not.toHaveBeenCalled();
         await replay.consume({ observation: { ...changed, capturedAt: at + 100, measuredAt: at + 100 } });
@@ -252,19 +254,18 @@ it.each(['gap', 'missing replay tick', 'session', 'reference', 'position', 'dupl
         await replay.finish();
         expect(fake.learnRecordedPlanAsync).toHaveBeenCalledTimes(2);
         expect(fake.learnRecordedBatchAsync).toHaveBeenCalledTimes(1);
-        const learned = learnedByOrigin();
-        expect(learned[1][0].cameras.slice(0, 3)).toEqual([null, null, null]);
-        expect(learned.map(([, targets]) => targets.map(({ step }) => step))).toEqual([[0], [0]]);
+        expect(fake.learnRecordedPlanAsync.mock.calls[1][0].cameras.slice(0, 3)).toEqual([null, null, null]);
+        expect(fake.learnRecordedPlanAsync.mock.calls.map(([, targets]) => targets.map(({ step }) => step))).toEqual([[0], [0]]);
     });
 
 it('keeps history and future targets across missing lap position samples', async () => {
-    const { replay, frame, learnedByOrigin } = setup();
+    const { fake, replay, frame } = setup();
     await replay.consume({ observation: frame(1000, { normalizedPosition: 0.25 }) });
     await replay.consume({ observation: frame(1100, { normalizedPosition: null }) });
     await replay.consume({ observation: frame(1200, { normalizedPosition: 0.75 }) });
     await replay.finish();
     expect(replay.progress).toMatchObject({ samples: 2, skipped: 0 });
-    const calls = learnedByOrigin();
+    const calls = fake.learnRecordedPlanAsync.mock.calls;
     expect(calls.map(([, targets]) => targets.map(({ step }) => step))).toEqual([[0, 1], [0]]);
     expect(calls[1][0].recurrent?.historyTimes).toEqual([1000, null, null]);
 });
@@ -339,8 +340,8 @@ it('does not submit learning after cancellation while waiting for the GPU batch'
     expect(replay.progress.samples).toBe(0);
 });
 
-it('flushes only targets already collected when stopping after a cancelled frame', async () => {
-    const { fake, replay, frame } = setup();
+it('does not fit samples after stopping during collection', async () => {
+    const { fake, replay, frame } = setup(true, 1);
     await replay.consume({ observation: frame(1000) });
     await replay.consume({ observation: frame(1100) });
     let active = true;
@@ -348,8 +349,6 @@ it('flushes only targets already collected when stopping after a cancelled frame
     await replay.consume({ observation: frame(1200, { controls: { throttle: 0, brake: 0.5, steering: -0.4 } }) }, () => active);
     await replay.finish(() => active);
     expect(fake.learnRecordedPlanAsync).not.toHaveBeenCalled();
-    await replay.finish();
-    expect(fake.learnRecordedPlanAsync).toHaveBeenCalledTimes(1);
-    expect(fake.learnRecordedPlanAsync.mock.calls[0][1].map(({ step }) => step)).toEqual([0]);
+    expect(replay.completedBatches).toBe(0);
     expect(replay.progress.samples).toBe(1);
 });

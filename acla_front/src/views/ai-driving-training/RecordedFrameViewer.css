@@ -119,6 +119,16 @@
     position: relative;
     min-height: calc(var(--clip-rows) * var(--clip-row-height));
 }
+.recorded-label-timeline-grid[data-selectable] .recorded-label-timeline-lane,
+.recorded-label-timeline-grid[data-selectable] .recorded-label-timeline-ruler { cursor: crosshair; }
+.recorded-label-timeline-marquee {
+    position: absolute;
+    z-index: 2;
+    box-sizing: border-box;
+    border: 1px solid #87b9ec;
+    background: #87b9ec30;
+    pointer-events: none;
+}
 .recorded-label-timeline .recorded-label-timeline-clip {
     position: absolute;
     z-index: 1;

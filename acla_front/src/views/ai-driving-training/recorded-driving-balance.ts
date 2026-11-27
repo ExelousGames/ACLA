@@ -1,5 +1,5 @@
 import { emptyRecordedSamplingWeights, RECORDED_SAMPLING_CATEGORIES, UNLABELED_RECORDED_SAMPLING_CATEGORY,
-    type DrivingModelConfig, type RecordedSamplingCategory, type RecordedSamplingWeights } from './driving-model-config';
+    validateRecordedBatchLabelCount, type DrivingModelConfig, type RecordedSamplingCategory, type RecordedSamplingWeights } from './driving-model-config';
 import type { DrivingObservation } from './driving-observation';
 import { isConsecutiveRecordedObservation } from './recorded-driving-replay';
 
@@ -7,7 +7,7 @@ const normalize = (label: string | undefined) => label?.trim().toLowerCase() ?? 
 const categoriesByLabel = new Map(RECORDED_SAMPLING_CATEGORIES.map((category) => [normalize(category), category] as const));
 export interface RecordedDrivingCoverage { eligible: RecordedSamplingWeights }
 
-/** Count and verify aligned origins without decoding video, including zero-weight labels. */
+/** Count aligned origins before decoding video and verify those same origins during replay. */
 export class RecordedDrivingBalance {
     private samples: { label: string; category: RecordedSamplingCategory }[] = [];
     private eligible = emptyRecordedSamplingWeights();
@@ -39,9 +39,11 @@ export class RecordedDrivingBalance {
         if (!RECORDED_SAMPLING_CATEGORIES.some((category) => this.eligible[category] > 0)) {
             throw new Error(noSamplesError || 'No consecutive aligned samples were available for replay.');
         }
-        if (!RECORDED_SAMPLING_CATEGORIES.some((category) => this.weights[category] > 0)) {
+        const eligibleLabelCount = RECORDED_SAMPLING_CATEGORIES.filter((category) => this.weights[category] > 0).length;
+        if (!eligibleLabelCount) {
             throw new Error('The recording has no examples with a positive sampling weight. Adjust the sampling weights or select different annotations.');
         }
+        validateRecordedBatchLabelCount(this.config.recordedBatchSize, eligibleLabelCount);
         return { eligible: { ...this.eligible } };
     }
 

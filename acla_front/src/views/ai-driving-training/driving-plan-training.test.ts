@@ -4,7 +4,7 @@ import { DrivingMemory } from './driving-memory';
 import { cloneConfig, emptyRecordedSamplingWeights, RECORDED_SAMPLING_CATEGORIES, type RecordedSamplingWeights } from './driving-model-config';
 import { trainingFixture } from './training-fixtures';
 
-function setup(weights?: RecordedSamplingWeights, random?: () => number) {
+function setup(weights?: RecordedSamplingWeights, batchSize = 1, batchCount = 1, random = () => 0.999) {
     const { observation } = trainingFixture();
     const config = cloneConfig();
     config.actions.planTimesSeconds = Array.from({ length: 31 }, (_, index) => index / 10);
@@ -14,22 +14,22 @@ function setup(weights?: RecordedSamplingWeights, random?: () => number) {
         for (const { input, targets } of plans) await policy.learnRecordedPlanAsync(input, targets);
         return true;
     });
-    return { policy, learn, batch, training: new DrivingPlanTraining(weights, random), features: new DrivingMemory().encode(observation) };
+    return { policy, learn, batch, training: new DrivingPlanTraining(weights, batchSize, batchCount, random),
+        features: new DrivingMemory().encode(observation) };
 }
 const shifts = { up: true, down: true };
 const neutralTarget = { action: { pedal: 0, steering: 0 }, shifts };
-const learnInputIds = (plans: readonly { input: { features: number[] } }[]) => plans.map(({ input }) => input.features[0]);
 
 it('keeps immediate and delayed targets together using the original input snapshot', async () => {
     const { policy, learn, training, features } = setup();
     const original = { ...features, features: features.features.slice(), cameras: features.cameras.slice() };
-    await training.recordAsync(policy, features, neutralTarget, 1000);
+    training.record(policy, features, neutralTarget, 1000);
     features.features[0] = 1;
     const targets: PlannedActionTarget[] = [{ step: 0, ...neutralTarget }];
     for (let step = 1; step <= 30; step++) {
         const action = { pedal: step / 30, steering: -step / 30, shiftUp: step === 3 };
         expect(learn).not.toHaveBeenCalled();
-        await training.recordAsync(policy, undefined, { action, shifts }, 1000 + step * 100);
+        training.record(policy, undefined, { action, shifts }, 1000 + step * 100);
         targets.push({ step, action, shifts });
     }
     expect(learn).not.toHaveBeenCalled();
@@ -37,17 +37,17 @@ it('keeps immediate and delayed targets together using the original input snapsh
     expect(learn).toHaveBeenCalledTimes(1);
     expect(learn).toHaveBeenCalledWith(original, targets);
     expect(learn.mock.calls[0][0].recurrent).toBe(original.recurrent);
-    expect(training.hasPending).toBe(false);
+    expect(training.completedBatches).toBe(1);
 });
 
 it('waits for a time slot, tolerates small sampling offsets and skips missing targets', async () => {
     const { policy, learn, training, features } = setup();
-    await training.recordAsync(policy, features, neutralTarget, 1000);
-    await training.recordAsync(policy, undefined, neutralTarget, 1099);
+    training.record(policy, features, neutralTarget, 1000);
+    training.record(policy, undefined, neutralTarget, 1099);
     const action = { pedal: -0.1, steering: -0.5 };
-    await training.recordAsync(policy, undefined, { action, shifts }, 1110);
-    await training.recordAsync(policy, undefined, neutralTarget, 1361);
-    await training.recordAsync(policy, undefined, neutralTarget, 1400);
+    training.record(policy, undefined, { action, shifts }, 1110);
+    training.record(policy, undefined, neutralTarget, 1361);
+    training.record(policy, undefined, neutralTarget, 1400);
     expect(learn).not.toHaveBeenCalled();
     await training.finishAsync(policy);
     expect(learn).toHaveBeenCalledTimes(1);
@@ -64,130 +64,201 @@ it.each([
     const originMs = recordedAt(origin), frameMs = recordedAt(frame);
     expect(Math.sign(frameMs - (originMs + 100) - boundaryMs)).toBe(direction);
 
-    await training.recordAsync(policy, features, neutralTarget, originMs);
+    training.record(policy, features, neutralTarget, originMs);
     const action = { pedal: -0.55, steering: 0.4 };
-    await training.recordAsync(policy, undefined, { action, shifts }, frameMs);
-    await training.recordAsync(policy, undefined, neutralTarget, frameMs + 1);
+    training.record(policy, undefined, { action, shifts }, frameMs);
+    training.record(policy, undefined, neutralTarget, frameMs + 1);
     await training.finishAsync(policy);
     expect(learn).toHaveBeenCalledTimes(1);
     expect(learn).toHaveBeenCalledWith(features, [{ step: 0, ...neutralTarget }, { step: 1, action, shifts }]);
 });
 
-it('flushes partial origins once without inventing missing targets', async () => {
-    const { policy, learn, training, features } = setup();
-    await training.recordAsync(policy, features, neutralTarget, 1000);
+it('flushes partial origins in order once without inventing missing targets', async () => {
+    const { policy, learn, training, features } = setup(undefined, 2);
+    training.record(policy, features, neutralTarget, 1000);
     const next = { ...features, features: [1, ...features.features.slice(1)] };
     const target = { action: { pedal: -0.5, steering: 0.4 }, shifts };
-    await training.recordAsync(policy, next, target, 1100);
+    training.record(policy, next, target, 1100);
     await training.finishAsync(policy);
     await training.finishAsync(policy);
-    expect(learn.mock.calls).toHaveLength(2);
-    expect(learn.mock.calls).toEqual(expect.arrayContaining([
+    expect(learn.mock.calls).toEqual([
         [features, [{ step: 0, ...neutralTarget }, { step: 1, ...target }]],
         [next, [{ step: 0, ...target }]],
-    ]));
-    expect(training.hasPending).toBe(false);
+    ]);
+    expect(training.completedBatches).toBe(1);
 });
 
-it('does not collect a cancelled frame or submit additional origins after cancellation', async () => {
-    const { policy, learn, batch, training, features } = setup();
+it('does not count a cancelled optimizer update', async () => {
+    const { policy, learn, batch, training, features } = setup(undefined, 2);
     let active = true;
-    await training.recordAsync(policy, features, neutralTarget, 1000);
-    await training.recordAsync(policy, features, neutralTarget, 1050);
-    await training.recordAsync(policy, features, neutralTarget, 1100, () => false);
+    training.record(policy, features, neutralTarget, 1000);
+    training.record(policy, features, neutralTarget, 1050);
     batch.mockImplementationOnce(async () => { active = false; return false; });
     await training.finishAsync(policy, () => active);
     expect(learn).not.toHaveBeenCalled();
-    expect(training.hasPending).toBe(true);
+    expect(training.completedBatches).toBe(0);
+    expect(training.sampled.Unlabeled).toBe(0);
 
-    await training.finishAsync(policy); // A graceful stop can flush targets observed before cancellation.
+    await training.finishAsync(policy);
     expect(learn.mock.calls).toEqual([
         [features, [{ step: 0, ...neutralTarget }]], [features, [{ step: 0, ...neutralTarget }]],
     ]);
-    expect(training.hasPending).toBe(false);
+    expect(training.completedBatches).toBe(1);
 });
 
-it('uses weights to fill optimizer batches, then shuffles the chosen label mix', async () => {
-    const { policy, batch, training, features } = setup({ ...emptyRecordedSamplingWeights(), Traffic: 75, Hairpin: 25 }, () => 0);
+it('fills each optimizer batch from preset category percentages and reuses rare examples', async () => {
+    const { policy, batch, training, features } = setup({ ...emptyRecordedSamplingWeights(), Traffic: 50, Hairpin: 25, 'Shift up': 25 }, 8, 2);
     for (let i = 0; i < 16; i++) {
-        const category = i < 12 ? 'Traffic' : 'Hairpin';
-        const input = { ...features, features: [i, ...features.features.slice(1)] };
-        await training.recordAsync(policy, input, neutralTarget, 1000 + i * 100, undefined, category);
+        const category = i === 15 ? 'Shift up' : i === 14 ? 'Hairpin' : 'Traffic';
+        const action = { pedal: 0.5, steering: i === 14 ? 0.4 : 0, shiftUp: i === 15 };
+        training.record(policy, features, { action, shifts }, 1000 + i * 100, category);
     }
     await training.finishAsync(policy);
     expect(batch).toHaveBeenCalledTimes(2);
     for (const [plans] of batch.mock.calls) {
-        // The final shuffle changes the weighted order, keeping the 6:2 mix intact.
-        expect(learnInputIds(plans).map((id) => id < 12 ? 'Traffic' : 'Hairpin')).toEqual([
-            'Traffic', 'Hairpin', 'Traffic', 'Traffic', 'Traffic', 'Hairpin', 'Traffic', 'Traffic',
-        ]);
+        const immediate = plans.map(({ targets }) => targets[0].action);
+        expect(immediate.filter(({ steering, shiftUp }) => steering === 0 && !shiftUp)).toHaveLength(4);
+        expect(immediate.filter(({ steering }) => steering === 0.4)).toHaveLength(2);
+        expect(immediate.filter(({ shiftUp }) => shiftUp)).toHaveLength(2);
     }
-    const ids = learnInputIds(batch.mock.calls.flatMap(([plans]) => plans));
-    expect(ids.slice(0, 8)).toEqual([11, 12, 10, 9, 8, 15, 7, 0]);
-    expect(ids.sort((a, b) => a - b)).toEqual(Array.from({ length: 16 }, (_, i) => i));
-    expect(training.trained).toEqual({ ...emptyRecordedSamplingWeights(), Traffic: 12, Hairpin: 4 });
+    expect(training.sampled).toEqual({ ...emptyRecordedSamplingWeights(), Traffic: 8, Hairpin: 4, 'Shift up': 4 });
 });
 
-it('trains full windows without waiting for late labels and uses every origin once', async () => {
+it('keeps late upshifts and downshifts from a maneuver without losing holds or changing category quotas', async () => {
+    const weights = { ...emptyRecordedSamplingWeights(), Sweeper: 75, Traffic: 25 };
+    const { policy, batch, training, features } = setup(weights, 4, 3);
+    policy.configuration.actions.planTimesSeconds = [0, 0.1];
+    const hold = { ...features, features: [0, ...features.features.slice(1)] };
+    const traffic = { ...features, features: [3, ...features.features.slice(1)] };
+    for (let i = 0; i < RECORDED_PLAN_WINDOW; i++) {
+        training.record(policy, hold, neutralTarget, i * 100, 'Sweeper');
+    }
+    training.completeRange();
+
+    const followUp = { action: { pedal: 0.6, steering: -0.2 }, shifts };
+    const memory = new DrivingMemory(policy.configuration, true);
+    const { observation } = trainingFixture();
+    memory.encode(observation);
+    const origin = memory.encode({ ...observation, capturedAt: observation.capturedAt + 100, measuredAt: observation.measuredAt + 100 });
+    expect(origin.recordedHistory).toHaveLength(1);
+    const shiftTargets = [{ pedal: 0.3, steering: 0.4, shiftUp: true }, { pedal: -0.5, steering: -0.3, shiftDown: true }];
+    shiftTargets.forEach((action, i) => {
+        const at = (RECORDED_PLAN_WINDOW + i * 2) * 100;
+        const input = { ...origin, features: [i + 1, ...origin.features.slice(1)] };
+        training.record(policy, input, { action, shifts }, at, 'Sweeper');
+        input.features[0] = -1;
+        training.record(policy, undefined, followUp, at + 100);
+        training.completeRange();
+    });
+    training.record(policy, traffic, neutralTarget, (RECORDED_PLAN_WINDOW + 4) * 100, 'Traffic');
+    await training.finishAsync(policy);
+
+    expect(batch).toHaveBeenCalledTimes(3);
+    for (const [plans] of batch.mock.calls) {
+        expect(plans).toHaveLength(4);
+        expect(plans.filter(({ input }) => input.features[0] === 3)).toHaveLength(1);
+    }
+    const sampled = batch.mock.calls.flatMap(([plans]) => plans);
+    expect(sampled.some(({ input, targets }) => input.features[0] === 0 && !targets[0].action.shiftUp && !targets[0].action.shiftDown)).toBe(true);
+    shiftTargets.forEach((action, i) => {
+        const shift = sampled.find(({ input }) => input.features[0] === i + 1);
+        expect(shift?.targets).toEqual([{ step: 0, action, shifts }, { step: 1, ...followUp }]);
+        expect(shift?.input.recordedHistory).toEqual(origin.recordedHistory);
+    });
+    expect(training.sampled).toEqual({ ...emptyRecordedSamplingWeights(), Sweeper: 9, Traffic: 3 });
+});
+
+it('waits for late categories and retains a cross-section of earlier origins for their fixed mix', async () => {
     const weights = { ...emptyRecordedSamplingWeights(), Traffic: 60, Hairpin: 25, 'Shift down': 15 };
-    const { policy, batch, training, features } = setup(weights, () => 0.99);
+    const { policy, batch, training, features } = setup(weights, 8, 50, () => 0.99);
     for (let i = 0; i < 400; i++) {
         const input = { ...features, features: [i, ...features.features.slice(1)] };
         const category = i === 399 ? 'Shift down' : i === 398 ? 'Hairpin' : 'Traffic';
-        await training.recordAsync(policy, input, neutralTarget, 1000 + i * 100, undefined, category);
+        training.record(policy, input, neutralTarget, 1000 + i * 100, category);
     }
-    expect(batch).toHaveBeenCalledTimes(RECORDED_PLAN_WINDOW / 8);
-    expect(training.trained.Traffic).toBe(RECORDED_PLAN_WINDOW);
-    await training.finishAsync(policy);
-    expect(batch).toHaveBeenCalledTimes(50);
-    expect(training.trained).toEqual({ ...emptyRecordedSamplingWeights(), Traffic: 398, Hairpin: 1, 'Shift down': 1 });
-    const ids = learnInputIds(batch.mock.calls.flatMap(([plans]) => plans));
-    expect(ids.sort((a, b) => a - b)).toEqual(Array.from({ length: 400 }, (_, i) => i));
-    expect(training.hasPending).toBe(false);
-});
-
-it('uses available categories to flush a stopped replay before every measured category arrives', async () => {
-    const { policy, batch, training, features } = setup({ ...emptyRecordedSamplingWeights(), Traffic: 60, Hairpin: 25, 'Shift down': 15 });
-    for (let i = 0; i < 8; i++) {
-        await training.recordAsync(policy, features, neutralTarget, 1000 + i * 100, undefined, i < 7 ? 'Traffic' : 'Hairpin');
+    expect(batch).not.toHaveBeenCalled();
+    for (let i = 400; i < 430; i++) {
+        training.record(policy, undefined, neutralTarget, 1000 + i * 100);
     }
-    await training.finishAsync(policy, undefined, false);
     expect(batch).not.toHaveBeenCalled();
     await training.finishAsync(policy);
-    expect(training.trained).toEqual({ ...emptyRecordedSamplingWeights(), Traffic: 7, Hairpin: 1 });
+    expect(batch).toHaveBeenCalledTimes(50);
+    expect(training.sampled).toEqual({ ...emptyRecordedSamplingWeights(), Traffic: 240, Hairpin: 100, 'Shift down': 60 });
+    expect(batch.mock.calls.flatMap(([plans]) => plans).some(({ input }) => input.features[0] === 0)).toBe(true);
+    for (const [plans] of batch.mock.calls) {
+        expect(plans.filter(({ input }) => input.features[0] === 398)).toHaveLength(2);
+        expect(plans.filter(({ input }) => input.features[0] === 399).length).toBeGreaterThanOrEqual(1);
+    }
 });
 
-it('draws from all configured labels across batches smaller than the number of categories', async () => {
+it('redistributes weights for categories without examples across categories with examples', async () => {
+    const { policy, batch, training, features } = setup({ ...emptyRecordedSamplingWeights(), Traffic: 60, Hairpin: 25, 'Shift down': 15 }, 8);
+    for (let i = 0; i < 8; i++) {
+        training.record(policy, features, neutralTarget, 1000 + i * 100, i < 7 ? 'Traffic' : 'Hairpin');
+    }
+    expect(batch).not.toHaveBeenCalled();
+    await training.finishAsync(policy);
+    expect(training.sampled).toEqual({ ...emptyRecordedSamplingWeights(), Traffic: 6, Hairpin: 2 });
+});
+
+it('rejects a batch too small for its eligible labels before any optimizer update', async () => {
     const weights = emptyRecordedSamplingWeights();
-    const expected = emptyRecordedSamplingWeights();
     for (const category of RECORDED_SAMPLING_CATEGORIES) {
         weights[category] = 100 / RECORDED_SAMPLING_CATEGORIES.length;
-        expected[category] = 1;
     }
-    const { policy, training, features } = setup(weights);
+    const { policy, batch, training, features } = setup(weights, 1, RECORDED_SAMPLING_CATEGORIES.length);
     for (let index = 0; index < RECORDED_SAMPLING_CATEGORIES.length; index++) {
         const category = RECORDED_SAMPLING_CATEGORIES[index];
-        await training.recordAsync(policy, features, neutralTarget, 1000 + index * 100, undefined, category);
+        training.record(policy, features, neutralTarget, 1000 + index * 100, category);
     }
-    await training.finishAsync(policy);
-    expect(training.trained).toEqual(expected);
+    await expect(training.finishAsync(policy)).rejects.toThrow(/batch size/i);
+    expect(batch).not.toHaveBeenCalled();
+    expect(training.completedBatches).toBe(0);
 });
 
-it('counts only committed batches and retries a cancelled partial batch without reshuffling it', async () => {
-    const { policy, batch, training, features } = setup(undefined, () => 0);
-    const learnBatch = batch.getMockImplementation()!;
-    let active = true;
-    batch.mockImplementationOnce(learnBatch).mockImplementationOnce(async () => { active = false; return false; });
-    for (let id = 0; id < 11; id++) {
-        await training.recordAsync(policy, { ...features, features: [id, ...features.features.slice(1)] }, neutralTarget, 1000 + id * 100);
+it.each([2, 8])('reuses a tiny-weight label in every size-%i batch and excludes zero-weight and absent labels', async (size) => {
+    const weights = { ...emptyRecordedSamplingWeights(), Traffic: 69.9, Hairpin: 0.1, 'Shift up': 30 };
+    const { policy, batch, training, features } = setup(weights, size, 4);
+    const examples = [
+        { category: 'Traffic', marker: 1 },
+        { category: 'Shift down', marker: 2 },
+        { category: 'Hairpin', marker: 3 },
+    ] as const;
+    for (const { category, marker } of examples) {
+        const input = { ...features, features: [marker, ...features.features.slice(1)] };
+        training.record(policy, input, neutralTarget, 1000 + marker * 100, category);
     }
-    await training.finishAsync(policy, () => active);
-    expect(training.trained.Unlabeled).toBe(8);
-    expect(training.hasPending).toBe(true);
-
     await training.finishAsync(policy);
-    expect(batch.mock.calls.map(([plans]) => plans.length)).toEqual([8, 3, 3]);
-    expect(batch.mock.calls[1][0]).toBe(batch.mock.calls[2][0]);
-    expect(training.trained.Unlabeled).toBe(11);
-    expect(training.hasPending).toBe(false);
+    expect(batch).toHaveBeenCalledTimes(4);
+    for (const [plans] of batch.mock.calls) {
+        expect(plans.filter(({ input }) => input.features[0] === 1)).toHaveLength(size - 1);
+        expect(plans.filter(({ input }) => input.features[0] === 3)).toHaveLength(1);
+    }
+    expect(training.sampled).toEqual({ ...emptyRecordedSamplingWeights(), Traffic: (size - 1) * 4, Hairpin: 4 });
+});
+
+it('uses every label in every full batch and stops at the configured update count', async () => {
+    const categories = RECORDED_SAMPLING_CATEGORIES;
+    const weights = emptyRecordedSamplingWeights();
+    for (const category of categories) weights[category] = 100 / categories.length;
+
+    const batchSize = 31;
+    const { policy, batch, training, features } = setup(weights, batchSize, 2);
+    const origins = 783;
+    for (let index = 0; index < origins; index++) {
+        const labelIndex = index === origins - 1 ? categories.length - 1 : index % (categories.length - 1);
+        const input = { ...features, features: [labelIndex, ...features.features.slice(1)] };
+        training.record(policy, input, neutralTarget, 1000 + index * 100, categories[labelIndex]);
+    }
+    expect(batch).not.toHaveBeenCalled();
+
+    await training.finishAsync(policy, undefined, 1);
+    expect(training.completedBatches).toBe(1);
+    await training.finishAsync(policy);
+    await training.finishAsync(policy);
+    expect(batch.mock.calls.map(([plans]) => plans.length)).toEqual([batchSize, batchSize]);
+    for (const [plans] of batch.mock.calls) {
+        expect(new Set(plans.map(({ input }) => input.features[0])).size).toBe(categories.length);
+    }
+    expect(training.completedBatches).toBe(2);
 });

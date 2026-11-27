@@ -45,10 +45,12 @@
 .driving-exploration .driving-aggression { margin-top: 12px; }
 .driving-exploration input:disabled { opacity: .4; }
 .driving-sampling-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 130px), 1fr)); gap: 12px; }
-.driving-sampling-fields label { display: grid; grid-template-rows: 1fr auto; gap: 6px; font-size: 12px; }
-.driving-sampling-fields input { box-sizing: border-box; min-width: 0; width: 100%; padding: 8px; border: 1px solid #3a414d; border-radius: 6px; background: #232934; color: #edf3f2; color-scheme: dark; }
-.driving-sampling-fields input:focus-visible { outline: 2px solid #00e676; outline-offset: 3px; }
+.driving-sampling-fields label, .driving-recorded-batch label { display: grid; grid-template-rows: 1fr auto; gap: 6px; font-size: 12px; }
+.driving-sampling-fields input, .driving-recorded-batch input { box-sizing: border-box; min-width: 0; width: 100%; padding: 8px; border: 1px solid #3a414d; border-radius: 6px; background: #232934; color: #edf3f2; color-scheme: dark; }
+.driving-sampling-fields input:focus-visible, .driving-recorded-batch input:focus-visible { outline: 2px solid #00e676; outline-offset: 3px; }
 .driving-sampling-weights .driving-buttons { align-items: center; }
+.driving-recorded-batch-settings { display: flex; flex-wrap: wrap; gap: 12px 24px; }
+.driving-sampling-weights .driving-recorded-batch { align-items: end; margin-top: 0; }
 .driving-sampling-weights .driving-buttons p { margin: 0; }
 .driving-pedals { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
 .driving-pedals caption { text-align: left; color: #a3adb7; margin: 16px 0 8px; }

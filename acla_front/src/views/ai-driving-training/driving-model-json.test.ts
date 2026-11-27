@@ -54,6 +54,53 @@ it.each([false, true])('loads older model files with default sampling weights (t
     expect(migrated.model).toEqual(document.model);
 });
 
+it.each([false, true])('loads older model files with a recorded batch size of 8 (trained=%s)', (trained) => {
+    const config = cloneConfig();
+    config.network.hiddenUnits = config.network.cameraProjectionUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    const { observation } = trainingFixture();
+    const document = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
+        : emptyTrainingDocument(config);
+    const legacy = JSON.parse(JSON.stringify(document));
+    delete legacy.configuration.recordedBatchSize;
+    const restored = readTrainingDocument(legacy);
+    expect(restored.configuration.recordedBatchSize).toBe(8);
+    expect(restored).toEqual(document);
+    expect(legacy.configuration).not.toHaveProperty('recordedBatchSize');
+});
+
+it.each([1, 24, 256])('round-trips a recorded batch size of %s', (recordedBatchSize) => {
+    const document = emptyTrainingDocument({ ...cloneConfig(), recordedBatchSize });
+    expect(readTrainingDocument(JSON.parse(JSON.stringify(document)))).toEqual(document);
+});
+
+it.each([0, -1, 1.5, 257, '8', null, undefined, Infinity, NaN])('rejects an invalid recorded batch size %s', (recordedBatchSize) => {
+    const document = emptyTrainingDocument();
+    expect(() => readTrainingDocument({ ...document, configuration: { ...document.configuration, recordedBatchSize } }))
+        .toThrow(/configuration/);
+});
+
+it('defaults an older model to 100 recorded batches while keeping its configured batch size', () => {
+    const document = emptyTrainingDocument({ ...cloneConfig(), recordedBatchSize: 48 });
+    const legacy = JSON.parse(JSON.stringify(document));
+    delete legacy.configuration.recordedBatchCount;
+    expect(document.configuration.recordedBatchCount).toBe(100);
+    expect(readTrainingDocument(legacy)).toEqual(document);
+    expect(legacy.configuration).not.toHaveProperty('recordedBatchCount');
+});
+
+it.each([1, 250, 1_000_000])('round-trips a recorded batch count of %s', (recordedBatchCount) => {
+    const document = emptyTrainingDocument({ ...cloneConfig(), recordedBatchCount });
+    expect(readTrainingDocument(JSON.parse(JSON.stringify(document)))).toEqual(document);
+});
+
+it.each([0, -1, 1.5, 1_000_001, '100', null, undefined, Infinity, NaN])(
+    'rejects an invalid recorded batch count %s', (recordedBatchCount) => {
+        const document = emptyTrainingDocument();
+        expect(() => readTrainingDocument({ ...document, configuration: { ...document.configuration, recordedBatchCount } }))
+            .toThrow(/configuration/);
+    });
+
 it('combines weights from a wholly retired label set and accounts for rounding', () => {
     const document = emptyTrainingDocument();
     const retiredWeights = { 'Stint management': 79.1, 'Scrub tires': 20.9, Unlabeled: 1e-10 };
@@ -283,13 +330,13 @@ it('uses the JSON plan times and target tolerance for delayed training', async (
         for (const { input, targets } of plans) await policy.learnRecordedPlanAsync(input, targets);
         return true;
     });
-    const training = new DrivingPlanTraining();
+    const training = new DrivingPlanTraining(undefined, 1, 1);
     const features = new DrivingMemory(config).encode(observation);
     const target = { action: { pedal: 0, steering: 0 }, shifts: { up: true, down: true } };
-    await training.recordAsync(policy, features, target, 1000);
-    await training.recordAsync(policy, undefined, target, 1310);
+    training.record(policy, features, target, 1000);
+    training.record(policy, undefined, target, 1310);
     expect(learn).not.toHaveBeenCalled();
-    await training.recordAsync(policy, undefined, target, 2221);
+    training.record(policy, undefined, target, 2221);
     await training.finishAsync(policy);
     expect(learn).toHaveBeenCalledTimes(1);
     expect(learn).toHaveBeenCalledWith(features, [{ step: 0, ...target }, { step: 1, ...target }]);

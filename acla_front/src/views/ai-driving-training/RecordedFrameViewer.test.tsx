@@ -5,7 +5,7 @@ import { encodeVideoTelemetryStart, VIDEO_TIMING_BYTES } from 'data/session-vide
 import RecordedFrameViewer, { RecordedFrameViewerHandle, type RecordedReplayFrame } from './RecordedFrameViewer';
 import { cloneConfig } from './driving-model-config';
 import type { DrivingPolicy } from './driving-policy';
-import { parseRecordedDrivingSessionStream, type RecordedDrivingRow, type RecordedDrivingSession } from './recorded-driving-session';
+import { findRecordedTelemetry, parseRecordedDrivingSessionStream, type RecordedDrivingRow, type RecordedDrivingSession } from './recorded-driving-session';
 import type { TrainingAnnotation, TrainingSelection } from './RecordedTrainingRanges';
 
 jest.mock('./recorded-driving-session', () => ({
@@ -58,8 +58,8 @@ function mockTimeline() {
     });
     return timeline;
 }
-function pointer(timeline: HTMLElement, type: string, clientX: number, pointerType = 'mouse') {
-    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX });
+function pointer(timeline: HTMLElement, type: string, clientX: number, pointerType = 'mouse', init?: MouseEventInit) {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX, ...init });
     Object.defineProperties(event, {
         pointerId: { value: 1 }, isPrimary: { value: true }, pointerType: { value: pointerType },
     });
@@ -619,55 +619,121 @@ it('marks, edits and removes saved ranges on the timeline, and restores each vid
     expect(write).toHaveBeenLastCalledWith(expect.any(File), expect.any(File), { ranges: [] });
 });
 
-it('labels gear changes that overlap an existing clip and saves them in order', async () => {
+it.each([
+    { direction: 'up', opposite: 'down' },
+    { direction: 'down', opposite: 'up' },
+])('adds shift $direction history and nearby matches only in unmarked footage', async ({ direction, opposite }) => {
     const hairpin = { start: 0.5, end: 1.75, label: 'Hairpin' };
     const annotation = { ...savedAnnotation('drive.json', 'drive.mp4', 'drive.jsonl', undefined, [hairpin]), videoTelemetryStartSeconds: 99.5 };
     mockAnnotationPicker([annotation]);
     const update = jest.mocked(window.recordedTrainingRanges!.update).mockImplementation(async (_, draft) => ({
         ...annotation, selection: { ...annotation.selection, ranges: draft.ranges },
     }));
-    const rows = [[0, 3], [0.125, 4], [0.25, 4], [0.5, 4], [0.625, 3], [0.9375, 3], [1, 4], [1.5, 4]]
+    const rows = [[0, 3], [0.25, 3], [0.375, 4], [0.75, 4], [0.875, 3], [1.1875, 3], [1.25, 4],
+        [2.125, 4], [2.21875, 5], [2.375, 5]]
         .map(([timeSeconds, gear], index) => ({ timeSeconds, index, segment: 0,
-            sample: { Graphics_status: 2, Physics_gear: gear } }));
-    parse.mockResolvedValue({ ...recording, rows, durationSeconds: 1.5 });
+            sample: { Graphics_status: 2, Physics_gear: direction === 'up' ? gear : 7 - gear } }));
+    parse.mockResolvedValue({ ...recording, rows, durationSeconds: 2.375 });
     const configuration = cloneConfig();
     configuration.runtime.controlIntervalMs = 125;
     render(<RecordedFrameViewer configuration={configuration} policy={null} disabled={false} onFrame={jest.fn()} />);
     pickAnnotations(annotation.name);
-    const video = await loadAnnotationPreview(2.5);
+    const video = await loadAnnotationPreview(3);
     const timeline = within(screen.getByRole('region', { name: 'Label timeline' }));
-    const addShiftDown = screen.getByRole('button', { name: 'Add shift down' });
-    const addShiftUp = screen.getByRole('button', { name: 'Add shift up' });
+    const addOppositeShift = screen.getByRole('button', { name: `Add shift ${opposite}` });
+    const addShift = screen.getByRole('button', { name: `Add shift ${direction}` });
 
     expect(video.currentTime).toBe(0);
-    await act(async () => { fireEvent.click(addShiftDown); });
-    expect(video.currentTime).toBe(1.125);
-    expect(timeline.getByRole('button', { name: 'Range 2: Shift down, 0:01.00 – 0:01.13' })).toBeVisible();
+    await act(async () => { fireEvent.click(addShift); });
+    expect(video.currentTime).toBe(0.875);
+    // Include the 1.75 s match. The 2.71875 s shift is outside the one-second lookahead.
+    expect(timeline.getByRole('button', { name: `Range 2: Shift ${direction}, 0:00.50 – 0:01.75` })).toBeVisible();
     expect(screen.getByText('Unsaved annotation changes')).toBeVisible();
     expect(update).not.toHaveBeenCalled();
 
-    fireEvent.click(addShiftDown);
-    expect(screen.getByRole('alert')).toHaveTextContent('No unmarked shift down');
-    expect(timeline.getAllByRole('button', { name: /Shift down/ })).toHaveLength(1);
+    fireEvent.click(addOppositeShift);
+    expect(screen.getByRole('alert')).toHaveTextContent(`No unmarked shift ${opposite}`);
+    expect(timeline.queryByRole('button', { name: new RegExp(`Shift ${opposite}`) })).not.toBeInTheDocument();
 
-    await act(async () => { fireEvent.click(addShiftUp); });
-    expect(video.currentTime).toBe(1.5);
-    expect(timeline.getByRole('button', { name: 'Range 3: Shift up, 0:01.44 – 0:01.56' })).toBeVisible();
-
-    await act(async () => { fireEvent.click(addShiftUp); });
-    expect(video.currentTime).toBe(0.625);
-    expect(timeline.getByRole('button', { name: 'Range 2: Shift up, 0:00.50 – 0:00.63' })).toBeVisible();
-    expect(timeline.getByRole('button', { name: 'Range 3: Shift down, 0:01.00 – 0:01.13' })).toBeVisible();
+    await act(async () => { fireEvent.click(addShift); });
+    expect(video.currentTime).toBe(2.71875);
+    expect(timeline.getByRole('button', { name: `Range 3: Shift ${direction}, 0:01.75 – 0:02.75` })).toBeVisible();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 
+    fireEvent.click(addShift);
+    expect(screen.getByRole('alert')).toHaveTextContent(`No unmarked shift ${direction}`);
     fireEvent.click(screen.getByRole('button', { name: 'Save training annotation' }));
     await screen.findByText('Saved drive.json beside the video.');
     expect(update).toHaveBeenCalledWith(annotation.id, { ranges: [
         hairpin,
-        { start: 0.5, end: 0.625, label: 'Shift up' },
-        { start: 1, end: 1.125, label: 'Shift down' },
-        { start: 1.4375, end: 1.5625, label: 'Shift up' },
+        { start: 0.5, end: 1.75, label: `Shift ${direction}` },
+        { start: 1.75, end: 2.75, label: `Shift ${direction}` },
     ] });
+});
+
+it('quick shift labels stop at saved shift clips and manual ranges can still overlap', async () => {
+    const savedShift = { start: 1, end: 1.5, label: 'Shift down' };
+    const annotation = savedAnnotation('drive.json', 'drive.mp4', 'drive.jsonl', 0, [savedShift]);
+    mockAnnotationPicker([annotation]);
+    const rows = [[0, 3], [0.625, 3], [0.75, 4], [1, 4], [1.125, 3], [1.25, 3], [1.375, 4],
+        [1.5, 4], [1.625, 3], [1.75, 4], [1.875, 4]]
+        .map(([timeSeconds, gear], index) => ({ timeSeconds, index, segment: 0,
+            sample: { Graphics_status: 2, Physics_gear: gear } }));
+    parse.mockResolvedValue({ ...recording, rows, startTimeSeconds: 0, durationSeconds: 1.875 });
+    const configuration = cloneConfig();
+    configuration.runtime.controlIntervalMs = 125;
+    render(<RecordedFrameViewer configuration={configuration} policy={null} disabled={false} onFrame={jest.fn()} />);
+    pickAnnotations(annotation.name);
+    const video = await loadAnnotationPreview(2);
+    const timeline = within(screen.getByRole('region', { name: 'Label timeline' }));
+    const addShiftUp = screen.getByRole('button', { name: 'Add shift up' });
+
+    await act(async () => { fireEvent.click(addShiftUp); });
+    expect(video.currentTime).toBe(0.75);
+    expect(timeline.getByRole('button', { name: 'Range 1: Shift up, 0:00.00 – 0:00.75' })).toBeVisible();
+
+    await act(async () => { fireEvent.click(addShiftUp); });
+    expect(video.currentTime).toBe(1.75);
+    expect(timeline.getByRole('button', { name: 'Range 3: Shift up, 0:01.50 – 0:01.75' })).toBeVisible();
+    fireEvent.click(addShiftUp);
+    expect(screen.getByRole('alert')).toHaveTextContent('No unmarked shift up');
+
+    fireEvent.change(screen.getByLabelText('Range start (seconds)'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('Range end (seconds)'), { target: { value: '1.5' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Clip label (optional)' }), { target: { value: 'Shift up' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add range' }));
+    expect(timeline.getByRole('button', { name: 'Range 2: Shift down, 0:01.00 – 0:01.50' })).toBeVisible();
+    expect(timeline.getByRole('button', { name: 'Range 3: Shift up, 0:01.00 – 0:01.50' })).toBeVisible();
+});
+
+it('replays the new gear when the shift is at the end of the aligned recording', async () => {
+    const annotation = savedAnnotation('drive.json', 'drive.mp4', 'drive.jsonl', 0, []);
+    mockAnnotationPicker([annotation]);
+    jest.mocked(window.recordedTrainingRanges!.update).mockImplementation(async (_, draft) => ({
+        ...annotation, selection: { ...annotation.selection, ranges: draft.ranges },
+    }));
+    const rows = [[0, 3], [1, 3], [1.12, 4]].map(([timeSeconds, gear], index) => ({
+        timeSeconds, index, segment: 0, sample: { Graphics_status: 2, Physics_gear: gear },
+    }));
+    parse.mockResolvedValue({ ...recording, rows, startTimeSeconds: 0, durationSeconds: 1.12 });
+    const ref = React.createRef<RecordedFrameViewerHandle>();
+    const configuration = cloneConfig();
+    configuration.runtime.controlIntervalMs = 120;
+    render(<RecordedFrameViewer ref={ref} configuration={configuration} policy={null} disabled={false} onFrame={jest.fn()} />);
+    pickAnnotations(annotation.name);
+    await loadAnnotationPreview(2.5);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add shift up' })); });
+    fireEvent.click(screen.getByRole('button', { name: 'Save training annotation' }));
+    await screen.findByText('Saved drive.json beside the video.');
+    fireEvent.click(screen.getByRole('checkbox', { name: /^drive\.json/ }));
+
+    const frames: RecordedReplayFrame[] = [];
+    await act(async () => ref.current!.measure(async (frame) => { frames.push(frame); }, new AbortController().signal));
+    expect(frames).toHaveLength(10);
+    expect(frames[0]).toMatchObject({ startsRange: true, clipLabel: 'Shift up' });
+    expect(frames[0].videoSeconds).toBeCloseTo(0.04);
+    expect(frames.slice(-2).map(({ session, telemetrySeconds }) =>
+        findRecordedTelemetry(session, telemetrySeconds)?.sample.Physics_gear)).toEqual([3, 4]);
 });
 
 it('groups clips by label while keeping identical ranges independently selectable', async () => {
@@ -707,6 +773,77 @@ it('groups clips by label while keeping identical ranges independently selectabl
     fireEvent.click(screen.getByRole('button', { name: 'Remove range 2' }));
     expect(firstCorner).toBeInTheDocument();
     expect(duplicate).not.toBeInTheDocument();
+});
+
+it('drag-selects clips across label lanes and removes them as one annotation change', async () => {
+    const hairpin = { start: 0.5, end: 1, label: 'Hairpin' };
+    const shiftUp = { start: 0.7, end: 1.1, label: 'Shift up' };
+    const shiftDown = { start: 0.8, end: 1.2, label: 'Shift down' };
+    const annotation = savedAnnotation('drive.json', 'drive.mp4', 'drive.jsonl', 0, [hairpin, shiftUp, shiftDown]);
+    mockAnnotationPicker([annotation]);
+    const update = jest.mocked(window.recordedTrainingRanges!.update).mockResolvedValue({
+        ...annotation, selection: { ...annotation.selection, ranges: [shiftDown] },
+    });
+    render(<RecordedFrameViewer configuration={cloneConfig()} policy={null} disabled={false} onFrame={jest.fn()} />);
+    pickAnnotations(annotation.name);
+    const video = await loadAnnotationPreview(2.5);
+    const timeline = within(screen.getByRole('region', { name: 'Label timeline' }));
+    const first = timeline.getByRole('button', { name: /^Range 1: Hairpin/ });
+    const second = timeline.getByRole('button', { name: /^Range 2: Shift up/ });
+    const third = timeline.getByRole('button', { name: /^Range 3: Shift down/ });
+    // The layout surfaces and visual marquee have no accessible identities of their own.
+    /* eslint-disable testing-library/no-node-access */
+    const lane = first.parentElement!;
+    const grid = lane.parentElement!;
+    const marquee = () => grid.querySelector('.recorded-label-timeline-marquee');
+    /* eslint-enable testing-library/no-node-access */
+    const mockBounds = (element: Element, left: number, top: number, right: number, bottom: number) => {
+        jest.spyOn(element, 'getBoundingClientRect').mockReturnValue({
+            x: left, y: top, left, top, right, bottom, width: right - left, height: bottom - top, toJSON: () => ({}),
+        });
+    };
+    mockBounds(grid, 0, 0, 500, 137);
+    mockBounds(first, 196, 38, 272, 61);
+    mockBounds(second, 226, 73, 287, 96);
+    mockBounds(third, 242, 108, 302, 131);
+
+    fireEvent.click(third);
+    await waitFor(() => expect(video.currentTime).toBe(shiftDown.start));
+    const selectedClips = () => timeline.getAllByRole('button', { name: /^Range \d+:/, pressed: true });
+    for (const [target, clientX, button, buttons] of [[first, 255, 0, 1], [lane, 285, 2, 2]] as const) {
+        pointer(target, 'pointerdown', clientX, 'mouse', { clientY: 50, button, buttons });
+        pointer(grid, 'pointermove', 225, 'mouse', { clientY: 88, buttons });
+        pointer(grid, 'pointerup', 225, 'mouse', { clientY: 88, button });
+        expect(selectedClips()).toEqual([third]);
+    }
+
+    pointer(lane, 'pointerdown', 285, 'mouse', { clientY: 50, buttons: 1 });
+    pointer(grid, 'pointermove', 225, 'mouse', { clientY: 88, buttons: 1 });
+    expect(marquee()).toBeVisible();
+    pointer(grid, 'pointercancel', 225, 'mouse', { clientY: 88 });
+    expect(marquee()).not.toBeInTheDocument();
+    expect(selectedClips()).toEqual([third]);
+
+    pointer(lane, 'pointerdown', 285, 'mouse', { clientY: 50, buttons: 1 });
+    pointer(grid, 'pointermove', 225, 'mouse', { clientY: 88, buttons: 1 });
+    pointer(grid, 'pointerup', 225, 'mouse', { clientY: 88 });
+
+    expect(first).toHaveAttribute('aria-pressed', 'true');
+    expect(second).toHaveAttribute('aria-pressed', 'true');
+    expect(third).toHaveAttribute('aria-pressed', 'false');
+    expect(video.currentTime).toBe(shiftDown.start);
+    expect(timeline.getByText('2 clips selected')).toBeVisible();
+    expect(timeline.queryByRole('button', { name: /^Edit range/ })).not.toBeInTheDocument();
+
+    fireEvent.click(timeline.getByRole('button', { name: 'Remove 2 selected ranges' }));
+    expect(timeline.queryByRole('button', { name: /^Range \d+: (Hairpin|Shift up)/ })).not.toBeInTheDocument();
+    expect(timeline.getByRole('button', { name: /^Range 1: Shift down/ })).toHaveAttribute('aria-pressed', 'false');
+    expect(update).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save training annotation' }));
+    await screen.findByText('Saved drive.json beside the video.');
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith(annotation.id, { ranges: [shiftDown] });
 });
 
 it('zooms and fits the clip timeline without changing clip times', async () => {
@@ -866,10 +1003,10 @@ it('uses the saved simulator for renamed telemetry and allows restoring automati
     expect(game).toHaveValue('');
 });
 
-it('replays every clip from the checked annotation files, including overlapping clips', async () => {
+it('counts and replays every clip from the checked annotation files, including overlapping clips', async () => {
     const ref = React.createRef<RecordedFrameViewerHandle>();
     const config = cloneConfig();
-    config.runtime.controlIntervalMs = 100;
+    config.runtime.controlIntervalMs = 200;
     const first = { ...recording, id: 'first', durationSeconds: 2 };
     const second = { ...recording, id: 'second', durationSeconds: 2 };
     const firstTelemetry = 'iracing_1795554000000_123abc456def.jsonl';
@@ -885,11 +1022,13 @@ it('replays every clip from the checked annotation files, including overlapping 
         savedAnnotation('empty.json', 'empty.mp4', 'empty.jsonl', 0, []),
     ]);
     const onReplayReadyChange = jest.fn();
+    const onReplaySelectionChange = jest.fn();
     function View() {
         const [container, setContainer] = React.useState<HTMLDivElement | null>(null);
         return <>
             <RecordedFrameViewer ref={ref} configuration={config} policy={null} disabled={false}
-                trainingPickerContainer={container} onFrame={jest.fn()} onReplayReadyChange={onReplayReadyChange} />
+                trainingPickerContainer={container} onFrame={jest.fn()} onReplayReadyChange={onReplayReadyChange}
+                onReplaySelectionChange={onReplaySelectionChange} />
             <section aria-label="AI driver"><div ref={setContainer} /></section>
         </>;
     }
@@ -900,17 +1039,24 @@ it('replays every clip from the checked annotation files, including overlapping 
         files: names.map((name) => new File(['{}'], name)),
     } });
     expect(onReplayReadyChange).toHaveBeenLastCalledWith(false);
+    expect(ref.current!.countTrainingClips()).toBe(0);
     expect(picker).toHaveAttribute('multiple');
 
     selectTrainingFiles('extra.json');
     const extra = await aiDriver.findByRole('checkbox', { name: /^extra\.json/ });
     expect(extra).toBeChecked();
+    expect(ref.current!.countTrainingClips()).toBe(1);
     expect(onReplayReadyChange).toHaveBeenLastCalledWith(true);
+    onReplayReadyChange.mockClear();
+    onReplaySelectionChange.mockClear();
 
     selectTrainingFiles('first.json', 'second.json', 'empty.json', 'missing.json');
     expect(await aiDriver.findByRole('group', { name: 'Annotations for training (2 selected)' })).toBeInTheDocument();
+    expect(onReplayReadyChange).not.toHaveBeenCalled();
+    expect(onReplaySelectionChange).toHaveBeenCalled();
     expect(extra).not.toBeChecked();
     expect(aiDriver.getByRole('checkbox', { name: /^empty\.json/ })).toBeDisabled();
+    expect(ref.current!.countTrainingClips()).toBe(4);
     expect(aiDriver.getByRole('alert')).toHaveTextContent('missing.json: Put the video in the same folder');
     expect(open).toHaveBeenCalledTimes(5);
     expect(screen.queryByLabelText('Original recorded video')).not.toBeInTheDocument();
@@ -931,13 +1077,13 @@ it('replays every clip from the checked annotation files, including overlapping 
     await act(async () => ref.current!.measure(async (frame) => {
         positions.push([frame.recordingId, frame.clipLabel, Number(frame.videoSeconds.toFixed(3)),
             Number(frame.telemetrySeconds.toFixed(3)), frame.startsRange]);
-    }, new AbortController().signal));
+    }, new AbortController().signal, undefined, 100));
     const frames: typeof positions = [];
     const onProgress = jest.fn();
     await act(async () => ref.current!.replay(async (frame) => {
         frames.push([frame.recordingId, frame.clipLabel, Number(frame.videoSeconds.toFixed(3)),
             Number(frame.telemetrySeconds.toFixed(3)), frame.startsRange]);
-    }, new AbortController().signal, onProgress));
+    }, new AbortController().signal, onProgress, 100));
     expect(frames).toEqual([
         ['first.json', 'Practice', 0.1, 100, true], ['first.json', 'Practice', 0.2, 100.1, false], ['first.json', 'Practice', 0.3, 100.2, false],
         ['first.json', 'Hairpin', 0.2, 100.1, true], ['first.json', 'Hairpin', 0.3, 100.2, false], ['first.json', 'Hairpin', 0.4, 100.3, false],
@@ -959,6 +1105,7 @@ it('replays every clip from the checked annotation files, including overlapping 
     selectTrainingFiles('empty.json', 'missing.json');
     await waitFor(() => expect(onReplayReadyChange).toHaveBeenLastCalledWith(false));
     expect(aiDriver.getByRole('group', { name: 'Annotations for training (0 selected)' })).toBeInTheDocument();
+    expect(ref.current!.countTrainingClips()).toBe(0);
 });
 
 it('ignores an in-flight inspection after the selected model changes', async () => {

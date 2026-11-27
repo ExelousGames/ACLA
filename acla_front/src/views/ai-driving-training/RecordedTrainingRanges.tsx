@@ -46,18 +46,23 @@ export const timestamp = (seconds: number) => {
 };
 
 const MAX_TIMELINE_ZOOM = 32;
+const SHIFT_HISTORY_SECONDS = 1;
+const SHIFT_LOOKAHEAD_SECONDS = 1;
 const LABEL_COLORS = ['#d3ba79', '#ada9f4', '#87b9ec', '#eabb7a', '#e6a8ce', '#7cc9d4',
     '#f3a18d', '#bfd88d', '#e5a2ad', '#b7a2e9', '#a3b9d8', '#79d3c2', '#f2da8c', '#a8c0f5'];
 const rangeTime = ({ start, end }: TrainingRange) => `${timestamp(start)} – ${timestamp(end)}`;
 
-function LabelTimeline({ ranges, fullLabel, overlap, duration, time, disabled, selectedIndex, select }: {
+function LabelTimeline({ ranges, fullLabel, overlap, duration, time, disabled, selectedIndices, select, selectMany }: {
     ranges: TrainingRange[] | null; fullLabel?: string; overlap: TrainingRange | null; duration: number; time: number;
-    disabled: boolean; selectedIndex: number | null; select: (index: number) => void;
+    disabled: boolean; selectedIndices: Set<number>; select: (index: number) => void; selectMany: (indices: Set<number>) => void;
 }) {
     const [zoom, setZoom] = useState(1);
     const viewport = useRef<HTMLDivElement>(null);
     const ruler = useRef<HTMLDivElement>(null);
     const zoomAnchor = useRef<{ fraction: number; viewX: number } | null>(null);
+    const drag = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+    const [marquee, setMarquee] = useState<{ left: number; top: number; width: number; height: number }>();
+    const canSelect = !disabled && Boolean(ranges?.length);
     const overlapStart = overlap?.start, overlapEnd = overlap?.end;
     const lanes = useMemo(() => {
         const lanes = new Map<string, { rowEnds: number[]; clips: { range: TrainingRange; index: number | null; row: number }[] }>();
@@ -99,6 +104,54 @@ function LabelTimeline({ ranges, fullLabel, overlap, duration, time, disabled, s
         zoomAnchor.current = null;
     }, [zoom]);
 
+    const beginSelection = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (!canSelect || drag.current || event.button !== 0 || (event.pointerType && event.pointerType !== 'mouse')) return;
+        const target = event.target as HTMLElement;
+        if (target.closest('.recorded-label-timeline-clip') || (target !== event.currentTarget
+            && !target.closest('.recorded-label-timeline-lane, .recorded-label-timeline-ruler'))) return;
+        const { left, top } = event.currentTarget.getBoundingClientRect();
+        drag.current = { pointerId: event.pointerId, x: event.clientX - left, y: event.clientY - top };
+        event.preventDefault();
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+    };
+    const selectionBox = (event: React.PointerEvent<HTMLDivElement>, bounds: DOMRect) => {
+        const origin = drag.current;
+        if (!origin || origin.pointerId !== event.pointerId || !canSelect) return;
+        const scroll = viewport.current;
+        const firstVisibleX = (scroll?.scrollLeft ?? 0) + (ruler.current?.offsetLeft ?? 0);
+        const lastVisibleX = scroll?.clientWidth ? Math.min(bounds.width, scroll.scrollLeft + scroll.clientWidth) : bounds.width;
+        // Anchor the start in the grid, but don't select off-screen clips by dragging past the viewport.
+        const x = Math.min(lastVisibleX, Math.max(firstVisibleX, event.clientX - bounds.left));
+        const y = Math.min(bounds.height, Math.max(0, event.clientY - bounds.top));
+        const width = Math.abs(x - origin.x), height = Math.abs(y - origin.y);
+        if (Math.max(width, height) < 4) return;
+        return { left: Math.min(origin.x, x), top: Math.min(origin.y, y), width, height };
+    };
+    const cancelSelection = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (!drag.current || drag.current.pointerId !== event.pointerId) return;
+        drag.current = null;
+        setMarquee(undefined);
+    };
+    const finishSelection = (event: React.PointerEvent<HTMLDivElement>) => {
+        if (!drag.current || drag.current.pointerId !== event.pointerId) return;
+        const grid = event.currentTarget;
+        const bounds = grid.getBoundingClientRect();
+        const box = selectionBox(event, bounds);
+        cancelSelection(event);
+        if (!canSelect) return;
+        const indices = new Set<number>();
+        if (box) {
+            const left = bounds.left + box.left, top = bounds.top + box.top;
+            grid.querySelectorAll<HTMLButtonElement>('button[data-range-index]').forEach((clip) => {
+                const rect = clip.getBoundingClientRect();
+                if (rect.left < left + box.width && rect.right > left && rect.top < top + box.height && rect.bottom > top) {
+                    indices.add(Number(clip.dataset.rangeIndex));
+                }
+            });
+        }
+        selectMany(indices);
+    };
+
     return <>
         <div className="recorded-label-timeline-title">
             <h4>Label timeline <small>Video time</small></h4>
@@ -110,7 +163,13 @@ function LabelTimeline({ ranges, fullLabel, overlap, duration, time, disabled, s
             </div>
         </div>
         <div className="recorded-label-timeline-scroll" ref={viewport} role="group" aria-label="Label timeline viewport" tabIndex={zoom > 1 ? 0 : undefined}>
-            <div className="recorded-label-timeline-grid" style={{ '--timeline-zoom': zoom } as React.CSSProperties}>
+            <div className="recorded-label-timeline-grid" style={{ '--timeline-zoom': zoom } as React.CSSProperties}
+                data-selectable={canSelect || undefined} onPointerDown={beginSelection}
+                onPointerMove={(event) => {
+                    if (drag.current && drag.current.pointerId === event.pointerId) {
+                        setMarquee(selectionBox(event, event.currentTarget.getBoundingClientRect()));
+                    }
+                }} onPointerUp={finishSelection} onPointerCancel={cancelSelection} onLostPointerCapture={cancelSelection}>
                 <div className="recorded-label-timeline-heading">Label</div>
                 <div className="recorded-label-timeline-ruler" ref={ruler} role="group" aria-label="Elapsed video time">
                     {Array.from({ length: divisions + 1 }, (_, tick) => <span key={tick} style={{ left: `${100 * tick / divisions}%` }}>
@@ -133,14 +192,16 @@ function LabelTimeline({ ranges, fullLabel, overlap, duration, time, disabled, s
                                     aria-label={`Full aligned recording: ${label}, ${rangeTime(range)}`} title={`${label} · ${rangeTime(range)}`} />
                                 : <button className="recorded-label-timeline-clip" type="button" key={index}
                                     style={{ ...position(range), '--clip-row': row } as React.CSSProperties} data-at-end={range.start >= duration || undefined}
+                                    data-range-index={index}
                                     aria-label={`Range ${index + 1}: ${label}, ${rangeTime(range)}`} title={`${label} · ${rangeTime(range)}`}
-                                    disabled={disabled} aria-pressed={selectedIndex === index} onClick={() => select(index)} />)}
+                                    disabled={disabled} aria-pressed={selectedIndices.has(index)} onClick={() => select(index)} />)}
                         </div>
                     </React.Fragment>;
                 })}
                 {!lanes.size && <div className="recorded-label-timeline-empty">
                     {ranges === null ? 'No aligned footage to show.' : 'No clips on the timeline yet.'}
                 </div>}
+                {canSelect && marquee && <div className="recorded-label-timeline-marquee" style={marquee} aria-hidden="true" />}
             </div>
         </div>
     </>;
@@ -179,13 +240,19 @@ export default function RecordedTrainingRanges({ selection, duration, time, step
     const [end, setEnd] = useState('');
     const [label, setLabel] = useState('');
     const [editing, setEditing] = useState<number | null>(null);
-    const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+    const [selectedIndices, setSelectedIndices] = useState<Set<number>>(() => new Set());
+    const selectedIndex = selectedIndices.size === 1 ? Array.from(selectedIndices)[0] : null;
     const selected = selectedIndex === null ? undefined : ranges[selectedIndex];
     const [error, setError] = useState('');
     const [offsetInput, setOffsetInput] = useState<string>();
     const offsetHelpId = useId();
     const savedOffsetMs = selection.offsetSeconds === undefined ? '' : selection.offsetSeconds * 1000;
     const reset = () => { setStart(''); setEnd(''); setLabel(''); setEditing(null); setError(''); };
+    const removeSelection = () => {
+        change({ ranges: ranges.filter((_, index) => !selectedIndices.has(index)) });
+        setSelectedIndices(new Set());
+        reset();
+    };
     const mark = (set: (value: string) => void) => {
         set(String(Math.min(duration, Math.round(playhead() * 100) / 100)));
         setError('');
@@ -196,7 +263,7 @@ export default function RecordedTrainingRanges({ selection, duration, time, step
         else next[editing] = range;
         next.sort((a, b) => a.start - b.start);
         change({ ranges: next });
-        setSelectedIndex(next.indexOf(range));
+        setSelectedIndices(new Set([next.indexOf(range)]));
         setError('');
     };
     const commit = () => {
@@ -216,22 +283,50 @@ export default function RecordedTrainingRanges({ selection, duration, time, step
             return;
         }
         const at = playhead();
+        const shiftRanges = (selection.ranges ?? [{ ...overlap, label: selection.fullRecordingLabel }]).filter(({ label }) => {
+            const name = label?.trim().toLowerCase();
+            return name === 'shift up' || name === 'shift down';
+        });
         let nearest: { at: number; range: TrainingRange } | undefined;
-        for (const shift of gearShifts) {
+        for (let index = 0; index < gearShifts.length; index++) {
+            const shift = gearShifts[index];
             if (shift.direction !== direction) continue;
             const before = shift.before + shiftVideoOffset, after = shift.after + shiftVideoOffset;
             if (before < overlap.start - 1e-7 || after > overlap.end + 1e-7) continue;
             if (nearest && Math.abs(at - after) >= Math.abs(at - nearest.at)) continue;
 
-            // Start on the old gear sample and leave enough replay steps to reach the new gear.
-            const length = step * Math.max(1, Math.ceil((shift.after - shift.before - 1e-7) / step));
-            const start = Math.max(overlap.start, Math.min(before, overlap.end - length));
-            const end = Math.min(overlap.end, start + length);
-            if (end < after - 1e-7 || end - start < length - 1e-7) continue;
+            // Fit the clip between existing shift ranges, including when adding history or lookahead.
+            let gapStart = overlap.start, gapEnd = overlap.end;
+            for (const marked of shiftRanges) {
+                if (marked.end <= before + 1e-7) gapStart = Math.max(gapStart, marked.end);
+                else gapEnd = Math.min(gapEnd, marked.start);
+            }
+            if (after > gapEnd + 1e-7 || gapEnd - gapStart < step - 1e-7) continue;
+
+            // Look only as far as replay can reach while still sampling the selected shift's old gear.
+            const availableSteps = Math.floor((gapEnd - gapStart + 1e-7) / step);
+            const latestEnd = Math.min(gapEnd, before + availableSteps * step);
+            const lookaheadEnd = Math.min(after + SHIFT_LOOKAHEAD_SECONDS, latestEnd);
+            let lastShiftTime = after;
+            for (let next = index + 1; next < gearShifts.length; next++) {
+                const future = gearShifts[next];
+                const futureTime = future.after + shiftVideoOffset;
+                if (futureTime > lookaheadEnd + 1e-7) break;
+                if (future.direction === direction) lastShiftTime = futureTime;
+            }
+
+            let start = Math.max(gapStart, before - SHIFT_HISTORY_SECONDS);
+            // End on a replay step that sees the last included shift's new gear.
+            const steps = Math.max(1, Math.ceil((lastShiftTime - start - 1e-7) / step));
+            let end = start + steps * step;
+            if (end > gapEnd) {
+                const length = Math.min(steps, availableSteps) * step;
+                end = Math.min(latestEnd, before + length);
+                start = Math.max(gapStart, end - length);
+            }
+            if (end < lastShiftTime - 1e-7 || end - start < step - 1e-7) continue;
             const range = { start, end, label: direction === 'up' ? 'Shift up' : 'Shift down' };
-            const alreadyMarked = ranges.some((other) => other.label === range.label
-                && Math.abs(other.start - start) < 1e-7 && Math.abs(other.end - end) < 1e-7);
-            if (!alreadyMarked) nearest = { at: after, range };
+            nearest = { at: after, range };
         }
         if (!nearest) {
             setError(`No unmarked shift ${direction} found in the aligned recording.`);
@@ -245,8 +340,8 @@ export default function RecordedTrainingRanges({ selection, duration, time, step
         <h3>Training ranges</h3>
         {duration > 0 && <section className="recorded-label-timeline" aria-label="Label timeline">
             <LabelTimeline ranges={selection.ranges} fullLabel={selection.fullRecordingLabel} overlap={overlap}
-                duration={duration} time={time} disabled={disabled} selectedIndex={selectedIndex}
-                select={(index) => { setSelectedIndex(index); seek(ranges[index].start); }} />
+                duration={duration} time={time} disabled={disabled} selectedIndices={selectedIndices} selectMany={setSelectedIndices}
+                select={(index) => { setSelectedIndices(new Set([index])); seek(ranges[index].start); }} />
             {selected && selectedIndex !== null ? <div className="recorded-label-timeline-actions" role="group" aria-label={`Range ${selectedIndex + 1} controls`}>
                 <div><strong>{selected.label || 'Unlabeled'}</strong><small>{rangeTime(selected)}</small></div>
                 <button disabled={disabled} aria-label={`Jump to start of range ${selectedIndex + 1}`} onClick={() => seek(selected.start)}>Start</button>
@@ -254,10 +349,13 @@ export default function RecordedTrainingRanges({ selection, duration, time, step
                 <button disabled={disabled} aria-label={`Edit range ${selectedIndex + 1}`} onClick={() => {
                     setStart(String(selected.start)); setEnd(String(selected.end)); setLabel(selected.label ?? ''); setEditing(selectedIndex); setError('');
                 }}>Edit</button>
-                <button disabled={disabled} aria-label={`Remove range ${selectedIndex + 1}`} onClick={() => {
-                    change({ ranges: ranges.filter((_, index) => index !== selectedIndex) }); setSelectedIndex(null); reset();
-                }}>Remove</button>
-            </div> : ranges.length > 0 && <p className="driving-note recorded-label-timeline-hint">Select a clip to jump to its start and show its controls.</p>}
+                <button disabled={disabled} aria-label={`Remove range ${selectedIndex + 1}`} onClick={removeSelection}>Remove</button>
+            </div> : selectedIndices.size > 1 ? <div className="recorded-label-timeline-actions" role="group" aria-label="Selected clips controls">
+                <div><strong>{selectedIndices.size} clips selected</strong></div>
+                <button disabled={disabled} aria-label={`Remove ${selectedIndices.size} selected ranges`} onClick={removeSelection}>Remove</button>
+            </div> : ranges.length > 0 && <p className="driving-note recorded-label-timeline-hint">
+                Click a clip to jump to its start, or left-click and drag from empty timeline space to select multiple clips.
+            </p>}
         </section>}
         <p className="driving-note">
             {overlap ? `Video and telemetry overlap from ${timestamp(overlap.start)} to ${timestamp(overlap.end)}. ` : ''}
@@ -300,11 +398,12 @@ export default function RecordedTrainingRanges({ selection, duration, time, step
             <button type="button" disabled={disabled || editing !== null} onClick={() => addShift('up')}>Add shift up</button>
             <button type="button" disabled={disabled || editing !== null} onClick={() => addShift('down')}>Add shift down</button>
         </div>
-        <p className="driving-note">Each button finds the nearest available gear change in the chosen direction.
+        <p className="driving-note">Each button finds the nearest gear change outside existing shift clips, adds up to 1,000 ms of history,
+            and looks ahead 1,000 ms for shifts in the same direction.
             {selection.ranges === null && ' Adding a range switches training from the full recording to selected ranges.'}</p>
         {error && <p className="driving-error" role="alert">{error}</p>}
         <div className="driving-buttons">
-            {selection.ranges !== null && <button disabled={disabled} onClick={() => { change({ ranges: null }); setSelectedIndex(null); reset(); }}>Use full recording</button>}
+            {selection.ranges !== null && <button disabled={disabled} onClick={() => { change({ ranges: null }); setSelectedIndices(new Set()); reset(); }}>Use full recording</button>}
             <button className="driving-primary" disabled={disabled || !canSave}
                 onClick={save}>Save training annotation</button>
             {dirty && <span role="status">Unsaved annotation changes</span>}

@@ -1,6 +1,6 @@
 import { DrivingMemory, DrivingPolicyInput } from './driving-memory';
 import { DrivingObservation, encodeDrivingAction } from './driving-observation';
-import { DrivingPlanTraining } from './driving-plan-training';
+import { DrivingPlanTraining, RECORDED_PLAN_WINDOW } from './driving-plan-training';
 import { DrivingPolicy } from './driving-policy';
 import type { DrivingModelConfig } from './driving-model-config';
 import type { RecordedDrivingBalance } from './recorded-driving-balance';
@@ -38,25 +38,30 @@ export class RecordedDrivingReplay {
 
     constructor(private policy: DrivingPolicy, private train: boolean, private balance?: RecordedDrivingBalance) {
         this.memory = new DrivingMemory(policy.configuration, train);
-        this.plans = new DrivingPlanTraining(balance?.weights);
+        const { recordedBatchSize, recordedBatchCount } = policy.configuration;
+        this.plans = new DrivingPlanTraining(balance?.weights, recordedBatchSize, recordedBatchCount);
     }
 
-    get trained() { return this.plans.trained; }
+    get sampled() { return this.plans.sampled; }
+    get completedBatches() { return this.plans.completedBatches; }
 
-    async startRange(active = () => true) {
-        await this.finish(active, false);
+    startRange(active = () => true) {
         if (!active()) return;
+        this.plans.completeRange();
         this.memory.reset();
         this.previous = undefined;
     }
 
-    async finish(active = () => true, final = true) {
-        while (this.plans.hasPending && active()) {
-            const window = { more: false };
-            await this.policy.trainBatchAsync(async () => {
-                window.more = await this.plans.finishAsync(this.policy, active, final);
-            });
-            if (!window.more) break;
+    async finish(active = () => true, onProgress?: (completedBatches: number) => void | Promise<void>) {
+        if (!this.train) return;
+        const { recordedBatchCount, recordedBatchSize, runtime } = this.policy.configuration;
+        const batchesPerChunk = Math.min(Math.max(1, Math.floor(RECORDED_PLAN_WINDOW / recordedBatchSize)),
+            Math.ceil(runtime.saveEverySteps / recordedBatchSize));
+        while (this.completedBatches < recordedBatchCount && active()) {
+            const previous = this.completedBatches;
+            await this.policy.trainBatchAsync(() => this.plans.finishAsync(this.policy, active, batchesPerChunk));
+            if (this.completedBatches === previous) break;
+            await onProgress?.(this.completedBatches);
         }
     }
 
@@ -66,12 +71,11 @@ export class RecordedDrivingReplay {
         if (!observation || !this.policy.matches(observation)) {
             this.progress.skipped++;
             this.progress.lastError = result.error || 'Recorded inputs do not match this model.';
-            await this.startRange(active);
+            this.startRange(active);
             return;
         }
         if (this.previous && !isConsecutiveRecordedObservation(this.previous.observation, observation, this.policy.configuration)) {
-            await this.startRange(active);
-            if (!active()) return;
+            this.startRange(active);
         }
         const input = this.memory.encode(observation);
         const pending = this.previous;
@@ -92,8 +96,8 @@ export class RecordedDrivingReplay {
             await this.policy.trainBatchAsync(async () => {
                 if (!active()) return;
                 this.policy.observeDemonstration(pending.input);
-                if (active()) await this.plans.recordAsync(this.policy, pending.input, { action: target, shifts },
-                    pending.observation.capturedAt, active, this.balance?.select(pending.clipLabel));
+                this.plans.record(this.policy, pending.input, { action: target, shifts }, pending.observation.capturedAt,
+                    this.balance?.select(pending.clipLabel));
             });
         } else {
             const decision = await this.policy.decideAsync(pending.input, false, shifts);

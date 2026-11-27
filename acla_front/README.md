@@ -475,6 +475,20 @@ at stop. **Save model** saves immediately. The selected path is shown on the pag
 must match the current game, car, map and observation configuration.
 All three local velocity and g-force components and yaw rate must be present in telemetry. Gear and RPM do not gate observation validity, so stalled-engine readings can still be used. Missing or non-finite gear/RPM readings use neutral gear and zero RPM as policy inputs. Pitch and roll rates are not used or required.
 
+### Recorded training batches
+
+In **Recorded session → Fixed sampling weights**, set **Recorded batch size** and
+**Recorded batch count**, then save each setting. A model defaults to 8 samples
+per batch and 100 batches per run. Batch size can be 1 to 256, and batch count can
+be 1 to 1,000,000. Training collects examples from the selected annotations
+and runs the chosen number of full batches, reusing eligible examples as needed.
+Each batch includes every label that has eligible examples and a positive sampling
+weight. The weights guide the remaining draws. Set the batch size to at least the
+number of those labels.
+Use **Count training clips** to count the saved ranges in the selected annotations.
+An annotation set to use the full recording counts as one clip.
+The progress bar switches from recording progress to completed batches once updates begin.
+
 ### Self-contained model JSON
 
 The settings above are defaults for a new model, defined in

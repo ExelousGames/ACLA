@@ -4,6 +4,8 @@ import { POLICY_CAMERA_HEIGHT, POLICY_CAMERA_WIDTH } from 'views/live-session/li
 
 export const UNLABELED_RECORDED_SAMPLING_CATEGORY = 'Unlabeled';
 export const RECORDED_SAMPLING_CATEGORIES: readonly string[] = [...trainingLabels, UNLABELED_RECORDED_SAMPLING_CATEGORY];
+export const MAX_RECORDED_BATCH_COUNT = 1_000_000;
+export const MAX_RECORDED_BATCH_SIZE = 256;
 export type RecordedSamplingCategory = typeof RECORDED_SAMPLING_CATEGORIES[number];
 export type RecordedSamplingWeights = Record<RecordedSamplingCategory, number>;
 export type DrivingModelConfig = Omit<typeof defaults, 'recordedSamplingWeights'> & { recordedSamplingWeights: RecordedSamplingWeights };
@@ -25,6 +27,20 @@ export const DEFAULT_DRIVING_CONFIG: DrivingModelConfig = {
     ...defaults, recordedSamplingWeights: normalizeRecordedSamplingWeights(defaults.recordedSamplingWeights),
 };
 export const cloneConfig = (config = DEFAULT_DRIVING_CONFIG): DrivingModelConfig => JSON.parse(JSON.stringify(config));
+
+export function validRecordedBatchSize(value: unknown): value is number {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= MAX_RECORDED_BATCH_SIZE;
+}
+
+export function validRecordedBatchCount(value: unknown): value is number {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= MAX_RECORDED_BATCH_COUNT;
+}
+
+export function validateRecordedBatchLabelCount(batchSize: number, eligibleLabelCount: number): void {
+    if (batchSize < eligibleLabelCount) {
+        throw new Error(`Recorded batch size must be at least ${eligibleLabelCount} to include all ${eligibleLabelCount} eligible labels with positive sampling weights.`);
+    }
+}
 
 function validSamplingPercentages(values: unknown[]): values is number[] {
     return values.every((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100)
@@ -84,7 +100,12 @@ export function readDrivingConfig(value: unknown): DrivingModelConfig {
     if (value && typeof value === 'object' && !Array.isArray(value)) {
         const weights = 'recordedSamplingWeights' in value ? migrateRecordedSamplingWeights(value.recordedSamplingWeights)
             : DEFAULT_DRIVING_CONFIG.recordedSamplingWeights;
-        if (weights) value = { ...value, recordedSamplingWeights: { ...weights } };
+        if (weights) value = {
+            ...value,
+            recordedSamplingWeights: { ...weights },
+            recordedBatchSize: 'recordedBatchSize' in value ? value.recordedBatchSize : defaults.recordedBatchSize,
+            recordedBatchCount: 'recordedBatchCount' in value ? value.recordedBatchCount : defaults.recordedBatchCount,
+        };
     }
     const learning = (value as { learning?: Record<string, unknown> } | null)?.learning;
     if (learning && typeof learning === 'object' && !Array.isArray(learning)
@@ -204,7 +225,8 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
         || c.network.cameraPooling.height !== defaults.network.cameraPooling.height
         || !integer(c.network.cameraProjectionUnits, 1, 256)
         || c.network.layerNormEpsilon < 1e-9 || c.network.layerNormEpsilon > 0.01) return invalid();
-    if (!validRecordedSamplingWeights(c.recordedSamplingWeights)
+    if (!validRecordedBatchSize(c.recordedBatchSize) || !validRecordedBatchCount(c.recordedBatchCount)
+        || !validRecordedSamplingWeights(c.recordedSamplingWeights)
         || !integer(c.network.hiddenUnits, 1, 256) || !integer(o.categoryBits, 1, 32)
         || o.cameraWidth !== POLICY_CAMERA_WIDTH || o.cameraHeight !== POLICY_CAMERA_HEIGHT
         || DRIVING_GRU_GATES * c.network.hiddenUnits * (drivingPolicyInputs(c) + c.network.hiddenUnits + 1) > 2000000

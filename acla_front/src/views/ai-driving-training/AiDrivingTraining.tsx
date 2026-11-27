@@ -8,8 +8,9 @@ import type { LiveTrajectoryMapHandle } from 'views/live-session/LiveTrajectoryM
 import { NEUTRAL, ObservationResult, readDrivingObservation, readDrivingTelemetry } from './driving-observation';
 import { DRIVING_CENTERLINE_LOOKAHEAD_SECONDS } from './driving-centerline';
 import { DrivingPolicy, DrivingTrainingDocument, emptyTrainingDocument } from './driving-policy';
-import { cloneConfig, DEFAULT_DRIVING_CONFIG, MAX_EXPLORATION_GEAR, RECORDED_SAMPLING_CATEGORIES,
-    validRecordedSamplingWeights, type RecordedSamplingCategory, type RecordedSamplingWeights } from './driving-model-config';
+import { cloneConfig, DEFAULT_DRIVING_CONFIG, MAX_EXPLORATION_GEAR, MAX_RECORDED_BATCH_COUNT, MAX_RECORDED_BATCH_SIZE, RECORDED_SAMPLING_CATEGORIES,
+    validRecordedBatchCount, validRecordedBatchSize, validRecordedSamplingWeights,
+    type RecordedSamplingCategory, type RecordedSamplingWeights } from './driving-model-config';
 import { discardBrowserModels, drivingModelFiles, loadDrivingModel, saveDrivingModel, trackDrivingModelSave } from './driving-model-storage';
 import { DrivingTrainingLoop, initialTrainingState } from './driving-training-loop';
 import { DRIVING_PLAN_REFRESH_DIFFERENCE, DRIVING_PLAN_REFRESH_SECONDS } from './driving-plan-agreement';
@@ -43,10 +44,18 @@ const EXPLORATION_FREQUENCIES = [
     { key: 'steeringExplorationUpdateHz', label: 'Steering', control: 'steering' },
     { key: 'gearExplorationUpdateHz', label: 'Gear', control: 'gear' },
 ] as const;
+const RECORDED_BATCH_FIELDS = [
+    { key: 'recordedBatchSize', label: 'Recorded batch size', button: 'Save batch size', max: MAX_RECORDED_BATCH_SIZE, valid: validRecordedBatchSize },
+    { key: 'recordedBatchCount', label: 'Recorded batch count', button: 'Save batch count', max: MAX_RECORDED_BATCH_COUNT, valid: validRecordedBatchCount },
+] as const;
+type RecordedBatchField = typeof RECORDED_BATCH_FIELDS[number];
+type RecordedBatchDrafts = Partial<Record<RecordedBatchField['key'], number | ''>>;
+type RecordedBatchProgress = { completedBatches: number; totalBatches: number };
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : 'Self-driving training failed.';
-function recordedCoverageStatus({ eligible }: RecordedDrivingCoverage, trained: RecordedSamplingWeights) {
-    return ' · Examples trained (eligible) · ' + RECORDED_SAMPLING_CATEGORIES.filter((label) => eligible[label] > 0)
-        .map((label) => `${label} ${trained[label]} (${eligible[label]})`).join(' · ');
+const batchProgressText = (completed: number, total: number) => `${completed.toLocaleString()} / ${total.toLocaleString()} batches completed`;
+function recordedCoverageStatus({ eligible }: RecordedDrivingCoverage, sampled: RecordedSamplingWeights) {
+    return ' · Training draws (eligible origins) · ' + RECORDED_SAMPLING_CATEGORIES.filter((label) => eligible[label] > 0)
+        .map((label) => `${label} ${sampled[label]} (${eligible[label]})`).join(' · ');
 }
 
 type RecordingReferences = { sessionId: string; data?: RecordedDrivingReferences; error?: string };
@@ -110,6 +119,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     }));
     const [samplingWeights, setSamplingWeights] = useState<Record<RecordedSamplingCategory, number | ''>>(
         () => ({ ...configuration.current.recordedSamplingWeights }));
+    const [recordedBatchDrafts, setRecordedBatchDrafts] = useState<RecordedBatchDrafts>({});
     const [testAction, setTestAction] = useState<ControllerAction>(NEUTRAL);
     const [inputSource, setInputSource] = useState<'live' | 'recorded'>('live');
     const inputSourceRef = useRef(inputSource);
@@ -124,9 +134,10 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const [replayReady, setReplayReady] = useState(false);
     const [replaying, setReplaying] = useState(false);
     const [replayStatus, setReplayStatus] = useState('');
-    const [annotationProgress, setAnnotationProgress] = useState<RecordedReplayPosition | 'preparing' | null>(null);
+    const [trainingClipCount, setTrainingClipCount] = useState<number | null>(null);
+    const clearTrainingClipCount = useCallback(() => setTrainingClipCount(null), []);
+    const [annotationProgress, setAnnotationProgress] = useState<RecordedReplayPosition | RecordedBatchProgress | 'preparing' | null>(null);
     const replayAbort = useRef<AbortController | null>(null);
-    const replayStop = useRef<AbortController | null>(null);
     const running = state.mode !== 'idle';
     const finishing = state.mode === 'finishing';
     const aiActive = state.mode === 'training' || state.mode === 'evaluation';
@@ -245,8 +256,23 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             if (mounted.current && configuration.current === config) setSamplingWeights({ ...next });
         }
     };
+    const saveRecordedBatchSetting = async ({ key, valid }: RecordedBatchField) => {
+        const value = recordedBatchDrafts[key];
+        if (!valid(value) || !documentReady.current || !modelPath.current) return;
+        const config = configuration.current;
+        const previous = config[key];
+        config[key] = value;
+        setError('');
+        if (await save()) {
+            if (mounted.current && configuration.current === config) {
+                setRecordedBatchDrafts((drafts) => ({ ...drafts, [key]: undefined }));
+            }
+        } else {
+            config[key] = previous;
+        }
+    };
 
-    const activateDocument = (document: DrivingTrainingDocument, preserveSamplingDraft = false) => {
+    const activateDocument = (document: DrivingTrainingDocument, keepDrafts: { weights?: boolean; batch?: boolean } = {}) => {
         const restored = document.model ? DrivingPolicy.restore(document) : null;
         saveGeneration.current++;
         policy.current?.dispose();
@@ -254,7 +280,8 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         lastSaveStep.current = restored?.steps ?? 0;
         documentReady.current = true;
         configuration.current = restored?.configuration ?? cloneConfig(document.configuration);
-        if (!preserveSamplingDraft) setSamplingWeights({ ...configuration.current.recordedSamplingWeights });
+        if (!keepDrafts.weights) setSamplingWeights({ ...configuration.current.recordedSamplingWeights });
+        if (!keepDrafts.batch) setRecordedBatchDrafts({});
         aggressionRef.current = configuration.current.aggression;
         setAggression(aggressionRef.current);
         setExploration({ pedalExplorationSigma: configuration.current.learning.pedalExplorationSigma,
@@ -344,7 +371,6 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         };
         const emergencyStop = () => {
             startGeneration.current++;
-            replayStop.current = null;
             replayAbort.current?.abort();
             releaseTest();
             if (inputSourceRef.current === 'live') void loop.current?.stop('Emergency stop. Controller released.');
@@ -433,7 +459,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             documentReady.current = false;
             const document = await loadDrivingModel(modelPath.current);
             if (!mounted.current || generation !== startGeneration.current) return;
-            activateDocument(document, samplingWeightsChanged);
+            activateDocument(document, keepRecordedDrafts);
             if (!train && (!policy.current || !policy.current.steps)) throw new Error('Train a model before evaluation.');
             if (!policy.current) {
                 const input = read();
@@ -456,6 +482,8 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         replayAbort.current = abort;
         const active = () => mounted.current && !abort.signal.aborted;
         let replay: RecordedDrivingReplay | undefined;
+        let targetBatches: number | undefined;
+        let savedAt = 0;
         setReplaying(true); setInitializingGpu(true); setError(''); setReplayStatus('Preparing recorded replay…');
         if (train) setAnnotationProgress('preparing');
         try {
@@ -463,8 +491,13 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
             if (!active()) return;
             const document = await loadDrivingModel(modelPath.current);
             if (!active()) return;
-            activateDocument(document, samplingWeightsChanged);
+            activateDocument(document, keepRecordedDrafts);
             if (!train && !policy.current?.steps) throw new Error('Train a model before evaluation.');
+            const { recordedBatchSize, recordedBatchCount, runtime: { controlIntervalMs } } = configuration.current;
+            savedAt = policy.current?.steps ?? 0;
+            if (train && recordedBatchCount > Math.floor((Number.MAX_SAFE_INTEGER - savedAt) / recordedBatchSize)) {
+                throw new Error('The recorded batch settings exceed the model’s maximum learning step count. Reduce the batch size or count.');
+            }
             const referencesByRecording = new Map<string, RecordingReferences>();
             const getReferences = async (frame: RecordedReplayFrame) => {
                 const { session, recordingId } = frame;
@@ -503,14 +536,14 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                         lastCountError = result.error || 'Recorded inputs do not match this model.';
                         balance.count(undefined);
                     }
-                }, abort.signal, reportProgress);
+                }, abort.signal, reportProgress, controlIntervalMs);
                 if (!active()) return;
                 coverage = balance.prepare(lastCountError);
                 setReplayStatus('Preparing recorded training samples…');
                 setAnnotationProgress('preparing');
             }
             let progress: RecordedReplayProgress = { samples: 0, skipped: 0, pedalError: 0, steeringError: 0 };
-            let savedAt = policy.current?.steps ?? 0;
+            let replayDetails = '';
             await viewer.replay(async (frame) => {
                 if (!active()) return;
                 const measured = balance ? measuredFrames[replayedFrames++] : undefined;
@@ -538,34 +571,46 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     progress = replay.progress;
                 }
                 if (replay) {
-                    if (frame.startsRange) await replay.startRange(active);
+                    if (frame.startsRange) replay.startRange(active);
                     await replay.consume(result, active, frame.clipLabel);
                 } else {
                     progress.skipped++;
                     progress.lastError = result.error || 'Recorded inputs do not match this model.';
                 }
                 if (!active()) return;
-                const steps = policy.current?.steps ?? savedAt;
-                setModelSteps(policy.current?.steps ?? null);
-                if (train && replay) setSaved(false);
-                setReplayStatus(`${train ? 'Learning from' : 'Evaluating'} recording${frame.recordingName ? ` · ${frame.recordingName}` : ''} · ${frame.videoSeconds.toFixed(1)} s · ${progress.samples} samples · ${progress.skipped} skipped`
+                replayDetails = `${frame.recordingName ? ` · ${frame.recordingName}` : ''} · ${frame.videoSeconds.toFixed(1)} s · ${progress.samples} samples · ${progress.skipped} skipped`
                     + (train ? '' : ` · pedal MAE ${progress.pedalError.toFixed(3)} · steering MAE ${progress.steeringError.toFixed(3)}`)
-                    + (progress.lastError ? ` · Last skipped frame: ${progress.lastError}` : ''));
-                if (train && steps - savedAt >= configuration.current.runtime.saveEverySteps) {
-                    if (!await save()) throw new Error('Recorded training stopped because the model could not be saved.');
-                    savedAt = steps;
-                }
-            }, abort.signal, train ? reportProgress : undefined);
+                    + (progress.lastError ? ` · Last skipped frame: ${progress.lastError}` : '');
+                setReplayStatus(`${train ? 'Collecting samples from' : 'Evaluating'} recording${replayDetails}`);
+            }, abort.signal, train ? reportProgress : undefined, controlIntervalMs);
             if (active()) {
                 if (balance && (replayedFrames !== measuredFrames.length || !balance.complete)) {
                     throw new Error('The recording changed after counting aligned samples.');
                 }
-                await replay?.finish(active);
-                if (!active()) return;
                 if (!replay || !progress.samples) throw new Error(progress.lastError || 'No consecutive aligned samples were available for replay.');
-                setModelSteps(policy.current?.steps ?? null);
-                const summary = coverage ? recordedCoverageStatus(coverage, replay.trained) : '';
-                setReplayStatus((status) => `Completed. ${status}${summary}`);
+                let summary = '';
+                if (train) {
+                    const totalBatches = recordedBatchCount;
+                    targetBatches = totalBatches;
+                    setReplayStatus('Training recorded batches…');
+                    setAnnotationProgress({ completedBatches: 0, totalBatches });
+                    await replay.finish(active, async (completedBatches) => {
+                        if (!active()) return;
+                        setAnnotationProgress({ completedBatches, totalBatches });
+                        const steps = policy.current?.steps ?? savedAt;
+                        setModelSteps(steps);
+                        setSaved(false);
+                        if (steps - savedAt >= configuration.current.runtime.saveEverySteps) {
+                            if (!await save()) throw new Error('Recorded training stopped because the model could not be saved.');
+                            savedAt = steps;
+                        }
+                    });
+                    if (!active()) return;
+                    if (replay.completedBatches !== totalBatches) throw new Error('Recorded training could not finish the requested batches.');
+                    summary = ` · ${batchProgressText(replay.completedBatches, totalBatches)}`;
+                    if (coverage) summary += recordedCoverageStatus(coverage, replay.sampled);
+                }
+                setReplayStatus(`Completed. ${train ? 'Learning from' : 'Evaluating'} recording${replayDetails}${summary}`);
             }
         } catch (reason) {
             if (reason instanceof Error && reason.name === 'AbortError') abort.abort();
@@ -573,31 +618,24 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         } finally {
             if (mounted.current) {
                 if (abort.signal.aborted) {
-                    const finishingStop = () => mounted.current && replayStop.current === abort;
-                    if (train && finishingStop()) {
-                        try { await replay?.finish(finishingStop); }
-                        catch (reason) { if (mounted.current) setError(errorMessage(reason)); }
-                    }
-                    if (mounted.current) setReplayStatus((status) => `Stopped. ${status}`);
+                    const stoppedAt = targetBatches === undefined ? undefined : batchProgressText(replay?.completedBatches ?? 0, targetBatches);
+                    setReplayStatus((status) => `Stopped. ${stoppedAt ?? status}`);
                 }
-                if (train) await save();
+                if (train && (policy.current?.steps ?? 0) > savedAt && replay?.completedBatches) await save();
                 if (mounted.current) {
                     setAnnotationProgress(null);
                     setReplaying(false); setInitializingGpu(false); setModelSteps(policy.current?.steps ?? null);
                 }
             }
             if (replayAbort.current === abort) replayAbort.current = null;
-            if (replayStop.current === abort) replayStop.current = null;
         }
     };
-    const stopRecorded = () => {
-        replayStop.current = replayAbort.current;
-        replayAbort.current?.abort();
-    };
+    const stopRecorded = () => { replayAbort.current?.abort(); };
     const changeInputSource = (source: 'live' | 'recorded') => {
         if (running || replayAbort.current || viewerBusy || initializingGpu || testTimer.current) return;
         inputSourceRef.current = source;
         if (source === 'recorded') screenFrames.stop();
+        clearTrainingClipCount();
         setInputSource(source); setError(''); setReplayStatus(''); setInputs(read());
     };
     const changeSource = (source: ControlSource) => {
@@ -691,17 +729,24 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const liveStartStatus = liveStartBlocker ? `Cannot start AI: ${liveStartBlocker}`
         : !modelSteps ? 'Ready to train. Run trained model becomes available after the model has learned at least one step.'
         : 'Ready to train or run the loaded model.';
-    const recordedStartDisabled = !filePath || fileBusy || !replayReady || replaying || viewerBusy || initializingGpu;
+    const recordedStartDisabled = !filePath || fileBusy || saving || !replayReady || replaying || viewerBusy || initializingGpu;
     const samplingWeightsChanged = RECORDED_SAMPLING_CATEGORIES.some((key) => samplingWeights[key] !== config.recordedSamplingWeights[key]);
+    const recordedBatchSettingsChanged = Object.values(recordedBatchDrafts).some((value) => value !== undefined);
+    const keepRecordedDrafts = { weights: samplingWeightsChanged, batch: recordedBatchSettingsChanged };
     const samplingTotal = RECORDED_SAMPLING_CATEGORIES.reduce((sum, key) => sum + Number(samplingWeights[key]), 0);
-    const trainingPosition = annotationProgress === 'preparing' ? null : annotationProgress;
-    const trainingProgress = trainingPosition
-        ? (trainingPosition.recordingNumber - 1 + (trainingPosition.totalFrames ? trainingPosition.processedFrames / trainingPosition.totalFrames : 1))
-            / trainingPosition.recordingCount
-        : undefined;
-    const trainingProgressText = trainingPosition
-        ? `Recording ${trainingPosition.recordingNumber} of ${trainingPosition.recordingCount} · ${trainingPosition.processedFrames.toLocaleString()} / ${trainingPosition.totalFrames.toLocaleString()} frames processed`
-        : 'Preparing annotation training…';
+    let trainingProgress: number | undefined;
+    let trainingProgressText = 'Preparing annotation training…';
+    if (annotationProgress && annotationProgress !== 'preparing') {
+        if ('completedBatches' in annotationProgress) {
+            const { completedBatches, totalBatches } = annotationProgress;
+            trainingProgress = completedBatches / totalBatches;
+            trainingProgressText = batchProgressText(completedBatches, totalBatches);
+        } else {
+            const { recordingNumber, recordingCount, processedFrames, totalFrames } = annotationProgress;
+            trainingProgress = (recordingNumber - 1 + (totalFrames ? processedFrames / totalFrames : 1)) / recordingCount;
+            trainingProgressText = `Recording ${recordingNumber} of ${recordingCount} · ${processedFrames.toLocaleString()} / ${totalFrames.toLocaleString()} frames processed`;
+        }
+    }
 
     return <section className="driving-training" aria-label="AI Self-Driving Training">
         <header className="driving-training-header">
@@ -748,7 +793,8 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         <div className="driving-grid">
             {inputSource === 'recorded' && <RecordedFrameViewer ref={recordedViewer} configuration={config}
                 policy={policy.current} disabled={replaying || initializingGpu || fileBusy} trainingPickerContainer={trainingPickerContainer}
-                onFrame={updateRecordedFrame} onBusyChange={setViewerBusy} onReplayReadyChange={setReplayReady} />}
+                onFrame={updateRecordedFrame} onBusyChange={setViewerBusy} onReplayReadyChange={setReplayReady}
+                onReplaySelectionChange={clearTrainingClipCount} />}
             {inputSource === 'live' && <ManualDrivingControls ref={manualControls} connected={connected} running={running} source={state.source}
                 finishing={finishing} testing={Boolean(testMode.current)} aiActive={aiActive} aiReady={Boolean(observation && !mismatched)} onSourceChange={changeSource} />}
             <section className="driving-card driving-ai-input" aria-label="AI driver">
@@ -864,8 +910,24 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     <div ref={setTrainingPickerContainer} />
                     <fieldset className="driving-exploration driving-sampling-weights" aria-describedby="driving-sampling-description"
                         disabled={!filePath || !documentReady.current || fileBusy || saving || initializingGpu || running || replaying || viewerBusy}>
-                        <legend>Label sampling weights</legend>
-                        <p id="driving-sampling-description">Training shuffles selected examples before each batch and uses each example from a positive-weight label once per run. Higher weights prioritize labels when their examples are available. Set a label to 0% to skip it.</p>
+                        <legend>Fixed sampling weights</legend>
+                        <div className="driving-recorded-batch-settings">
+                            {RECORDED_BATCH_FIELDS.map((field) => <div key={field.key} className="driving-buttons driving-recorded-batch">
+                                <label>{field.label}
+                                    <input type="number" min="1" max={field.max} step="1"
+                                        value={recordedBatchDrafts[field.key] ?? config[field.key]} aria-describedby="driving-batch-description"
+                                        onChange={({ target }) => {
+                                            const value = target.value === '' ? '' : target.valueAsNumber;
+                                            setRecordedBatchDrafts((drafts) => ({ ...drafts, [field.key]: value === config[field.key] ? undefined : value }));
+                                        }} />
+                                </label>
+                                <button type="button" disabled={!field.valid(recordedBatchDrafts[field.key])}
+                                    onClick={() => { void saveRecordedBatchSetting(field); }}>{field.button}</button>
+                            </div>)}
+                        </div>
+                        <p id="driving-batch-description" className="driving-note">Batch size sets samples per update (1–{MAX_RECORDED_BATCH_SIZE}).
+                            Batch count sets total updates (1–{MAX_RECORDED_BATCH_COUNT.toLocaleString()}). Training reuses examples to fill batches.</p>
+                        <p id="driving-sampling-description">Every batch includes at least one example from each label with eligible examples and a positive weight. The weights determine how the remaining slots are shared.</p>
                         <div className="driving-sampling-fields">
                             {RECORDED_SAMPLING_CATEGORIES.map((category) => <label key={category}>
                                 {category} (%)
@@ -881,11 +943,18 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                         </div>
                     </fieldset>
                     <div className="driving-buttons" role="group" aria-label="Recorded training controls">
-                        <button className="driving-primary" disabled={recordedStartDisabled || samplingWeightsChanged}
+                        <button className="driving-primary" disabled={recordedStartDisabled || samplingWeightsChanged || recordedBatchSettingsChanged}
                             onClick={() => { void startRecorded(true); }}>Train from annotations</button>
+                        <button type="button" disabled={replaying || viewerBusy}
+                            onClick={() => setTrainingClipCount(recordedViewer.current?.countTrainingClips() ?? 0)}>Count training clips</button>
                         <button disabled={recordedStartDisabled || !modelSteps}
                             onClick={() => { void startRecorded(false); }}>Evaluate annotations</button>
                         <button className="driving-stop" disabled={!replaying} onClick={stopRecorded}>Stop replay</button>
+                    </div>
+                    <div role="status" aria-label="Training clip count">
+                        {trainingClipCount !== null && <p className="driving-note">
+                            {trainingClipCount.toLocaleString()} training {trainingClipCount === 1 ? 'clip' : 'clips'} selected.
+                        </p>}
                     </div>
                 </>}
                 {annotationProgress !== null && <div className="driving-annotation-progress">
