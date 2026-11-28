@@ -31,8 +31,8 @@ function setup(train = true, batchSize = 2, batchCount = 1) {
             for (const { input, targets } of batch) await learnRecordedPlanAsync(input, targets);
             return true;
         }),
-        decideAsync: jest.fn(async (_input: DrivingPolicyInput, _explore: boolean, _shifts: unknown) => ({
-            plan: [{ action: { pedal: 0.5, steering: 0.2 } }],
+        decideAsync: jest.fn(async (_input: DrivingPolicyInput, _explore: boolean) => ({
+            plan: [{ action: { pedal: 0.5, steering: 0.2, gear: 3 } }],
         } as PolicyDecision)),
         releaseDecision: jest.fn(),
     };
@@ -113,7 +113,7 @@ it('keeps zero-weight origins in recurrent history and uses their controls for o
     expect(balance.complete).toBe(true);
 });
 
-it('learns next-sample controls from earlier observations and shifts future analog targets by one sample', async () => {
+it('learns next-sample controls and target gear from the earlier observation', async () => {
     const { fake, replay, frame } = setup();
     const first = frame(1000, { gear: 3 });
     const second = frame(1100, { gear: 4, controls: { throttle: 0, brake: 0.6, steering: -0.4 } });
@@ -140,10 +140,8 @@ it('learns next-sample controls from earlier observations and shifts future anal
     expect(secondInput.cameras[0]).toBeNull();
     expect(assembleDrivingInput(secondInput, fake.configuration, -Infinity, secondInput.recordedHistory))
         .toEqual(assembleDrivingInput(sequential, fake.configuration, -Infinity, sequential.recordedHistory));
-    const brake = { action: { pedal: -0.6, steering: -0.4, shiftUp: true, shiftDown: false },
-        shifts: { up: true, down: true } };
-    const accelerate = { action: { pedal: 0.15, steering: 0.25, shiftUp: false, shiftDown: true },
-        shifts: { up: true, down: true } };
+    const brake = { action: { pedal: -0.6, steering: -0.4, gear: 4 }, gearWeight: 1 };
+    const accelerate = { action: { pedal: 0.15, steering: 0.25, gear: 3 }, gearWeight: 1 };
     expect(firstTargets).toEqual([{ step: 0, ...brake }, { step: 1, ...accelerate }]);
     expect(secondTargets).toEqual([{ step: 0, ...accelerate }]);
     expect(replay.progress.samples).toBe(2);
@@ -189,46 +187,40 @@ it('keeps steering unwind to zero in immediate and delayed targets', async () =>
     ]);
 });
 
-it('labels each consecutive gear transition and masks ambiguous multi-gear jumps', async () => {
+it('learns absolute gears when the gear repeats or changes by multiple steps', async () => {
     const { fake, replay, frame } = setup(true, 4);
     const gears = [3, 4, 3, 6, 6];
     for (let index = 0; index < gears.length; index++) await replay.consume({ observation: frame(1000 + index * 100, { gear: gears[index] }) });
     await replay.finish();
-    expect(fake.learnRecordedPlanAsync.mock.calls.map(([, [{ action, shifts }]]) => ({ action, shifts }))).toEqual([
-        { action: expect.objectContaining({ shiftUp: true, shiftDown: false }), shifts: { up: true, down: true } },
-        { action: expect.objectContaining({ shiftUp: false, shiftDown: true }), shifts: { up: true, down: true } },
-        { action: expect.objectContaining({ shiftUp: false, shiftDown: false }), shifts: { up: false, down: false } },
-        { action: expect.objectContaining({ shiftUp: false, shiftDown: false }), shifts: { up: true, down: true } },
-    ]);
+    expect(fake.learnRecordedPlanAsync.mock.calls.map(([, [{ action, gearWeight }]]) => [action.gear, gearWeight]))
+        .toEqual([[4, 1], [3, 1], [6, 1], [6, 1]]);
 });
 
 it.each([
-    { gears: [3, 0, 0, 4], targets: ['up', 'hold', 'hold'] },
-    { gears: [2, 0, 1], targets: ['down', 'hold'] },
-    { gears: [1, 0, 2], targets: ['up', 'hold'] },
-    { gears: [1, 0, 1], targets: ['hold', 'hold'] },
-    { gears: [3, 0, 5], targets: ['unknown', 'hold'] },
-    { gears: [-1, 0, 1], targets: ['up', 'up'] },
-    { gears: [1, 0, -1], targets: ['down', 'down'] },
-    { gears: [0, 1, 0], targets: ['up', 'down'] },
-    { gears: [1, 0, 2], targets: ['down'], times: [0, 0.1, 2] },
-])('learns $targets from a recording with gears $gears', async ({ gears, targets, times = gears.map((_, i) => i / 10) }) => {
+    { gears: [3, 0, 0, 4], targets: [0, 0, 4] },
+    { gears: [2, 0, 1], targets: [0, 1] },
+    { gears: [-1, 0, 1], targets: [0, 1] },
+    { gears: [1, 0, -1], targets: [0, -1] },
+    { gears: [3, undefined, 0, -2, 11, 10], targets: [null, 0, null, null, 10] },
+    { gears: [1, 0, 2], targets: [0], times: [0, 0.1, 2] },
+])('learns $targets from a recording with gears $gears and masks invalid gear labels only', async ({ gears, targets, times = gears.map((_, i) => i / 10) }) => {
     const { fake, replay } = setup(true, targets.length);
     const fixture = trainingFixture();
     const session = parseRecordedDrivingSession(gears.map((gear, index) => JSON.stringify({ ...fixture.live.currentTelemetry,
-        Graphics_analyst_session_time: times[index], Physics_gear: gear + 1 })).join('\n'), 'acc');
+        Graphics_analyst_session_time: times[index], Physics_gear: gear === undefined ? undefined : gear + 1 })).join('\n'), 'acc');
 
     for (let index = 0; index < gears.length; index++) {
         const result = readRecordedDrivingObservation(session, times[index], fixture.observation.camera,
             fixture.referenceLap, 50, fake.configuration, fixture.circuitMap);
-        expect(result.observation?.gear).toBe(gears[index]);
+        const gear = gears[index];
+        expect(result.observation).toMatchObject({ gear: gear ?? 0, gearAvailable: gear !== undefined && gear >= -1 });
         await replay.consume(result);
     }
 
     await replay.finish();
-    expect(fake.learnRecordedPlanAsync.mock.calls.map(([, [{ action, shifts }]]) => ({ action, shifts }))).toEqual(
-        targets.map((target) => ({ action: expect.objectContaining({ shiftUp: target === 'up', shiftDown: target === 'down' }),
-            shifts: { up: target !== 'unknown', down: target !== 'unknown' } })));
+    expect(fake.learnRecordedPlanAsync.mock.calls.map(([, [{ action, gearWeight }]]) => ({ action, gearWeight }))).toEqual(
+        targets.map((gear) => ({ action: { pedal: fixture.observation.controls.throttle, steering: fixture.observation.controls.steering,
+            gear: gear ?? 1 }, gearWeight: gear === null ? 0 : 1 })));
     expect(replay.progress.samples).toBe(targets.length);
 });
 

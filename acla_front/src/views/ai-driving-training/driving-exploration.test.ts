@@ -110,9 +110,37 @@ it('keeps discrete gear draws until their own refresh interval', () => {
     const { config, sampler, input } = setup();
     config.learning.gearExplorationUpdateHz = 1;
     const first = sampler.plan(input(), 1000);
-    expect(first.slice(0, -1).every((sample) => sample.shift === first[0].shift)).toBe(true);
-    expect(first[5].shift).not.toBe(first[0].shift);
-    expect(sampler.plan(input(), 2000)[0].shift).toBe(first[5].shift);
+    expect(first.slice(0, -1).every((sample) => sample.gear === first[0].gear)).toBe(true);
+    expect(first[5].gear).not.toBe(first[0].gear);
+    expect(sampler.plan(input(), 2000)[0].gear).toBe(first[5].gear);
+});
+
+it('uses separate durations for pedal blend, steering blend and gear draw', () => {
+    const { config, sampler, input } = setup();
+    config.learning.pedalExplorationUpdateHz = 1 / 0.2;
+    config.learning.steeringExplorationUpdateHz = 1 / 0.4;
+    config.learning.gearExplorationUpdateHz = 1 / 0.5;
+    const [start, after100Ms, after200Ms, after400Ms, after500Ms] = sampler.plan(input(), 1000);
+
+    // Each analog blend is halfway to the next independent draw at half its duration.
+    expect(after100Ms.axes[0]).toBeCloseTo((start.axes[0] + after200Ms.axes[0]) / Math.SQRT2, 10);
+    expect(after200Ms.axes[1]).toBeCloseTo((start.axes[1] + after400Ms.axes[1]) / Math.SQRT2, 10);
+    expect(after400Ms.gear).toBe(start.gear);
+    expect(after500Ms.gear).not.toBe(start.gear);
+});
+
+it('keeps overlapping samples after a long plan interval in the same observation episode', () => {
+    const { config, sampler, input } = setup();
+    config.actions.planTimesSeconds = [0, 2, 4];
+    config.runtime.maxTransitionSeconds = 1.5;
+    const episode = {};
+    const sample = (capturedAt: number, identity = episode) => ({ ...input(),
+        recurrent: { episode: identity, capturedAt, historyTimes: [] } });
+
+    const first = sampler.plan(sample(1000), 1000);
+    const next = sampler.plan(sample(3000), 3000);
+    expect(next.slice(0, 2)).toEqual(first.slice(1));
+    expect(sampler.plan(sample(3100, {}), 3100)[0]).not.toEqual(next[0]);
 });
 
 it.each(['explicit', 'rewind', 'gap'])('resets persistent weights on %s', (reason) => {

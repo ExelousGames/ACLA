@@ -1,15 +1,16 @@
 import { DrivingAction, DrivingObservation } from './driving-observation';
 import { DrivingPolicyInput } from './driving-memory';
-import { cloneConfig, DEFAULT_DRIVING_CONFIG, DRIVING_ANALOG_AXES, DRIVING_GRU_GATES, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingExplorationSigmas, drivingFeatureEncoding, drivingObservationInputs, drivingPolicyInputs, readDrivingConfig, validateDrivingConfig } from './driving-model-config';
+import { cloneConfig, DEFAULT_DRIVING_CONFIG, DRIVING_ANALOG_AXES, DRIVING_GRU_GATES, DRIVING_MAX_GEAR, DRIVING_MIN_GEAR, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingExplorationSigmas, drivingFeatureEncoding, drivingGearFromIndex, drivingGearIndex, drivingObservationInputs, drivingPolicyInputs, isDrivingGear, readDrivingConfig, validateDrivingConfig } from './driving-model-config';
 import { DrivingExploration } from './driving-exploration';
+import { directedActionCandidates, DrivingDirectedOptions, selectDirectedAction } from './driving-directed-exploration';
 import { DrivingGpuModel, GpuPolicyPass } from './driving-gpu-model';
 import { DrivingRolloutInterval, drivingSequenceTargets } from './driving-rollout';
 import type { PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
 import type { DrivingCameraInspection } from './driving-camera-inspection';
 
-/** Categorical order: hold gear, shift up, shift down. */
-export type ShiftChoice = 0 | 1 | 2;
-export interface ShiftAvailability { up: boolean; down: boolean }
+/** Largest allowed target gear; reverse and neutral remain available below a forward cap. */
+export interface GearAvailability { max: number }
+const allGears: GearAvailability = { max: DRIVING_MAX_GEAR };
 export interface PlannedAction {
     timeSeconds: number;
     action: DrivingAction;
@@ -19,21 +20,22 @@ interface ActionDecision extends PlannedAction {
     latent: number[];
     /** Sampling variances for exploration diagnostics. */
     variances?: number[];
-    shift: ShiftChoice;
-    shiftProbabilities: number[];
-    shifts: ShiftAvailability;
+    /** Categorical probabilities in gear order: reverse, neutral, then the forward gears. */
+    gearProbabilities: number[];
+    gears: GearAvailability;
 }
-interface ExplorationSample { axes: number[]; variances: number[]; shift: number }
+interface ExplorationSample { axes: number[]; variances: number[]; gear: number }
 export interface PolicyDecision {
     gpu: GpuPolicyPass;
     input: DrivingPolicyInput;
     value: number;
     plan: ActionDecision[];
+    directedAction?: DrivingAction;
 }
 export interface PlannedActionTarget {
     step: number;
     action: DrivingAction;
-    shifts: ShiftAvailability;
+    gearWeight?: number;
 }
 export interface RecordedPlanTarget {
     input: DrivingPolicyInput;
@@ -44,9 +46,9 @@ export interface PlanStepCredit {
     step: number;
     weight: number;
     /** Interpolated analog endpoints can contribute without executing a gear choice. */
-    shiftWeight?: number;
-    shift: ShiftChoice;
-    shifts: ShiftAvailability;
+    gearWeight?: number;
+    gear: number;
+    gears: GearAvailability;
     action?: DrivingAction;
     appliedAt?: number;
 }
@@ -83,7 +85,7 @@ interface ReplayTransition {
     reward: number;
     elapsedSeconds: number;
     terminal: boolean;
-    nextShifts: ShiftAvailability;
+    nextGears: GearAvailability;
     actions: (PlanStepCredit & { action: DrivingAction })[];
 }
 
@@ -127,6 +129,10 @@ export class DrivingPolicy {
     private get actionOutputs() { return this.configuration.actions.outputs.length; }
     private get criticOutput() { return this.planTimes.length * this.actionOutputs; }
     get planTimes() { return this.configuration.actions.planTimesSeconds; }
+    get canExploreDirectly() {
+        return this.configuration.learning.directedExplorationEnabled
+            && this.replayBuffer.length >= this.configuration.learning.replayBatchSize;
+    }
 
     constructor(readonly context: DrivingObservation['context'], readonly observationInputs: number,
         private random: () => number = Math.random, configuration = DEFAULT_DRIVING_CONFIG, restoredWeights?: PolicyWeights) {
@@ -208,16 +214,35 @@ export class DrivingPolicy {
         return this.gpuInitialization;
     }
 
-    async decideAsync(input: DrivingPolicyInput, explore: boolean, shifts: ShiftAvailability = { up: true, down: true }): Promise<PolicyDecision> {
+    async decideAsync(input: DrivingPolicyInput, explore: boolean, gears: GearAvailability = allGears,
+        directed?: DrivingDirectedOptions): Promise<PolicyDecision> {
         if (!explore) this.resetExploration();
         const revision = this.explorationRevision;
-        const { pass, outputs, logStds } = await this.requireGpu().forward(input);
-        const samples = explore && revision === this.explorationRevision ? this.exploration.plan(input, Date.now()) : undefined;
-        const plan = this.planTimes.map((timeSeconds, step) => this.actionDecision(
-            outputs.slice(step * this.actionOutputs, (step + 1) * this.actionOutputs), timeSeconds,
-            samples?.[step], logStds.slice(step * DRIVING_ANALOG_AXES, (step + 1) * DRIVING_ANALOG_AXES),
-            step === 0 ? shifts : { up: true, down: true }));
-        return { input, gpu: pass, value: outputs[this.criticOutput], plan };
+        const gpu = this.requireGpu();
+        const { pass, outputs, logStds } = await gpu.forward(input);
+        try {
+            const liveExploration = explore && revision === this.explorationRevision;
+            const samples = liveExploration && this.configuration.learning.randomExplorationEnabled
+                ? this.exploration.plan(input, Date.now()) : undefined;
+            const plan = this.planTimes.map((timeSeconds, step) => this.actionDecision(
+                outputs.slice(step * this.actionOutputs, (step + 1) * this.actionOutputs), timeSeconds,
+                samples?.[step], logStds.slice(step * DRIVING_ANALOG_AXES, (step + 1) * DRIVING_ANALOG_AXES), gears));
+            const decision: PolicyDecision = { input, gpu: pass, value: outputs[this.criticOutput], plan };
+            if (liveExploration && directed && this.canExploreDirectly) {
+                const first = plan[0];
+                const maxPedal = directed.throttleLimited ? Math.max(0, Math.tanh(first.means[0])) : 1;
+                const baseline = { ...first.action, pedal: Math.min(first.action.pedal, maxPedal) };
+                const candidates = directedActionCandidates(baseline, gears.max, maxPedal, this.configuration.learning);
+                if (candidates.length > 1) {
+                    const scores = await gpu.scoreActions(pass, candidates);
+                    if (revision === this.explorationRevision) decision.directedAction = selectDirectedAction(candidates, scores);
+                }
+            }
+            return decision;
+        } catch (error) {
+            gpu.release(pass);
+            throw error;
+        }
     }
 
     resetExploration() {
@@ -240,34 +265,36 @@ export class DrivingPolicy {
     releaseDecision(decision?: PolicyDecision) { if (decision?.gpu) this.gpu?.release(decision.gpu); }
 
     private actionDecision(outputs: number[], timeSeconds: number, exploration: ExplorationSample | undefined,
-        logStds: number[], shifts: ShiftAvailability): ActionDecision {
+        logStds: number[], gears: GearAvailability): ActionDecision {
         const means = outputs.slice(0, DRIVING_ANALOG_AXES);
         const initialSigmas = drivingExplorationSigmas(this.configuration);
         const sigmas = logStds.map((value, axis) => Math.exp(value) * initialSigmas[axis] / 0.05);
         const latent = means.map((mean, axis) => mean + (exploration ? sigmas[axis] * exploration.axes[axis] : 0));
         // The execution mask is also retained with the off-policy transition.
-        const shiftLogits = outputs.slice(DRIVING_ANALOG_AXES);
-        const shiftProbabilities = this.shiftProbabilities(shiftLogits, shifts);
-        const shift = this.chooseShift(shiftProbabilities, exploration?.shift);
-        const action = { pedal: Math.tanh(latent[0]), steering: Math.tanh(latent[1]), shiftUp: shift === 1, shiftDown: shift === 2 };
+        const gearLogits = outputs.slice(DRIVING_ANALOG_AXES);
+        const gearProbabilities = this.gearProbabilities(gearLogits, gears);
+        const gear = this.chooseGear(gearProbabilities, exploration?.gear);
+        const action = { pedal: Math.tanh(latent[0]), steering: Math.tanh(latent[1]), gear };
         return { timeSeconds, means, latent, variances: sigmas.map((sigma, axis) => sigma * sigma
             * (exploration ? exploration.variances[axis] / initialSigmas[axis] ** 2 : 1)),
-            shift, shiftProbabilities, shifts: { ...shifts }, action };
+            gearProbabilities, gears: { ...gears }, action };
     }
 
-    private chooseShift(probabilities: number[], draw?: number): ShiftChoice {
-        if (draw === undefined) return probabilities.indexOf(Math.max(...probabilities)) as ShiftChoice;
-        let cumulative = 0, shift: ShiftChoice = 0;
-        for (const gear of [0, 1, 2] as const) {
-            cumulative += probabilities[gear];
-            if (probabilities[gear] > 0) shift = gear;
+    private chooseGear(probabilities: number[], draw?: number): number {
+        if (draw === undefined) return drivingGearFromIndex(probabilities.indexOf(Math.max(...probabilities)));
+        let cumulative = 0, gear = DRIVING_MIN_GEAR;
+        for (let index = 0; index < probabilities.length; index++) {
+            const probability = probabilities[index];
+            cumulative += probability;
+            if (probability > 0) gear = drivingGearFromIndex(index);
             if (draw < cumulative) break;
         }
-        return shift;
+        return gear;
     }
 
-    private shiftProbabilities(values: number[], shifts: ShiftAvailability): number[] {
-        const logits = values.map((logit, i) => [true, shifts.up, shifts.down][i] ? logit : -Infinity);
+    private gearProbabilities(values: number[], gears: GearAvailability): number[] {
+        const maxIndex = drivingGearIndex(gears.max);
+        const logits = values.map((logit, i) => i <= maxIndex ? logit : -Infinity);
         const maximum = Math.max(...logits);
         // Concentrate exploration around the learned gear choice without changing its argmax.
         const weights = logits.map((logit) => Math.exp((logit - maximum) / this.configuration.learning.shiftTemperature));
@@ -278,9 +305,9 @@ export class DrivingPolicy {
     /** Re-encode replay data using current weights. Behavior actions train Q only;
      * the GPU samples the current actor independently for its SAC objective. */
     async learnAsync(decision: Pick<PolicyDecision, 'input' | 'plan'>, reward: number, next: DrivingPolicyInput, elapsedSeconds: number,
-        credits: PlanStepCredit[], terminal = false, nextShifts: ShiftAvailability = { up: true, down: true }, originInput = decision.input): Promise<void> {
+        credits: PlanStepCredit[], terminal = false, nextGears: GearAvailability = allGears, originInput = decision.input): Promise<void> {
         const gpu = this.requireGpu();
-        const transition = this.transition(decision, reward, next, elapsedSeconds, credits, terminal, nextShifts, originInput);
+        const transition = this.transition(decision, reward, next, elapsedSeconds, credits, terminal, nextGears, originInput);
         if (!transition.actions.length) return;
         const pass = gpu.replay(transition.input);
         try {
@@ -290,17 +317,17 @@ export class DrivingPolicy {
     }
 
     private transition(decision: Pick<PolicyDecision, 'input' | 'plan'>, reward: number, next: DrivingPolicyInput, elapsedSeconds: number,
-        credits: PlanStepCredit[], terminal: boolean, nextShifts: ShiftAvailability, originInput = decision.input): ReplayTransition {
+        credits: PlanStepCredit[], terminal: boolean, nextGears: GearAvailability, originInput = decision.input): ReplayTransition {
         if (!Number.isFinite(reward) || !Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) throw new Error('Invalid training transition.');
         const actions = credits.map((credit) => {
-            if (!Number.isFinite(credit.weight) || credit.weight < 0 || !Number.isFinite(credit.shiftWeight ?? credit.weight)
-                || (credit.shiftWeight ?? credit.weight) < 0) throw new Error('Invalid training transition credit.');
+            if (!Number.isFinite(credit.weight) || credit.weight < 0 || !Number.isFinite(credit.gearWeight ?? credit.weight)
+                || (credit.gearWeight ?? credit.weight) < 0) throw new Error('Invalid training transition credit.');
             const source = credit.action ?? decision.plan[credit.step]?.action;
             if (!source) throw new Error('Missing executed training action.');
-            return { ...credit, shifts: { ...credit.shifts }, action: { ...source } };
+            return { ...credit, gears: { ...credit.gears }, action: { ...source, gear: credit.gear } };
         });
         this.validateTargets(actions);
-        return { input: decision.input, originInput, next, reward, elapsedSeconds, actions, terminal, nextShifts: { ...nextShifts } };
+        return { input: decision.input, originInput, next, reward, elapsedSeconds, actions, terminal, nextGears: { ...nextGears } };
     }
 
     /** Bounded off-policy replay stores multi-step returns with CPU observations
@@ -314,7 +341,7 @@ export class DrivingPolicy {
             if (!endpoint) return [];
             return this.transition({ input: target.input, plan: target.decision.plan },
                 target.reward, endpoint, target.elapsedSeconds, target.credits, target.terminal,
-                target.nextShifts ?? { up: true, down: true }, target.decision.input);
+                target.nextGears ?? allGears, target.decision.input);
         }).filter((target) => target.actions.length);
         const replay = [...this.replayBuffer, ...incoming].slice(-this.configuration.learning.replayCapacity);
         const indices = replay.map((_, index) => index);
@@ -330,7 +357,7 @@ export class DrivingPolicy {
             for (const target of batch) {
                 if (!active()) return;
                 await this.learnAsync({ input: target.input, plan: [] }, target.reward, target.next, target.elapsedSeconds,
-                    target.actions, target.terminal, target.nextShifts, target.originInput);
+                    target.actions, target.terminal, target.nextGears, target.originInput);
             }
             commit = active();
         } finally {
@@ -340,9 +367,9 @@ export class DrivingPolicy {
         }
     }
 
-    async learnDemonstrationAsync(input: DrivingPolicyInput, action: DrivingAction, shifts: ShiftAvailability,
+    async learnDemonstrationAsync(input: DrivingPolicyInput, action: DrivingAction,
         objective: DrivingImitationObjective = 'standard'): Promise<void> {
-        await this.learnTargetsAsync(input, [{ step: 0, action, shifts }], true, objective);
+        await this.learnTargetsAsync(input, [{ step: 0, action }], true, objective);
     }
 
     observeDemonstration(input: DrivingPolicyInput) {
@@ -394,7 +421,7 @@ export class DrivingPolicy {
         for (const { step, action } of targets) {
             if (!Number.isInteger(step) || step < 0 || step >= this.planTimes.length) throw new Error('Invalid action plan step.');
             if (![action.pedal, action.steering].every(Number.isFinite) || Math.abs(action.pedal) > 1
-                || Math.abs(action.steering) > 1 || (action.shiftUp && action.shiftDown)) {
+                || Math.abs(action.steering) > 1 || !isDrivingGear(action.gear)) {
                 throw new Error('Invalid demonstration action.');
             }
         }

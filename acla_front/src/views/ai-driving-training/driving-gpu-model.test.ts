@@ -1,7 +1,8 @@
-import { DrivingGpuModel, GpuPolicyPass } from './driving-gpu-model';
+import { DrivingGpuModel, GpuPolicyPass, MAX_DRIVING_SCORE_ACTIONS } from './driving-gpu-model';
 import { DrivingPolicy } from './driving-policy';
 import { cloneConfig, drivingCameraLayers, drivingMemorySlots, drivingObservationInputs } from './driving-model-config';
 import { drivingMemoryInputs, drivingMemorySlotInputs } from './driving-memory';
+import { drivingDemonstrationTargetStride } from './driving-learning-shaders';
 
 function deferred<T>() {
     let resolve!: (value: T) => void, reject!: (error: Error) => void;
@@ -55,7 +56,7 @@ async function setup() {
     };
     const allocations = () => [device.createBuffer.mock.calls.length, device.createBindGroup.mock.calls.length];
     const buffers = () => device.createBuffer.mock.results.filter(({ type }) => type === 'return').map(({ value }) => value);
-    return { model, device, config, input, allocations, buffers, mapping, lost };
+    return { model, device, config, input, allocations, buffers, mapping, lost, compute };
 }
 
 it('reads every convolution map with its real dimensions without running learning or writing model weights', async () => {
@@ -125,11 +126,11 @@ it('rejects incompatible images and retires resources after invalid activations'
     expect(buffers().every((buffer) => buffer.destroy.mock.calls.length === 1)).toBe(true);
 });
 
-const targets = [{ step: 0, action: { pedal: -0.1, steering: -0.3 }, shifts: { up: true, down: false } }];
+const targets = [{ step: 0, action: { pedal: -0.1, steering: -0.3, gear: 4 } }];
 const transition = { reward: 1, elapsedSeconds: 0.2, terminal: false,
-    nextShifts: { up: false, down: true },
-    actions: [{ step: 0, weight: 0.25, action: { pedal: -0.2, steering: -0.2 }, shift: 0, shifts: { up: true, down: true } },
-        { step: 2, weight: 0.75, action: { pedal: -0.4, steering: -0.4, shiftUp: true }, shift: 1, shifts: { up: true, down: false } }] };
+    nextGears: { max: 5 },
+    actions: [{ step: 0, weight: 0.25, action: { pedal: -0.2, steering: -0.2, gear: -1 }, gear: -1, gears: { max: 10 } },
+        { step: 2, weight: 0.75, action: { pedal: -0.4, steering: -0.4, gear: 0 }, gear: 0, gears: { max: 7 } }] };
 
 it('queues predictions in episode order and does not remember a failed capture', async () => {
     const { model, input, mapping } = await setup();
@@ -158,39 +159,110 @@ it('queues predictions in episode order and does not remember a failed capture',
     model.release(afterFailure);
 });
 
-it('uploads actual executed controls and current/next shift masks for sparse SAC credits', async () => {
+it('scores joint actions in one GPU batch using the active recurrent prediction and both critics', async () => {
+    const { model, input, device, mapping, buffers, allocations, compute } = await setup();
+    const { pass } = await model.forward(input());
+    device.queue.writeBuffer.mockClear();
+    device.queue.submit.mockClear();
+    mapping.mockClear();
+    compute.dispatchWorkgroups.mockClear();
+    mapping.mockImplementationOnce(async () => {
+        const staging = buffers().find((buffer) => (buffer.usage & GPUBufferUsage.MAP_READ)
+            && buffer.size === 2 * 2 * 4)!;
+        const values = new Float32Array(staging.size / 4);
+        values.set([1, -2, 3, 4]);
+        staging.getMappedRange.mockReturnValue(values.buffer);
+    });
+    const actions = [{ pedal: -0.5, steering: 0.25, gear: -1 }, { pedal: 0.75, steering: -0.25, gear: 4 }];
+    await expect(model.scoreActions(pass, actions)).resolves.toEqual([[1, -2], [3, 4]]);
+    expect(device.queue.writeBuffer).toHaveBeenCalledTimes(1);
+    expect(device.queue.writeBuffer.mock.calls[0][2]).toEqual(new Float32Array([-0.5, 0.25, 0, 0.75, -0.25, 5]));
+    expect(device.queue.submit).toHaveBeenCalledTimes(1);
+    expect(mapping).toHaveBeenCalledTimes(1);
+    expect(compute.dispatchWorkgroups.mock.calls).toEqual([[1, 2], [4, 1]]);
+    const [projection, scoring] = device.createBindGroup.mock.calls.slice(-2).map(([descriptor]) => descriptor.entries);
+    expect(projection[1].resource.buffer).toBe(pass.states);
+    expect(projection[2].resource.buffer).toBe(pass.count);
+    expect(scoring[1].resource.buffer).toBe(projection[3].resource.buffer);
+
+    const warmed = allocations();
+    await expect(model.scoreActions(pass, actions.slice(0, 1))).resolves.toEqual([[1, -2]]);
+    expect(allocations()).toEqual(warmed);
+    model.release(pass);
+    await expect(model.scoreActions(pass, actions)).rejects.toThrow(/active prediction/);
+});
+
+it('grows directed scoring to the maximum grid and reads back only active scores', async () => {
+    const { model, input, device, mapping, allocations, compute } = await setup();
+    const { pass } = await model.forward(input());
+    const action = { pedal: 1, steering: 1, gear: 1 };
+    await model.scoreActions(pass, [action]);
+
+    const actions = Array(MAX_DRIVING_SCORE_ACTIONS).fill(action);
+    device.queue.submit.mockClear();
+    mapping.mockClear();
+    compute.dispatchWorkgroups.mockClear();
+    await expect(model.scoreActions(pass, actions)).resolves.toHaveLength(MAX_DRIVING_SCORE_ACTIONS);
+    expect(compute.dispatchWorkgroups.mock.calls).toEqual([[1, 2], [MAX_DRIVING_SCORE_ACTIONS * 2, 1]]);
+    expect(device.queue.submit).toHaveBeenCalledTimes(1);
+    expect(mapping).toHaveBeenCalledTimes(1);
+
+    const warmed = allocations();
+    await model.scoreActions(pass, actions.slice(0, 3));
+    expect(allocations()).toEqual(warmed);
+    const copy = device.createCommandEncoder.mock.results.slice(-1)[0].value.copyBufferToBuffer;
+    expect(copy.mock.calls[0][4]).toBe(3 * 2 * 4);
+    expect(copy.mock.calls[0][2].mapAsync).toHaveBeenLastCalledWith(GPUMapMode.READ, 0, 3 * 2 * 4);
+    await expect(model.scoreActions(pass, [...actions, action])).rejects.toThrow(/Invalid driving action candidates/);
+    model.release(pass);
+});
+
+it('uploads executed target gear numbers and current/next gear limits for sparse SAC credits', async () => {
     const { model, input, device } = await setup();
     const { pass } = await model.forward(input());
     device.queue.writeBuffer.mockClear();
     model.learnTransition(pass, input(), { ...transition, terminal: true });
     const data = device.queue.writeBuffer.mock.calls.map(([, , values]) => values)
-        .filter((values): values is Float32Array => values instanceof Float32Array && values.length === 18);
+        .filter((values): values is Float32Array => values instanceof Float32Array && values.length === 16);
     expect(data).toHaveLength(2);
-    expect(Array.from(data[0].slice(0, 14))).toEqual(Array.from(new Float32Array(
-        [1, 0.2, 1, 0, 0.25, 0.25, 0.25, 1, 1, 0, 1, -0.2, -0.2, 0])));
-    expect(Array.from(data[1].slice(0, 14))).toEqual(Array.from(new Float32Array(
-        [1, 0.2, 1, 0, 0.75, 0.75, 0.75, 1, 1, 0, 1, -0.4, -0.4, 1])));
-    expect(data.every((values) => Array.from(values.slice(14)).every(Number.isFinite))).toBe(true);
+    expect(Array.from(data[0].slice(0, 12))).toEqual(Array.from(new Float32Array(
+        [1, 0.2, 1, 0, 0.25, 0.25, 0.25, 12, 7, -0.2, -0.2, 0])));
+    expect(Array.from(data[1].slice(0, 12))).toEqual(Array.from(new Float32Array(
+        [1, 0.2, 1, 0, 0.75, 0.75, 0.75, 12, 7, -0.4, -0.4, 1])));
+    expect(data.every((values) => Array.from(values.slice(12)).every(Number.isFinite))).toBe(true);
     model.release(pass);
+});
+
+it('uploads reverse and neutral as distinct recorded gear classes', async () => {
+    const { model, input, device, config } = await setup();
+    device.queue.writeBuffer.mockClear();
+    model.learnTargets(input(), [
+        { step: 0, action: { pedal: 0, steering: 0, gear: -1 } },
+        { step: 1, action: { pedal: 0, steering: 0, gear: 0 } },
+    ], false, 'recorded');
+    const stride = drivingDemonstrationTargetStride;
+    const target = device.queue.writeBuffer.mock.calls.map(([, , values]) => values).find((values) =>
+        values instanceof Float32Array && values.length === config.actions.planTimesSeconds.length * stride);
+    expect(Array.from(target.slice(0, 2 * stride))).toEqual([1, 0, 0, 0, 1, 0.5, 0, 0, 1, 1]);
 });
 
 it('retains distinct interpolation actions instead of replacing them with a plan endpoint', async () => {
     const { model, input, device } = await setup();
     const { pass } = await model.forward(input());
-    const analog = { step: 1, weight: 0.25, shiftWeight: 0, action: { pedal: -0.4, steering: -0.4, shiftUp: true },
-        shift: 0, shifts: { up: false, down: false } };
+    const analog = { step: 1, weight: 0.25, gearWeight: 0, action: { pedal: -0.4, steering: -0.4, gear: 4 },
+        gear: 4, gears: { max: 4 } };
     device.queue.writeBuffer.mockClear();
     model.learnTransition(pass, input(), { ...transition, terminal: true, actions: [analog,
-        { ...analog, action: { pedal: 0.8, steering: 0.2, shiftUp: true }, weight: 0.5, shiftWeight: 0.5, shift: 1, shifts: { up: true, down: true } }, analog] });
+        { ...analog, action: { pedal: 0.8, steering: 0.2, gear: 4 }, weight: 0.5, gearWeight: 0.5, gears: { max: 7 } }, analog] });
     const data = device.queue.writeBuffer.mock.calls.map(([, , values]) => values)
-        .filter((values): values is Float32Array => values instanceof Float32Array && values.length === 18);
+        .filter((values): values is Float32Array => values instanceof Float32Array && values.length === 16);
     expect(data).toHaveLength(3);
     expect(data.map((values) => values[3])).toEqual([0, 0, 0]);
     expect(data.map((values) => values[5])).toEqual([0, 0.5, 0]);
-    expect(data.map((values) => Array.from(values.slice(7, 9)))).toEqual([[1, 1], [1, 1], [1, 1]]);
-    expect(data.map((values) => values[13])).toEqual([1, 1, 1]);
-    expect(Array.from(data[1].slice(11, 14))).toEqual(Array.from(new Float32Array([0.8, 0.2, 1])));
-    expect(Array.from(data[0].slice(11, 14))).toEqual(Array.from(data[2].slice(11, 14)));
+    expect(data.map((values) => Array.from(values.slice(7, 9)))).toEqual([[9, 7], [9, 7], [9, 7]]);
+    expect(data.map((values) => values[11])).toEqual([5, 5, 5]);
+    expect(Array.from(data[1].slice(9, 12))).toEqual(Array.from(new Float32Array([0.8, 0.2, 5])));
+    expect(Array.from(data[0].slice(9, 12))).toEqual(Array.from(data[2].slice(9, 12)));
     model.release(pass);
 });
 

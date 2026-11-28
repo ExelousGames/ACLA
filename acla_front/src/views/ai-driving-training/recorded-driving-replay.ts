@@ -2,7 +2,7 @@ import { DrivingMemory, DrivingPolicyInput } from './driving-memory';
 import { DrivingObservation, encodeDrivingAction } from './driving-observation';
 import { DrivingPlanTraining, RECORDED_PLAN_WINDOW } from './driving-plan-training';
 import { DrivingPolicy } from './driving-policy';
-import type { DrivingModelConfig } from './driving-model-config';
+import { isDrivingGear, type DrivingModelConfig } from './driving-model-config';
 import type { RecordedDrivingBalance } from './recorded-driving-balance';
 import type { RecordedObservationResult } from './recorded-driving-session';
 
@@ -34,7 +34,7 @@ export class RecordedDrivingReplay {
     readonly progress: RecordedReplayProgress = { samples: 0, skipped: 0, pedalError: 0, steeringError: 0 };
     private memory: DrivingMemory;
     private plans: DrivingPlanTraining;
-    private previous?: { observation: DrivingObservation; input: DrivingPolicyInput; shiftGear: number; clipLabel?: string };
+    private previous?: { observation: DrivingObservation; input: DrivingPolicyInput; clipLabel?: string; clipId?: string };
 
     constructor(private policy: DrivingPolicy, private train: boolean, private balance?: RecordedDrivingBalance) {
         this.memory = new DrivingMemory(policy.configuration, train);
@@ -65,7 +65,7 @@ export class RecordedDrivingReplay {
         }
     }
 
-    async consume(result: RecordedObservationResult, active = () => true, clipLabel?: string): Promise<void> {
+    async consume(result: RecordedObservationResult, active = () => true, clipLabel?: string, clipId?: string): Promise<void> {
         if (!active()) return;
         const observation = result.observation;
         if (!observation || !this.policy.matches(observation)) {
@@ -79,28 +79,22 @@ export class RecordedDrivingReplay {
         }
         const input = this.memory.encode(observation);
         const pending = this.previous;
-        const shiftGear = result.shiftGear ?? observation.gear;
-        this.previous = { observation, input, shiftGear, clipLabel };
+        this.previous = { observation, input, clipLabel, clipId };
         if (!pending) return;
 
-        // Telemetry records held axes, not paddle presses. A single subsequent gear
-        // change supplies the shift target; ambiguous multi-gear jumps are masked.
-        const gearDelta = shiftGear - pending.shiftGear;
-        const knownShift = Number.isInteger(gearDelta) && Math.abs(gearDelta) <= 1;
-        const shifts = { up: knownShift, down: knownShift };
         // Keep the earlier observation as the plan origin and supervise it with
-        // the next sample's axes, which were unavailable at that origin.
-        const action = encodeDrivingAction(observation.controls);
+        // the next sample's controls and measured gear, including neutral and reverse.
+        const knownGear = observation.gearAvailable !== false && isDrivingGear(observation.gear);
+        const action = encodeDrivingAction(observation.controls, knownGear ? observation.gear : 1);
         if (this.train) {
-            const target = { ...action, shiftUp: knownShift && gearDelta === 1, shiftDown: knownShift && gearDelta === -1 };
             await this.policy.trainBatchAsync(async () => {
                 if (!active()) return;
                 this.policy.observeDemonstration(pending.input);
-                this.plans.record(this.policy, pending.input, { action: target, shifts }, pending.observation.capturedAt,
-                    this.balance?.select(pending.clipLabel));
+                this.plans.record(this.policy, pending.input, { action, gearWeight: knownGear ? 1 : 0 }, pending.observation.capturedAt,
+                    this.balance?.select(pending.clipLabel), pending.clipId);
             });
         } else {
-            const decision = await this.policy.decideAsync(pending.input, false, shifts);
+            const decision = await this.policy.decideAsync(pending.input, false);
             try {
                 if (!active()) return;
                 const predicted = decision.plan[0].action;

@@ -1,4 +1,4 @@
-import { drivingReward, NEUTRAL, readDrivingObservation } from './driving-observation';
+import { drivingControllerAction, drivingReward, encodeDrivingAction, NEUTRAL, readDrivingObservation } from './driving-observation';
 import { DrivingControlChanges } from './driving-control-changes';
 import { circuitMapFixture, brakingFixtureSpeed, brakingReferenceFixture, trainingFixture } from './training-fixtures';
 import { referenceSpeedTargets } from './driving-reference';
@@ -8,6 +8,13 @@ import { cloneConfig, drivingFeatureSizes } from './driving-model-config';
 import { IMPACT_PENALTY_WEIGHT } from './driving-impact';
 
 const { AccAdapter } = require('../../../electron/recording/readers/acc/acc-adapter');
+
+it('keeps the model gear target and physical shift buttons on their respective sides of the controller boundary', () => {
+    const controls = { throttle: 0.5, brake: 0.2, steering: 0.3, shiftUp: true };
+    const action = encodeDrivingAction(controls, 4);
+    expect(action).toEqual({ pedal: -0.2, steering: 0.3, gear: 4 });
+    expect(drivingControllerAction(action)).toEqual({ throttle: 0, brake: 0.2, steering: 0.3 });
+});
 
 it.each(['missing', 'distant', 'invalid', 'mismatched'])(
     'ignores %s position-model output in observations, memory and rewards', (kind) => {
@@ -468,7 +475,8 @@ it.each([0, 1, 2, 4])('normalizes standard gear %s and keeps RPM paired with the
     const { live, vision, referenceLap } = trainingFixture();
     vision.telemetry!.currentTelemetry = { ...live.currentTelemetry, Physics_gear: gear, Physics_rpm: 4500 };
     const result = readDrivingObservation({ ...live, currentTelemetry: { ...live.currentTelemetry, Physics_gear: 6, Physics_rpm: 8000 } }, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap));
-    expect(result.observation).toMatchObject({ gear: gear - 1, rpm: 4500 });
+    expect(result.observation).toMatchObject({ gear: gear - 1, gearAvailable: true, rpm: 4500 });
+    expect(result.telemetry).toMatchObject({ gear: 5, gearAvailable: true });
 });
 
 it.each([
@@ -480,7 +488,8 @@ it.each([
     Object.assign(live.currentTelemetry, fields);
     const result = readDrivingObservation(live, vision, referenceLap, 50, 1000, undefined, circuitMapFixture(referenceLap));
     expect(result.error).toBeUndefined();
-    expect(result.observation).toMatchObject({ gear: fields.Physics_gear - 1, rpm: fields.Physics_rpm });
+    expect(result.observation).toMatchObject({ gear: fields.Physics_gear - 1,
+        gearAvailable: Number.isInteger(fields.Physics_gear) && fields.Physics_gear >= 0, rpm: fields.Physics_rpm });
     expect(new DrivingMemory().encode(result.observation!).features.every(Number.isFinite)).toBe(true);
 });
 
@@ -492,7 +501,8 @@ describe.each(['Physics_gear', 'Physics_rpm'])('unavailable %s telemetry', (fiel
         expect(result.error).toBeUndefined();
         const gear = field === 'Physics_gear' ? 0 : 3;
         const rpm = field === 'Physics_rpm' ? 0 : 6000;
-        expect(result.observation).toMatchObject({ gear, rpm });
+        expect(result.observation).toMatchObject({ gear, gearAvailable: field !== 'Physics_gear', rpm });
+        expect(result.telemetry).toMatchObject({ gear, gearAvailable: field !== 'Physics_gear' });
         expect(result.observation!.features.slice(57, 59)).toEqual([gear / 8, rpm / 20000]);
         expect(new DrivingMemory().encode(result.observation!).features.every(Number.isFinite)).toBe(true);
     });

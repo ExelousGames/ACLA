@@ -1,37 +1,47 @@
 import type { DrivingTelemetrySample } from './driving-observation';
 
-const THROTTLE_GRACE_MS = 350;
 const RAMP_MS = 450;
+const VELOCITY_AVERAGE_MS = 75;
+const AVERAGE_SETTLE_MS = 2 * VELOCITY_AVERAGE_MS;
 const MAX_SAMPLE_GAP_MS = 250;
 const PENALTY_PER_SECOND = 2;
 const BUMP_WINDOW_MS = 2000;
 const MIN_REPEAT_MS = 150;
 const MAX_BUMP_HOLD_MS = 750;
-const MIN_LATERAL_SWING_MPS = 0.25;
-const MIN_FORWARD_SWING_MPS = 0.5;
-const MIN_WALL_STEERING = 0.04;
+const MIN_SWING_MPS = { vertical: 0.5, horizontal: 0.25 };
+const MIN_THROTTLE = 0.3;
+const MIN_STEERING = 0.04;
+const STATIONARY_SPEED_MPS = 0.5;
+const MIN_STATIONARY_PEDAL = 0.05;
+const STATIONARY_GRACE_MS = 350;
 const MIN_TURN_RATE_RAD_S = 0.05;
 const CONSISTENT_TURN_FRACTION = 0.75;
 
-type BlockedResponse = 'throttle' | -1 | 1 | undefined;
+const BLOCKING_AXES = ['vertical', 'horizontal'] as const;
+type BlockingAxis = typeof BLOCKING_AXES[number];
+type ByAxis<T> = Record<BlockingAxis, T>;
+export type BlockedMotionPenalties = ByAxis<number>;
 
 interface MotionSample {
     at: number;
-    lateral: number;
-    forward: number;
+    velocity: ByAxis<number>;
     yawRate: number;
-    input: BlockedResponse;
-    response: BlockedResponse;
+    input: ByAxis<number>;
+    inputSince: ByAxis<number>;
+    blockedSince: ByAxis<number | undefined>;
+    forwardSpeed: number;
+    stationarySince: number | undefined;
 }
 
-function hasRepeatedBumps(samples: MotionSample[], start: number, axis: 'lateral' | 'forward', minSwing: number) {
-    let low = samples[start][axis], high = low;
+function hasRepeatedBumps(samples: MotionSample[], start: number, axis: BlockingAxis) {
+    const minSwing = MIN_SWING_MPS[axis];
+    let low = samples[start].velocity[axis], high = low;
     let direction: 'rise' | 'fall' | undefined;
     const lastSwingIndex: { rise?: number; fall?: number } = {};
     let repeatStart: number | undefined;
     const now = samples[samples.length - 1].at;
     for (let i = start + 1; i < samples.length; i++) {
-        const value = samples[i][axis];
+        const value = samples[i].velocity[axis];
         low = Math.min(low, value);
         high = Math.max(high, value);
         if (direction !== 'rise' && value - low >= minSwing) {
@@ -64,17 +74,13 @@ function hasRepeatedBumps(samples: MotionSample[], start: number, axis: 'lateral
     return Math.max(positiveYawMs, negativeYawMs) < CONSISTENT_TURN_FRACTION * (now - samples[repeatStart].at);
 }
 
-function isRidingWall(samples: MotionSample[]) {
+function isBlocked(samples: MotionSample[], axis: BlockingAxis) {
     let start = samples.length - 1;
     const current = samples[start];
-    while (start > 0) {
-        const previous = samples[start - 1];
-        const elapsed = samples[start].at - previous.at;
-        if (previous.input !== current.input || elapsed > MAX_SAMPLE_GAP_MS || current.at - previous.at > BUMP_WINDOW_MS) break;
-        start--;
-    }
-    return hasRepeatedBumps(samples, start, 'lateral', MIN_LATERAL_SWING_MPS)
-        || hasRepeatedBumps(samples, start, 'forward', MIN_FORWARD_SWING_MPS);
+    // Initial settling from the seed sample is not evidence of a rebound.
+    const evidenceStart = Math.max(current.inputSince[axis] + AVERAGE_SETTLE_MS, current.at - BUMP_WINDOW_MS);
+    while (start > 0 && samples[start - 1].at >= evidenceStart) start--;
+    return hasRepeatedBumps(samples, start, axis);
 }
 
 // Area under the penalty ramp, expressed in milliseconds at full strength.
@@ -92,32 +98,54 @@ export class DrivingBlockedMotionMonitor {
     observe({ measuredAt: at, context, controls, localVelocity, yawRate }: DrivingTelemetrySample) {
         const last = this.samples[this.samples.length - 1];
         if (last && at <= last.at) return;
-        const forward = localVelocity[context.game === 'iracing' ? 2 : 1];
-        let input: BlockedResponse;
-        if (controls.throttle > 0.3 && Math.abs(forward) < 0.5) input = 'throttle';
-        else if (forward > 0 && Math.abs(controls.steering) >= MIN_WALL_STEERING) input = controls.steering < 0 ? -1 : 1;
-        const current: MotionSample = { at, lateral: localVelocity[0], forward, yawRate, input, response: undefined };
+        const velocity = { vertical: localVelocity[context.game === 'iracing' ? 2 : 1], horizontal: localVelocity[0] };
+        const input = {
+            vertical: Number(controls.throttle > MIN_THROTTLE),
+            horizontal: Math.abs(controls.steering) >= MIN_STEERING ? Math.sign(controls.steering) : 0,
+        };
+        const inputSince = { vertical: at, horizontal: at };
+        const previous = last && at - last.at <= MAX_SAMPLE_GAP_MS ? last : undefined;
+        // Weight by elapsed time so the average behaves similarly at different sample rates.
+        const weight = previous ? 1 - Math.exp(-(at - previous.at) / VELOCITY_AVERAGE_MS) : 1;
+        // Average the magnitude so forward and backward movement cannot cancel into a standstill.
+        const measuredForwardSpeed = Math.abs(velocity.vertical);
+        const forwardSpeed = previous ? previous.forwardSpeed + weight * (measuredForwardSpeed - previous.forwardSpeed) : measuredForwardSpeed;
+        const pedalHeld = Math.max(controls.throttle, controls.brake) > MIN_STATIONARY_PEDAL;
+        const stationarySince = pedalHeld && forwardSpeed < STATIONARY_SPEED_MPS ? previous?.stationarySince ?? at : undefined;
+        const sustainedStop = stationarySince !== undefined && at - stationarySince >= STATIONARY_GRACE_MS;
+        if (previous) {
+            for (const axis of BLOCKING_AXES) {
+                if (previous.input[axis] === input[axis]) {
+                    velocity[axis] = previous.velocity[axis] + weight * (velocity[axis] - previous.velocity[axis]);
+                    inputSince[axis] = previous.inputSince[axis];
+                }
+            }
+        }
+        const current: MotionSample = { at, velocity, yawRate, input, inputSince,
+            blockedSince: { vertical: undefined, horizontal: undefined }, forwardSpeed, stationarySince };
         this.samples.push(current);
         if (this.samples.length > 512) this.samples.shift();
-        if (input === 'throttle' || (input && isRidingWall(this.samples))) current.response = input;
+        for (const axis of BLOCKING_AXES) {
+            if ((axis === 'vertical' && sustainedStop) || (input[axis] && isBlocked(this.samples, axis))) {
+                current.blockedSince[axis] = previous?.blockedSince[axis] ?? at;
+            }
+        }
     }
 
-    penaltyBetween(start: number, end: number) {
-        let rampStart: number | undefined;
-        let weightedMs = 0;
+    penaltyBetween(start: number, end: number): BlockedMotionPenalties {
+        const penalty = { vertical: 0, horizontal: 0 };
         for (let i = 1; i < this.samples.length; i++) {
             const from = this.samples[i - 1], to = this.samples[i];
             if (to.at > end) break;
-            if (!from.response || from.response !== to.response || to.at - from.at > MAX_SAMPLE_GAP_MS) {
-                rampStart = undefined;
-                continue;
-            }
-            rampStart ??= from.at + (from.response === 'throttle' ? THROTTLE_GRACE_MS : 0);
             const overlapStart = Math.max(start, from.at);
-            if (to.at > overlapStart) {
-                weightedMs += integratedStrength(to.at - rampStart) - integratedStrength(overlapStart - rampStart);
+            if (to.at <= overlapStart) continue;
+            for (const axis of BLOCKING_AXES) {
+                const rampStart = from.blockedSince[axis];
+                if (rampStart === undefined || rampStart !== to.blockedSince[axis]) continue;
+                const weightedMs = integratedStrength(to.at - rampStart) - integratedStrength(overlapStart - rampStart);
+                penalty[axis] -= PENALTY_PER_SECOND * weightedMs / 1000;
             }
         }
-        return weightedMs > 0 ? -PENALTY_PER_SECOND * weightedMs / 1000 : 0;
+        return penalty;
     }
 }

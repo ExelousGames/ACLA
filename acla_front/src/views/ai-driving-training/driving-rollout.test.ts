@@ -52,19 +52,19 @@ it('includes the terminal reward and retains the original input and executed con
     const oldInput = { features: [0], cameras: [] }, input = { features: [1], cameras: [] };
     const next = { features: [2], cameras: [] }, terminal = { features: [3], cameras: [] };
     const decision = { input: oldInput, plan: [{ latent: [0, 0, 0] }] } as unknown as PolicyDecision;
-    const action = { pedal: 0.4, steering: 0.3 };
-    const credits = [{ step: 0, weight: 1, action, shift: 0 as const, shifts: { up: true, down: true } }];
+    const action = { pedal: 0.4, steering: 0.3, gear: 4 };
+    const credits = [{ step: 0, weight: 1, action, gear: 4, gears: { max: 10 } }];
     const sequence: DrivingRolloutInterval[] = [
         { startedAt: 1000, endedAt: 1200, input, next,
             reward: 2, samples: [{ decision, credits, rewardShare: 1, startedAt: 1100 }] },
-        { startedAt: 1200, endedAt: 1400, input: next, next: terminal, nextShifts: { up: false, down: true },
+        { startedAt: 1200, endedAt: 1400, input: next, next: terminal, nextGears: { max: 4 },
             terminal: true, reward: -5, samples: [] },
         { startedAt: 1400, endedAt: 1600, reward: -10, samples: [] },
     ];
     // A later update/inference can change the live policy without changing the stored action.
     decision.plan[0].latent = [0.8, 0.5, -0.4];
     const [target] = drivingSequenceTargets(sequence, { ...cloneConfig().learning, discount: 0.5 });
-    expect(target).toMatchObject({ reward: -0.5, elapsedSeconds: 0.4, terminal: true, nextShifts: { up: false, down: true } });
+    expect(target).toMatchObject({ reward: -0.5, elapsedSeconds: 0.4, terminal: true, nextGears: { max: 4 } });
     expect(target.input).toBe(input);
     expect(target.next).toBe(terminal);
     expect(target.credits[0].action).toBe(action);
@@ -125,7 +125,7 @@ it.each([3, 4, 5])('waits for the %s-second return and frees GPU samples', async
     expect(learn.mock.calls[0][3]).toBe(seconds);
     for (const credit of learn.mock.calls[0][4]) {
         expect(credit.appliedAt).toBeGreaterThanOrEqual(1000);
-        expect(run.controller.apply).toHaveBeenCalledWith(drivingControllerAction(credit.action!));
+        expect(run.controller.apply).toHaveBeenCalledWith(expect.objectContaining(drivingControllerAction(credit.action!)));
     }
     expect(run.policy.steps).toBe(1);
     expect((await run.policy.checkpointAsync()).model.gruWeights).not.toEqual(before.model.gruWeights);
@@ -138,6 +138,7 @@ it.each([3, 4, 5])('waits for the %s-second return and frees GPU samples', async
 
 it('feeds a later impact into the critic target for earlier driving and keeps the AI in control', async () => {
     const run = setup(0.6), decide = jest.spyOn(run.policy, 'decideAsync');
+    run.policy.configuration.learning.explorationPlanIntervalSeconds = 1;
     await run.loop.start(run.policy, true); await flush();
     const gpu = await jest.mocked(DrivingGpuModel.create).mock.results[0].value;
     const rewards: number[] = [];
@@ -153,7 +154,8 @@ it('feeds a later impact into the critic target for earlier driving and keeps th
     const { discount } = run.policy.configuration.learning;
     expect(gpu.learnTransition).toHaveBeenCalledTimes(1);
     const [, next, target] = jest.mocked(gpu.learnTransition).mock.calls[0];
-    expect(next).toBe(decide.mock.calls[decide.mock.calls.length - 1][0]);
+    expect(decide).toHaveBeenCalledTimes(1);
+    expect(next.recurrent?.capturedAt).toBe(1600);
     expect(target).toMatchObject({ elapsedSeconds: 0.6, terminal: false,
         actions: [expect.objectContaining({ appliedAt: 1000, step: 0 })] });
     expect(target.reward).toBeCloseTo(rewards[0] + discount * rewards[1] + discount ** 2 * impact.total);

@@ -26,6 +26,7 @@ export function mockDrivingGpu() {
                 ({ index, width, height, channels, values: new Float32Array(width * height * channels) })) })),
             forward: jest.fn(async () => ({ pass: { released: false } as GpuPolicyPass,
                 outputs: weights.outputWeights.map((row) => row[config.network.hiddenUnits]), logStds: weights.sac.logStds.slice() })),
+            scoreActions: jest.fn(async (_pass: GpuPolicyPass, actions: readonly unknown[]) => actions.map((): [number, number] => [0, 0])),
             learnTransition: jest.fn(() => { if (config.learning.actorRate || config.learning.criticRate) changed(); }),
             learnTargets: jest.fn(() => { if (config.learning.demonstrationRate) changed(); }),
             observeDemonstration: jest.fn(),

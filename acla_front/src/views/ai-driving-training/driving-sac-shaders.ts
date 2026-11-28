@@ -1,7 +1,10 @@
-import { DRIVING_ANALOG_AXES, DrivingModelConfig, drivingExplorationSigmas } from './driving-model-config';
+import { DRIVING_ANALOG_AXES, DRIVING_GEAR_COUNT, DrivingModelConfig, drivingExplorationSigmas } from './driving-model-config';
+import { drivingGruStateWidth } from './driving-gru-shaders';
 import { drivingLearningRate } from './driving-update-shaders';
 
-export const sacPolicySampleFloats = 5 * DRIVING_ANALOG_AXES + 1 + 3;
+export const sacPolicySampleFloats = 5 * DRIVING_ANALOG_AXES + 1 + DRIVING_GEAR_COUNT;
+export const sacCurrentGearLimitOffset = 7;
+export const sacNextGearLimitOffset = 8;
 
 /** Hybrid SAC with reparameterized analog controls and exact gear expectations. */
 export function drivingSacShaders(config: DrivingModelConfig): Record<string, string> {
@@ -10,6 +13,10 @@ export function drivingSacShaders(config: DrivingModelConfig): Record<string, st
 const H = ${config.network.hiddenUnits}u;
 const AXES = ${DRIVING_ANALOG_AXES}u;
 const ACTIONS = ${config.actions.outputs.length}u;
+const GEARS = ACTIONS - AXES;
+const NEXT_EVALUATION = 1u + GEARS;
+const BEHAVIOR_ACTION = 9u;
+const NOISE = BEHAVIOR_ACTION + AXES + 1u;
 const QCOLS = H + ACTIONS + 1u;
 const QSIZE = H * QCOLS + H + 1u;
 const ALPHA = ${learning.entropyTemperature.toExponential()}f;
@@ -30,21 +37,21 @@ struct PolicySample {
     actionLogStdDerivative: array<f32, AXES>,
     logProbabilityMeanGradient: array<f32, AXES>,
     logProbabilityLogStdGradient: array<f32, AXES>,
-    gearProbabilities: array<f32, 3>,
+    gearProbabilities: array<f32, GEARS>,
 }
 `;
     const actionFunctions = `
-// Evaluation 0 is the replayed action, 1..3 the current policy and 4..6 the next policy.
+// The replayed action comes first, then the current and next gear distributions.
 fn actionValue(evaluation: u32, axis: u32) -> f32 {
-    if (evaluation == 0u) { return transition[11u + axis]; }
-    return samples[select(0u, 1u, evaluation >= 4u)].action[axis];
+    if (evaluation == 0u) { return transition[BEHAVIOR_ACTION + axis]; }
+    return samples[select(0u, 1u, evaluation >= NEXT_EVALUATION)].action[axis];
 }
 fn gearChoice(evaluation: u32) -> u32 {
-    if (evaluation == 0u) { return u32(transition[11u + AXES]); }
-    return (evaluation - 1u) % 3u;
+    if (evaluation == 0u) { return u32(transition[BEHAVIOR_ACTION + AXES]); }
+    return (evaluation - 1u) % GEARS;
 }
 fn inputValue(evaluation: u32, column: u32) -> f32 {
-    if (column < H) { return features[select(0u, H, evaluation >= 4u) + column]; }
+    if (column < H) { return features[select(0u, H, evaluation >= NEXT_EVALUATION) + column]; }
     if (column < H + AXES) { return actionValue(evaluation, column - H); }
     if (column < H + ACTIONS) { return select(0.0, 1.0, column - H - AXES == gearChoice(evaluation)); }
     return 1.0;
@@ -69,7 +76,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     for (var axis = 0u; axis < AXES; axis++) {
         let mean = outputValue(next, slot * ACTIONS + axis);
         let logStd = clamp(logStds[slot * AXES + axis], -7.0, 1.0) + STD_OFFSETS[axis];
-        let sigma = exp(logStd); let noise = transition[12u + AXES + id.x * AXES + axis];
+        let sigma = exp(logStd); let noise = transition[NOISE + id.x * AXES + axis];
         let perturbation = sigma * noise;
         let latent = mean + perturbation; let squashed = stableTanh(latent);
         var logDensity = -0.5 * noise * noise - logStd - 0.9189385332;
@@ -89,24 +96,23 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     // An interpolated future pedal/steering endpoint did not choose the gear.
     // Evaluate that analog sample under the gear command that actually ran.
     if (slot > 0u && transition[5] == 0.0) {
-        for (var gear = 0u; gear < 3u; gear++) {
-            samples[id.x].gearProbabilities[gear] = select(0.0, 1.0, gear == u32(transition[11u + AXES]));
+        for (var gear = 0u; gear < GEARS; gear++) {
+            samples[id.x].gearProbabilities[gear] = select(0.0, 1.0, gear == u32(transition[BEHAVIOR_ACTION + AXES]));
         }
         return;
     }
-    let mask = select(7u, 9u, next);
-    let allowed = array<bool, 3>(true, transition[mask] != 0.0, transition[mask + 1u] != 0.0);
+    let allowed = u32(transition[select(${sacCurrentGearLimitOffset}u, ${sacNextGearLimitOffset}u, next)]);
     var maximum = outputValue(next, slot * ACTIONS + AXES);
-    for (var gear = 1u; gear < 3u; gear++) {
-        if (allowed[gear]) { maximum = max(maximum, outputValue(next, slot * ACTIONS + AXES + gear)); }
+    for (var gear = 1u; gear < allowed; gear++) {
+        maximum = max(maximum, outputValue(next, slot * ACTIONS + AXES + gear));
     }
     var total = 0.0;
-    for (var gear = 0u; gear < 3u; gear++) {
+    for (var gear = 0u; gear < GEARS; gear++) {
         var probability = 0.0;
-        if (allowed[gear]) { probability = exp((outputValue(next, slot * ACTIONS + AXES + gear) - maximum) / TEMPERATURE); }
+        if (gear < allowed) { probability = exp((outputValue(next, slot * ACTIONS + AXES + gear) - maximum) / TEMPERATURE); }
         samples[id.x].gearProbabilities[gear] = probability; total += probability;
     }
-    for (var gear = 0u; gear < 3u; gear++) { samples[id.x].gearProbabilities[gear] /= total; }
+    for (var gear = 0u; gear < GEARS; gear++) { samples[id.x].gearProbabilities[gear] /= total; }
 }`,
         sacCriticForward: constants + sampleType + `
 @group(0) @binding(0) var<storage, read> weights: array<f32>;
@@ -125,7 +131,7 @@ fn weightValue(useTarget: bool, index: u32) -> f32 {
 @compute @workgroup_size(64)
 fn main(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) local: u32) {
     let evaluation = group.x / 2u; let critic = group.x % 2u;
-    let useTarget = evaluation >= 4u; let offset = critic * QSIZE;
+    let useTarget = evaluation >= NEXT_EVALUATION; let offset = critic * QSIZE;
     var result = 0.0;
     for (var unit = local; unit < H; unit += 64u) {
         var sum = 0.0;
@@ -141,6 +147,56 @@ fn main(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) lo
         workgroupBarrier();
     }
     if (local == 0u) { values[group.x] = sums[0] + weightValue(useTarget, offset + QSIZE - 1u); }
+}`,
+        sacScoreState: constants + `
+@group(0) @binding(0) var<storage, read> weights: array<f32>;
+@group(0) @binding(1) var<storage, read> states: array<f32>;
+@group(0) @binding(2) var<storage, read> count: array<u32>;
+@group(0) @binding(3) var<storage, read_write> stateSums: array<f32>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+    let unit = id.x;
+    let critic = id.y;
+    if (unit >= H) { return; }
+    let row = critic * QSIZE + unit * QCOLS;
+    let state = count[0] * ${drivingGruStateWidth}u * H;
+    var sum = 0.0;
+    for (var column = 0u; column < H; column++) {
+        sum += weights[row + column] * states[state + column];
+    }
+    stateSums[critic * H + unit] = sum + weights[row + QCOLS - 1u];
+}`,
+        sacScoreActions: constants + `
+@group(0) @binding(0) var<storage, read> weights: array<f32>;
+@group(0) @binding(1) var<storage, read> stateSums: array<f32>;
+@group(0) @binding(2) var<storage, read> candidates: array<f32>;
+@group(0) @binding(3) var<storage, read_write> scores: array<f32>;
+var<workgroup> sums: array<f32, 64>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(workgroup_id) group: vec3u, @builtin(local_invocation_index) local: u32) {
+    let candidate = group.x / 2u * (AXES + 1u);
+    let critic = group.x % 2u;
+    let offset = critic * QSIZE;
+    let gear = u32(candidates[candidate + AXES]);
+    var result = 0.0;
+    for (var unit = local; unit < H; unit += 64u) {
+        let row = offset + unit * QCOLS;
+        var sum = stateSums[critic * H + unit];
+        for (var axis = 0u; axis < AXES; axis++) {
+            sum += weights[row + H + axis] * candidates[candidate + axis];
+        }
+        sum += weights[row + H + AXES + gear];
+        result += stableTanh(sum) * weights[offset + H * QCOLS + unit];
+    }
+    sums[local] = result;
+    workgroupBarrier();
+    for (var stride = 32u; stride > 0u; stride /= 2u) {
+        if (local < stride) { sums[local] += sums[local + stride]; }
+        workgroupBarrier();
+    }
+    if (local == 0u) { scores[group.x] = sums[0] + weights[offset + QSIZE - 1u]; }
 }`,
         sacLoss: constants + sampleType + `
 @group(0) @binding(0) var<storage, read> transition: array<f32>;
@@ -170,9 +226,9 @@ fn criticActionGradient(evaluation: u32) -> vec2f {
 fn main() {
     var currentValue = 0.0;
     var actionGradient = vec2f(0.0);
-    var gearObjectives: array<f32, 3>;
+    var gearObjectives: array<f32, GEARS>;
     let referenceQ = min(values[2], values[3]);
-    for (var gear = 0u; gear < 3u; gear++) {
+    for (var gear = 0u; gear < GEARS; gear++) {
         let probability = samples[0].gearProbabilities[gear];
         let evaluation = 1u + gear;
         let q = min(values[evaluation * 2u], values[evaluation * 2u + 1u]);
@@ -189,9 +245,10 @@ fn main() {
         var bellmanTarget = transition[0];
         if (transition[2] == 0.0 && ${learning.discount.toExponential()}f > 0.0) {
             var nextValue = 0.0;
-            for (var gear = 0u; gear < 3u; gear++) {
+            for (var gear = 0u; gear < GEARS; gear++) {
                 let p = samples[1].gearProbabilities[gear];
-                nextValue += p * (min(values[(4u + gear) * 2u], values[(4u + gear) * 2u + 1u]) - ALPHA * log(max(p, 1e-30)));
+                let pair = (NEXT_EVALUATION + gear) * 2u;
+                nextValue += p * (min(values[pair], values[pair + 1u]) - ALPHA * log(max(p, 1e-30)));
             }
             bellmanTarget += pow(${learning.discount.toExponential()}f, transition[1] / ${learning.discountIntervalSeconds.toExponential()}f) * (nextValue - ALPHA * samples[1].logProbability);
         }
@@ -205,7 +262,7 @@ fn main() {
         outputGradient[slot * ACTIONS + axis] += transition[4] * ACTOR_RATE * clamp(meanGradient, -POLICY_LIMIT, POLICY_LIMIT);
         stdGradient[slot * AXES + axis] += transition[4] * ACTOR_RATE * clamp(logStdGradient, -POLICY_LIMIT, POLICY_LIMIT);
     }
-    for (var gear = 0u; gear < 3u; gear++) {
+    for (var gear = 0u; gear < GEARS; gear++) {
         outputGradient[slot * ACTIONS + AXES + gear] += transition[5] * ACTOR_RATE * clamp(samples[0].gearProbabilities[gear] * (gearObjectives[gear] - currentValue) / TEMPERATURE, -POLICY_LIMIT, POLICY_LIMIT);
     }
 }`,

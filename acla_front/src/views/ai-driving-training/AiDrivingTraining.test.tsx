@@ -4,10 +4,10 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import AiDrivingTraining from './AiDrivingTraining';
 import type { ObservationResult } from './driving-observation';
 import { circuitMapFixture, referenceLapFixture, trainingFixture } from './training-fixtures';
-import { DrivingPolicy, emptyTrainingDocument } from './driving-policy';
+import { DrivingPolicy, emptyTrainingDocument, type PolicyCheckpoint } from './driving-policy';
 import { DrivingGpuModel } from './driving-gpu-model';
 import { DrivingTrainingLoop } from './driving-training-loop';
-import { cloneConfig } from './driving-model-config';
+import { cloneConfig, DRIVING_ANALOG_AXES, DRIVING_GEAR_COUNT, DRIVING_MAX_GEAR, drivingGearIndex } from './driving-model-config';
 import { liveTelemetryStore } from 'views/live-session/live-telemetry-store';
 import { SessionScreenFrameReader } from 'views/live-session/live-session-recording/session-screen-frame';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
@@ -37,6 +37,16 @@ const renderTraining = async (onOpenLiveSession = () => undefined) => {
     const view = render(<AiDrivingTraining onOpenLiveSession={onOpenLiveSession} />);
     await flush();
     return view;
+};
+const setCheckpointTargetGear = (checkpoint: PolicyCheckpoint, gear: number) => {
+    const { outputs, planTimesSeconds } = checkpoint.configuration.actions;
+    planTimesSeconds.forEach((_, step) => {
+        const firstGear = step * outputs.length + DRIVING_ANALOG_AXES;
+        checkpoint.model.outputWeights.slice(firstGear, firstGear + DRIVING_GEAR_COUNT).forEach((row, i) => {
+            row.fill(0);
+            row[row.length - 1] = i === drivingGearIndex(gear) ? 4 : 0;
+        });
+    });
 };
 
 beforeEach(() => {
@@ -275,37 +285,56 @@ it.each([20, 80])('shows a brief %s km/h impact from live telemetry between slow
 });
 
 it.each([
-    { motion: 'standstill', forward: 0, steering: 0, rebound: 0, expectedPenalty: -0.85 },
-    { motion: 'shallow rebounds', forward: 20, steering: 0.05, rebound: 0.33, expectedPenalty: -0.089 },
-])('shows the blocked-motion penalty for $motion between AI frames', async ({ forward, steering, rebound, expectedPenalty }) => {
+    { motion: 'forward/backward rebounds', blocking: 'Forward/backward',
+        forward: -1, forwardRebound: 1, lateralRebound: 0, steering: 0, gear: 3, pedal: 0.8 },
+    { motion: 'sideways rebounds', blocking: 'Horizontal',
+        forward: 20, forwardRebound: 20, lateralRebound: 1.2, steering: 0.3, gear: 3, pedal: 0.8 },
+    { motion: 'stationary throttle in neutral', blocking: 'Forward/backward',
+        forward: 0, forwardRebound: 0, lateralRebound: 0, steering: 0, gear: 0, pedal: 0.8 },
+    { motion: 'stationary braking', blocking: 'Forward/backward',
+        forward: 0, forwardRebound: 0, lateralRebound: 0, steering: 0, gear: 1, pedal: -0.8 },
+])('shows only the $blocking blocking penalty for $motion', async ({ blocking, forward, forwardRebound, lateralRebound, steering, gear, pedal }) => {
     const fixture = trainingFixture(Date.now());
     act(() => liveTelemetryStore.resetSession());
+    const throttle = Math.max(0, pedal);
+    const brake = Math.max(0, -pedal);
     let sequence = 0;
-    const publish = (lateral = 0) => {
+    const publish = (lateral = 0, longitudinal = forward) => {
         sequence++;
         liveTelemetryStore.publishFrame({ type: 'frame', game: 'acc', sequence,
             committedSequence: sequence, committedCount: sequence, sample: { ...fixture.live.currentTelemetry,
-                Physics_local_velocity_x: lateral, Physics_local_velocity_y: forward, Physics_speed_kmh: forward * 3.6,
-                Physics_local_angular_vel_z: 0, Physics_steer_angle: steering, Physics_gas: 0.8 } });
+                Physics_local_velocity_x: lateral, Physics_local_velocity_y: longitudinal,
+                Physics_speed_kmh: Math.hypot(lateral, longitudinal) * 3.6,
+                Physics_local_angular_vel_z: 0, Physics_steer_angle: steering, Physics_gas: throttle, Physics_brake: brake,
+                Physics_gear: gear + 1 } });
     };
     act(() => publish());
     const live = liveTelemetryStore.getSnapshot();
-    const initial = { ...fixture.observation, speed: forward * 3.6, localVelocity: [0, forward, 0] as [number, number, number],
-        yawRate: 0, controls: { ...fixture.observation.controls, throttle: 0.8, steering },
+    const initial = { ...fixture.observation, speed: Math.abs(forward) * 3.6, localVelocity: [0, forward, 0] as [number, number, number],
+        yawRate: 0, gear, controls: { throttle, brake, steering },
         session: JSON.stringify([live.sessionGeneration, live.streamGeneration, 'acc', 'GT3', 'monza']) };
     mockInput = { observation: initial };
     await renderTraining();
-    expect(getDefinition('Blocked-motion penalty').textContent).toBe('0');
+    for (const direction of ['Forward/backward', 'Horizontal']) {
+        expect(getDefinition(`${direction} blocking penalty`)).toHaveTextContent('0');
+    }
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     fireEvent.click(screen.getByRole('button', { name: 'Start training' })); await flush();
-    for (let i = 0; i <= 10; i++) {
-        const lateral = i === 2 || i === 8 ? rebound : 0;
-        act(() => { jest.advanceTimersByTime(100); publish(lateral); }); await flush();
+    for (let i = 0; i < 28; i++) {
+        const rebounding = i % 8 >= 4;
+        act(() => {
+            jest.advanceTimersByTime(50);
+            publish(rebounding ? lateralRebound : 0, rebounding ? forwardRebound : forward);
+        });
+        await flush();
     }
     mockInput = { observation: { ...initial, capturedAt: Date.now(), measuredAt: Date.now() } };
     act(() => { jest.advanceTimersByTime(20); }); await flush();
-    expect(Number(getDefinition('Blocked-motion penalty').textContent)).toBeCloseTo(expectedPenalty);
-    expect(getDefinition('Impact penalty').textContent).toBe('0');
+    for (const direction of ['Forward/backward', 'Horizontal']) {
+        const penalty = Number(getDefinition(`${direction} blocking penalty`).textContent);
+        if (direction === blocking) expect(penalty).toBeLessThan(0);
+        else expect(penalty).toBe(0);
+    }
     const rewardBreakdown = within(screen.getByRole('region', { name: 'Reward signal' })).getAllByRole('definition')
         .reduce((total, entry) => total + Number(entry.textContent), 0);
     expect(screen.getByText((text) => Math.abs(Number(text) - rewardBreakdown) < 1e-9, { selector: 'strong' })).toBeInTheDocument();
@@ -452,10 +481,8 @@ it('displays the complete action plan in one table and clears it on Stop', async
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
     act(() => { jest.advanceTimersByTime(250); });
     fireEvent.click(screen.getByRole('button', { name: 'Run trained model' })); await flush();
-    expect(screen.getByText(/One action plan predicts 51 control steps from 0 to 5 seconds/)).toBeInTheDocument();
-    expect(screen.getByText(/the remaining gear actions change \(not just their timing\)/)).toHaveTextContent('Exploration can trigger a refresh too.');
-    expect(screen.getByText(/at least 40% on average across the remaining steps, or once the current plan has run for 4 seconds/)).toBeInTheDocument();
     expect(within(table).getAllByRole('row')).toHaveLength(52);
+    expect(within(table).getByRole('columnheader', { name: 'Target gear' })).toBeInTheDocument();
     expect(within(table).getAllByRole('rowheader').map((cell) => cell.textContent))
         .toEqual(Array.from({ length: 51 }, (_, step) => `${(step / 10).toFixed(1)} s`));
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
@@ -521,7 +548,6 @@ it('shows direct observation inputs without summary metadata', async () => {
     });
     expect(getDefinition('Camera image')).toHaveTextContent('384 × 216 RGB');
     expect(getDefinition('Camera image')).not.toHaveTextContent(/history/);
-    expect(screen.getByText(/5-second observation history covers all AI observation inputs/)).toHaveTextContent('sampled in 300 ms bins');
     for (const label of ['Reconstructed scene', 'Depth model', 'Segmentation labels']) {
         expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
@@ -540,7 +566,7 @@ it.each([true, false])('displays the live consumer sample without independently 
     config.network.cameraLayers.forEach((layer) => { layer.channels = 2; });
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
     checkpoint.model.steps = 10;
-    checkpoint.model.outputWeights.slice(2, 5).forEach((row, i) => { row.fill(0); row[row.length - 1] = i === 0 ? 4 : 0; });
+    setCheckpointTargetGear(checkpoint, observation.gear);
     files.set(MODEL_PATH, JSON.stringify(checkpoint));
     mockInput = { observation: { ...observation, speed: 108 } };
     await renderTraining();
@@ -633,8 +659,8 @@ it('shows completed driving model timings without running timers and retains the
     mockInput = { observation };
     let finish!: () => void;
     const decide = DrivingPolicy.prototype.decideAsync;
-    jest.spyOn(DrivingPolicy.prototype, 'decideAsync').mockImplementation(function (this: DrivingPolicy, input, explore, shifts) {
-        const decision = decide.call(this, input, explore, shifts);
+    jest.spyOn(DrivingPolicy.prototype, 'decideAsync').mockImplementation(function (this: DrivingPolicy, input, explore, gears) {
+        const decision = decide.call(this, input, explore, gears);
         return new Promise((resolve) => { finish = () => resolve(decision); });
     });
     await renderTraining();
@@ -661,14 +687,16 @@ it('shows completed driving model timings without running timers and retains the
     expect(screen.getByText(/Latest model cycle: Evaluation · AI control/)).toHaveTextContent('Finished 500 ms ago.');
 });
 
-it('reports the saved history scope when a model selects only some observation inputs', async () => {
-    const document = emptyTrainingDocument();
-    document.configuration.memory.windowMs = 600;
-    document.configuration.memory.intervalMs = 300;
-    document.configuration.memory.features = ['speed', 'camera'];
-    files.set(MODEL_PATH, JSON.stringify(document));
+it('omits the AI driver overview while keeping the recorded-session guidance', async () => {
     await renderTraining();
-    expect(screen.getByText(/observation history covers the observation inputs selected in this saved model/)).toBeInTheDocument();
+    const aiDriver = within(screen.getByRole('region', { name: 'AI driver' }));
+    const overview = /Start AI training or evaluation|CNN–GRU soft actor–critic|observation history covers|Live training learns|One action plan predicts|When running a trained model|Each model JSON contains|Use the same model across games/;
+    expect(aiDriver.queryByText(overview)).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('AI observation input source'), { target: { value: 'recorded' } });
+    await flush();
+    expect(aiDriver.queryByText(overview)).not.toBeInTheDocument();
+    expect(aiDriver.getByText(/Recorded training learns signed pedal intent/)).toBeInTheDocument();
 });
 
 it('shows motion inputs with axes and units, and clears them when observations are unavailable', async () => {
@@ -757,6 +785,7 @@ it.each([true, false])('keeps the session active through invalid inputs and resu
     config.network.cameraProjectionUnits = 8;
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
     checkpoint.model.steps = 10;
+    setCheckpointTargetGear(checkpoint, observation.gear);
     files.set(MODEL_PATH, JSON.stringify(checkpoint));
     mockInput = { observation };
     await renderTraining();
@@ -812,11 +841,17 @@ it('removes retired saves and starts a new JSON model', async () => {
     expect(localStorage.getItem('unrelated')).toBe('keep');
 });
 
-it.each([1, 2])('shows and releases a saved model’s learned shift choice %s', async (shift) => {
+it.each([
+    { gear: 4, label: '4' }, { gear: 2, label: '2' }, { gear: 0, label: '0 (N)' }, { gear: -1, label: '-1 (R)' },
+])('shows a saved model’s target gear $gear and pulses the corresponding paddle', async ({ gear, label: targetLabel }) => {
     const { observation } = trainingFixture(Date.now());
-    const checkpoint = new DrivingPolicy(observation.context, observation.features.length).checkpoint();
+    const config = cloneConfig();
+    config.network.hiddenUnits = 3;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 2; });
+    config.network.cameraProjectionUnits = 8;
+    const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
     checkpoint.model.steps = 10;
-    checkpoint.model.outputWeights.slice(2, 5).forEach((row, i) => { row.fill(0); row[row.length - 1] = i === shift ? 4 : 0; });
+    setCheckpointTargetGear(checkpoint, gear);
     files.set(MODEL_PATH, JSON.stringify(checkpoint));
     mockInput = { observation };
     await renderTraining();
@@ -825,8 +860,11 @@ it.each([1, 2])('shows and releases a saved model’s learned shift choice %s', 
     expect(screen.getByText('3 / 6000')).toBeInTheDocument();
     expect(screen.getByText(/Disable automatic gears/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Run trained model' })); await flush();
-    expect(window.virtualController!.apply).toHaveBeenLastCalledWith(expect.objectContaining({ shiftUp: shift === 1, shiftDown: shift === 2 }));
-    const label = shift === 1 ? 'Shift up output' : 'Shift down output';
+    const firstStep = within(screen.getByRole('table', { name: 'Planned driving actions' })).getAllByRole('row')[1];
+    expect(within(firstStep).getAllByRole('cell')[2]).toHaveTextContent(targetLabel);
+    const up = gear > observation.gear;
+    expect(window.virtualController!.apply).toHaveBeenLastCalledWith(expect.objectContaining({ shiftUp: up, shiftDown: !up }));
+    const label = up ? 'Shift up output' : 'Shift down output';
     expect(screen.getByLabelText(label)).toHaveTextContent('Pressed');
     // Let each 20 ms control tick settle throughout the 100 ms paddle pulse.
     for (let elapsed = 0; elapsed < 100; elapsed += 20) {
@@ -1145,21 +1183,54 @@ it.each(['Stop', 'Escape', 'Disconnect', 'blur', 'pointerCancel', 'lostPointerCa
     expect(api.apply).toHaveBeenCalledTimes(count);
 });
 
+const explorationDurationLabels = ['Throttle/brake', 'Steering', 'Gear'].map((control) => `${control} exploration duration (s)`);
+const setSeconds = (input: HTMLElement, value: number) => {
+    fireEvent.change(input, { target: { value: String(value) } });
+    fireEvent.blur(input);
+};
+
 it('saves exploration with an untrained model, restores it on remount and resets its defaults', async () => {
     const view = await renderTraining();
+    const panel = () => within(screen.getByRole('group', { name: 'Training exploration' }));
+    let settings = panel();
     const labels = ['Throttle/brake exploration', 'Steering exploration'];
-    const sliders = labels.map((name) => screen.getByRole('slider', { name }));
-    const gears = screen.getByRole('slider', { name: 'Gear exploration' });
-    const speedLimit = () => screen.getByRole('slider', { name: 'Throttle exploration speed limit' });
-    const maxGear = () => screen.getByRole('combobox', { name: 'Maximum gear to explore' });
-    const frequencyLabels = ['Throttle/brake', 'Steering', 'Gear'].map((control) => `${control} exploration update frequency`);
-    const frequencies = frequencyLabels.map((name) => screen.getByRole('slider', { name }));
-    const defaultFrequencies = ['2', '2', '10'];
-    frequencies.forEach((slider, i) => expect(slider).toHaveValue(defaultFrequencies[i]));
+    const sliders = labels.map((name) => settings.getByLabelText(name));
+    const gearSlider = () => settings.getByLabelText('Gear exploration');
+    const gears = gearSlider();
+    const speedLimit = () => settings.getByLabelText('Throttle exploration speed limit');
+    const maxGear = () => settings.getByLabelText('Maximum gear to explore');
+    const rangeLimit = (name: string) => settings.getByLabelText(`${name} (%)`);
+    const sampleCount = (name: string) => settings.getByLabelText(`${name} samples`);
+    const setRangeLimit = (name: string, value: string) => {
+        const input = rangeLimit(name);
+        fireEvent.change(input, { target: { value } });
+        fireEvent.blur(input);
+    };
+    const durations = explorationDurationLabels.map((name) => settings.getByLabelText(name));
+    const defaultDurations = [0.5, 0.5, 0.1];
+    const planInterval = () => settings.getByLabelText('New plan interval (s)');
+    const randomToggle = () => settings.getByRole('button', { name: 'Random exploration' });
+    const directedToggle = () => settings.getByRole('button', { name: 'Directed exploration' });
+    expect(randomToggle()).toHaveAttribute('aria-pressed', 'true');
+    expect(directedToggle()).toHaveAttribute('aria-pressed', 'true');
+    expect(planInterval()).toHaveValue(2);
+    durations.forEach((input, i) => expect(input).toHaveValue(defaultDurations[i]));
     sliders.forEach((slider) => expect(slider).toHaveValue('0.05'));
     expect(gears).toHaveValue('0.25');
     expect(speedLimit()).toHaveValue('400');
     expect(maxGear()).toHaveDisplayValue('Unlimited');
+    ['Steering', 'Throttle/brake'].forEach((control) => {
+        expect(rangeLimit(`${control} minimum`)).toHaveValue(-100);
+        expect(rangeLimit(`${control} maximum`)).toHaveValue(100);
+        expect(sampleCount(control)).toHaveValue('9');
+    });
+    setRangeLimit('Steering maximum', '40');
+    setRangeLimit('Steering minimum', '75');
+    expect(rangeLimit('Steering minimum')).toHaveValue(40);
+    setRangeLimit('Throttle/brake minimum', '-65.5');
+    setRangeLimit('Throttle/brake maximum', '25');
+    fireEvent.change(sampleCount('Steering'), { target: { value: '5' } });
+    fireEvent.change(sampleCount('Throttle/brake'), { target: { value: '15' } });
     fireEvent.change(maxGear(), { target: { value: '4' } });
     fireEvent.change(speedLimit(), { target: { value: '120' } });
     expect(speedLimit()).toHaveAttribute('aria-valuetext', '120 km/h');
@@ -1167,33 +1238,77 @@ it('saves exploration with an untrained model, restores it on remount and resets
     expect(sliders[1]).toHaveValue('0.05');
     fireEvent.change(sliders[1], { target: { value: '0.35' } });
     expect(sliders[0]).toHaveValue('0.15');
-    const frequencyValues = ['2.5', '0.5', '5'];
-    frequencies.forEach((slider, i) => {
-        fireEvent.change(slider, { target: { value: frequencyValues[i] } });
-        frequencies.forEach((other, j) => expect(other).toHaveValue(j <= i ? frequencyValues[j] : defaultFrequencies[j]));
+    const durationValues = [0.4, 2, 0.2];
+    durations.forEach((input, i) => {
+        setSeconds(input, durationValues[i]);
+        durations.forEach((other, j) => expect(other).toHaveValue(j <= i ? durationValues[j] : defaultDurations[j]));
     });
-    expect(screen.getByText('2.5 Hz · every 0.4 s')).toBeInTheDocument();
-    fireEvent.change(gears, { target: { value: '0.6' } }); await flush();
+    fireEvent.change(gears, { target: { value: '0.6' } });
+    setSeconds(planInterval(), 0.75);
+    fireEvent.click(randomToggle());
+    expect(randomToggle()).toHaveAttribute('aria-pressed', 'false');
+    expect(randomToggle()).toBeEnabled();
+    expect(directedToggle()).toHaveAttribute('aria-pressed', 'true');
+    expect(gears).toBeDisabled();
+    expect(rangeLimit('Steering minimum')).toBeEnabled();
+    fireEvent.click(directedToggle());
+    expect(directedToggle()).toBeEnabled();
+    expect(directedToggle()).toHaveAttribute('aria-pressed', 'false');
+    expect(rangeLimit('Steering minimum')).toBeDisabled();
+    expect(planInterval()).toBeEnabled();
+    fireEvent.click(randomToggle());
+    expect(randomToggle()).toHaveAttribute('aria-pressed', 'true');
+    expect(gears).toBeEnabled();
+    expect(gears).toHaveValue('0.6');
+    expect(directedToggle()).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(randomToggle());
+    await flush();
     expect(JSON.parse(files.get(MODEL_PATH)!)).toMatchObject({ model: null,
-        configuration: { learning: { pedalExplorationSigma: 0.15, throttleExplorationSpeedLimitKmh: 120,
+        configuration: { learning: { randomExplorationEnabled: false, directedExplorationEnabled: false, explorationPlanIntervalSeconds: 0.75,
+            pedalExplorationSigma: 0.15, throttleExplorationSpeedLimitKmh: 120,
             steeringExplorationSigma: 0.35, shiftTemperature: 0.6, maxExplorationGear: 4, pedalExplorationUpdateHz: 2.5,
-            steeringExplorationUpdateHz: 0.5, gearExplorationUpdateHz: 5 } } });
+            steeringExplorationUpdateHz: 0.5, gearExplorationUpdateHz: 5, directedSteeringMin: 0.4, directedSteeringMax: 0.4,
+            directedSteeringSamples: 5, directedPedalMin: -0.655, directedPedalMax: 0.25, directedPedalSamples: 15 } } });
     view.unmount();
     await renderTraining();
-    labels.forEach((name, i) => expect(screen.getByRole('slider', { name })).toHaveValue(['0.15', '0.35'][i]));
-    expect(screen.getByRole('slider', { name: 'Gear exploration' })).toHaveValue('0.6');
+    settings = panel();
+    expect(randomToggle()).toHaveAttribute('aria-pressed', 'false');
+    expect(directedToggle()).toHaveAttribute('aria-pressed', 'false');
+    expect(planInterval()).toHaveValue(0.75);
+    labels.forEach((name, i) => expect(settings.getByLabelText(name)).toHaveValue(['0.15', '0.35'][i]));
+    expect(gearSlider()).toHaveValue('0.6');
     expect(speedLimit()).toHaveValue('120');
     expect(maxGear()).toHaveValue('4');
-    frequencyLabels.forEach((name, i) => expect(screen.getByRole('slider', { name })).toHaveValue(frequencyValues[i]));
-    fireEvent.click(screen.getByRole('button', { name: 'Reset exploration' })); await flush();
-    labels.forEach((name) => expect(screen.getByRole('slider', { name })).toHaveValue('0.05'));
-    expect(screen.getByRole('slider', { name: 'Gear exploration' })).toHaveValue('0.25');
+    expect(rangeLimit('Steering minimum')).toHaveValue(40);
+    expect(rangeLimit('Steering maximum')).toHaveValue(40);
+    expect(rangeLimit('Throttle/brake minimum')).toHaveValue(-65.5);
+    expect(rangeLimit('Throttle/brake maximum')).toHaveValue(25);
+    expect(sampleCount('Steering')).toHaveValue('5');
+    expect(sampleCount('Throttle/brake')).toHaveValue('15');
+    explorationDurationLabels.forEach((name, i) => expect(settings.getByLabelText(name)).toHaveValue(durationValues[i]));
+    fireEvent.click(settings.getByRole('button', { name: 'Reset exploration' })); await flush();
+    expect(randomToggle()).toHaveAttribute('aria-pressed', 'true');
+    expect(directedToggle()).toHaveAttribute('aria-pressed', 'true');
+    expect(planInterval()).toHaveValue(2);
+    labels.forEach((name) => expect(settings.getByLabelText(name)).toHaveValue('0.05'));
+    expect(gearSlider()).toHaveValue('0.25');
     expect(speedLimit()).toHaveValue('400');
     expect(maxGear()).toHaveDisplayValue('Unlimited');
-    frequencyLabels.forEach((name, i) => expect(screen.getByRole('slider', { name })).toHaveValue(defaultFrequencies[i]));
+    ['Steering', 'Throttle/brake'].forEach((control) => {
+        expect(rangeLimit(`${control} minimum`)).toHaveValue(-100);
+        expect(rangeLimit(`${control} maximum`)).toHaveValue(100);
+        expect(sampleCount(control)).toHaveValue('9');
+    });
+    explorationDurationLabels.forEach((name, i) => expect(settings.getByLabelText(name)).toHaveValue(defaultDurations[i]));
     expect(JSON.parse(files.get(MODEL_PATH)!).configuration.learning).toMatchObject({ pedalExplorationSigma: 0.05, throttleExplorationSpeedLimitKmh: 400,
+        randomExplorationEnabled: true, directedExplorationEnabled: true, explorationPlanIntervalSeconds: 2,
         steeringExplorationSigma: 0.05, shiftTemperature: 0.25, maxExplorationGear: 0,
-        pedalExplorationUpdateHz: 2, steeringExplorationUpdateHz: 2, gearExplorationUpdateHz: 10 });
+        pedalExplorationUpdateHz: 2, steeringExplorationUpdateHz: 2, gearExplorationUpdateHz: 10,
+        directedSteeringMin: -1, directedSteeringMax: 1, directedSteeringSamples: 9,
+        directedPedalMin: -1, directedPedalMax: 1, directedPedalSamples: 9 });
+    fireEvent.change(screen.getByLabelText('AI observation input source'), { target: { value: 'recorded' } });
+    await flush();
+    expect(screen.queryByRole('group', { name: 'Training exploration' })).not.toBeInTheDocument();
 });
 
 it.each([true, false])('loads exploration into the GPU and locks it for the run without changing weights (training=%s)', async (train) => {
@@ -1217,14 +1332,18 @@ it.each([true, false])('loads exploration into the GPU and locks it for the run 
         .map((name) => screen.getByRole('slider', { name }));
     const gears = screen.getByRole('slider', { name: 'Gear exploration' });
     const maxGear = screen.getByRole('combobox', { name: 'Maximum gear to explore' });
-    const frequencies = ['Throttle/brake', 'Steering', 'Gear']
-        .map((control) => screen.getByRole('slider', { name: `${control} exploration update frequency` }));
-    frequencies.forEach((slider, i) => expect(slider).toHaveValue(String(i + 1)));
+    const steeringMin = screen.getByRole('spinbutton', { name: 'Steering minimum (%)' });
+    const pedalSamples = screen.getByRole('combobox', { name: 'Throttle/brake samples' });
+    const durations = explorationDurationLabels.map((name) => screen.getByRole('spinbutton', { name }));
+    const planInterval = screen.getByRole('spinbutton', { name: 'New plan interval (s)' });
+    const toggles = ['Random exploration', 'Directed exploration'].map((name) => screen.getByRole('button', { name }));
+    durations.forEach((input, i) => expect(input).toHaveValue([1, 0.5, 0.333333][i]));
     sliders.forEach((slider, i) => expect(slider).toHaveValue(['0.12', '0.14'][i]));
     expect(gears).toHaveValue('0.4');
     fireEvent.change(maxGear, { target: { value: String(observation.gear) } });
     sliders.forEach((slider, i) => fireEvent.change(slider, { target: { value: ['0.2', '0.4'][i] } }));
-    frequencies.forEach((slider, i) => fireEvent.change(slider, { target: { value: String(4 - i) } }));
+    durations.forEach((input, i) => setSeconds(input, [0.25, 0.4, 0.5][i]));
+    setSeconds(planInterval, 0.8);
     fireEvent.change(gears, { target: { value: '0.7' } }); await flush();
     expect(JSON.parse(files.get(MODEL_PATH)!).model).toEqual(checkpoint.model);
     fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
@@ -1233,31 +1352,35 @@ it.each([true, false])('loads exploration into the GPU and locks it for the run 
     sliders.forEach((slider) => expect(slider).toBeDisabled());
     expect(gears).toBeDisabled();
     expect(maxGear).toBeDisabled();
-    frequencies.forEach((slider) => expect(slider).toBeDisabled());
+    expect(steeringMin).toBeDisabled();
+    expect(pedalSamples).toBeDisabled();
+    [...durations, ...toggles, planInterval].forEach((control) => expect(control).toBeDisabled());
     await flush();
     expect(DrivingGpuModel.create).toHaveBeenLastCalledWith(expect.objectContaining({
         learning: expect.objectContaining({ pedalExplorationSigma: 0.2,
             steeringExplorationSigma: 0.4, shiftTemperature: 0.7, pedalExplorationUpdateHz: 4,
-            steeringExplorationUpdateHz: 3, gearExplorationUpdateHz: 2 }),
+            steeringExplorationUpdateHz: 2.5, gearExplorationUpdateHz: 2, explorationPlanIntervalSeconds: 0.8 }),
     }), checkpoint.model);
-    expect(decide).toHaveBeenCalledWith(expect.anything(), train, { up: !train, down: true });
+    expect(decide).toHaveBeenCalledWith(expect.anything(), train, { max: train ? observation.gear : DRIVING_MAX_GEAR });
     sliders.forEach((slider) => expect(slider).toBeDisabled());
     expect(gears).toBeDisabled();
-    frequencies.forEach((slider) => expect(slider).toBeDisabled());
+    [...durations, ...toggles, planInterval].forEach((control) => expect(control).toBeDisabled());
     expect(screen.getByRole('button', { name: 'Reset exploration' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
     sliders.forEach((slider) => expect(slider).toBeEnabled());
     expect(gears).toBeEnabled();
     expect(maxGear).toBeEnabled();
-    frequencies.forEach((slider) => expect(slider).toBeEnabled());
-    fireEvent.change(frequencies[2], { target: { value: '0.5' } });
+    expect(steeringMin).toBeEnabled();
+    expect(pedalSamples).toBeEnabled();
+    [...durations, ...toggles, planInterval].forEach((control) => expect(control).toBeEnabled());
+    setSeconds(durations[2], 2);
     fireEvent.change(sliders[0], { target: { value: '0.08' } }); await flush();
     fireEvent.click(screen.getByRole('button', { name: startLabel })); await flush();
     expect(DrivingGpuModel.create).toHaveBeenCalledTimes(2);
     expect(DrivingGpuModel.create).toHaveBeenLastCalledWith(expect.objectContaining({
         learning: expect.objectContaining({ pedalExplorationSigma: 0.08,
             steeringExplorationSigma: 0.4, shiftTemperature: 0.7, pedalExplorationUpdateHz: 4,
-            steeringExplorationUpdateHz: 3, gearExplorationUpdateHz: 0.5 }),
+            steeringExplorationUpdateHz: 2.5, gearExplorationUpdateHz: 0.5, explorationPlanIntervalSeconds: 0.8 }),
     }), checkpoint.model);
     fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
 });
@@ -1268,8 +1391,10 @@ it('keeps exploration disabled until a model file is selected', async () => {
     ['Throttle/brake exploration', 'Steering exploration'].forEach((name) =>
         expect(screen.getByRole('slider', { name })).toBeDisabled());
     expect(screen.getByRole('slider', { name: 'Gear exploration' })).toBeDisabled();
-    ['Throttle/brake', 'Steering', 'Gear'].forEach((control) =>
-        expect(screen.getByRole('slider', { name: `${control} exploration update frequency` })).toBeDisabled());
+    [...explorationDurationLabels, 'New plan interval (s)'].forEach((name) =>
+        expect(screen.getByRole('spinbutton', { name })).toBeDisabled());
+    ['Random exploration', 'Directed exploration'].forEach((name) =>
+        expect(screen.getByRole('button', { name })).toBeDisabled());
     expect(screen.getByRole('button', { name: 'Reset exploration' })).toBeDisabled();
     expect(window.drivingModelFiles!.write).not.toHaveBeenCalled();
 });
@@ -1446,6 +1571,7 @@ it('reloads JSON weights, aggression and plan timing every time evaluation start
             checkpoint.configuration.actions.planTimesSeconds.length * checkpoint.configuration.actions.outputs.length + 1);
         checkpoint.model.sac.logStds = checkpoint.model.sac.logStds.slice(0, checkpoint.configuration.actions.planTimesSeconds.length * 2);
         checkpoint.model.outputWeights.forEach((row) => row.fill(0));
+        setCheckpointTargetGear(checkpoint, observation.gear);
         checkpoint.model.outputWeights[0][checkpoint.configuration.network.hiddenUnits] = pedalBias;
         files.set(MODEL_PATH, JSON.stringify(checkpoint));
         fireEvent.click(screen.getByRole('button', { name: 'Run trained model' })); await flush();
@@ -1457,7 +1583,7 @@ it('reloads JSON weights, aggression and plan timing every time evaluation start
         expect(plan.getAllByRole('row')).toHaveLength(3);
         expect(plan.getByRole('columnheader', { name: 'Throttle/brake' })).toBeVisible();
         expect(within(plan.getAllByRole('row')[1]).getAllByRole('cell').map((cell) => cell.textContent))
-            .toEqual([Math.tanh(pedalBias).toFixed(3), '0.000', 'Hold']);
+            .toEqual([Math.tanh(pedalBias).toFixed(3), '0.000', String(observation.gear)]);
         fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
         expect(JSON.parse(files.get(MODEL_PATH)!)).toEqual(checkpoint);
     }
@@ -1472,7 +1598,6 @@ it('opens configuration before training and saves the same complete JSON', async
     await renderTraining();
     fireEvent.click(screen.getByRole('button', { name: 'Open model' })); await flush();
     expect(screen.getByRole('slider', { name: 'Driving aggression' })).toHaveValue('80');
-    expect(screen.getByText(/12 recurrent units/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Save model' })); await flush();
     expect(JSON.parse(files.get(MODEL_PATH)!)).toEqual(document);
     expect(window.drivingModelFiles!.write).toHaveBeenCalledWith(MODEL_PATH, JSON.stringify(document));

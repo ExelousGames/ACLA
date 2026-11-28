@@ -58,19 +58,19 @@ it('includes fifth-second rewards and bootstraps from the default horizon endpoi
     const buffer = new DrivingConsequenceBuffer(learning.sequenceSeconds);
     const start = { features: [0], cameras: [] }, successor = { features: [1], cameras: [] };
     const horizon = { features: [5], cameras: [] };
-    const origin = { ...interval(0, 1000, 2), input: start, next: successor, nextShifts: { up: true, down: false } };
+    const origin = { ...interval(0, 1000, 2), input: start, next: successor, nextGears: { max: 6 } };
     buffer.add(origin, successor);
     buffer.add(interval(1000, 2000, -5), input);
     buffer.add(interval(2000, 3000, 0), input);
     buffer.add(interval(3000, 4000, 0), input);
     expect(buffer.hasReady).toBe(false);
-    buffer.add({ ...interval(4000, 5000, -8), next: horizon, nextShifts: { up: false, down: true } }, horizon);
+    buffer.add({ ...interval(4000, 5000, -8), next: horizon, nextGears: { max: 4 } }, horizon);
     const batch = buffer.take()!;
     expect(batch.input).toBe(horizon);
     const [target] = drivingSequenceTargets(batch.sequence, learning);
     expect(target.input).toBe(start);
     expect(target.next).toBe(horizon);
-    expect(target.nextShifts).toEqual({ up: false, down: true });
+    expect(target.nextGears).toEqual({ max: 4 });
     expect(target).toMatchObject({ reward: -1, elapsedSeconds: 5, terminal: false });
 });
 

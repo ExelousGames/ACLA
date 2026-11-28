@@ -2,13 +2,36 @@ import { DEFAULT_DRIVING_CONFIG, emptyRecordedSamplingWeights, RECORDED_SAMPLING
     validateRecordedBatchLabelCount, type RecordedSamplingCategory, type RecordedSamplingWeights } from './driving-model-config';
 import type { DrivingPolicy, PlannedActionTarget, RecordedPlanTarget } from './driving-policy';
 import type { DrivingPolicyInput } from './driving-memory';
+import type { PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
 
 type ObservedAction = Omit<PlannedActionTarget, 'step'>;
 type PendingPlan = { features: DrivingPolicyInput; appliedAt: number; nextStep: number;
-    targets: PlannedActionTarget[]; pool: SamplePool };
-type SamplePool = { plans: RecordedPlanTarget[]; seen: number; capacity: number };
-type PoolEntry = [RecordedSamplingCategory, SamplePool];
+    targets: PlannedActionTarget[]; pool: SamplePool; clipId?: string };
+type ArchivedCamera = { width: number; height: number; pixels: Blob };
+type CameraReads = Map<ArchivedCamera, Promise<PolicyCameraImage>>;
+type RetainedPlan = RecordedPlanTarget | ((reads: CameraReads) => Promise<RecordedPlanTarget>);
+type SamplePool = { plans: RecordedPlanTarget[]; seen: number; capacity: number; clips: Map<string, Map<number, RetainedPlan>> };
+type PoolEntry = [RecordedSamplingCategory, RetainedPlan[][]];
 export const RECORDED_PLAN_WINDOW = 256;
+const RECORDED_PLAN_READ_CHUNK = 8;
+
+function readTrainingBytes(blob: Blob): Promise<ArrayBuffer> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.onerror = () => reject(reader.error ?? new Error('Could not read recorded training data.'));
+        reader.readAsArrayBuffer(blob);
+    });
+}
+
+function restoreCamera(camera: ArchivedCamera, reads: CameraReads): Promise<PolicyCameraImage> {
+    const cached = reads.get(camera);
+    if (cached) return cached;
+    const read = readTrainingBytes(camera.pixels).then(bytes =>
+        ({ width: camera.width, height: camera.height, rgb: new Uint8Array(bytes) }));
+    reads.set(camera, read);
+    return read;
+}
 
 function labelQuotas(categories: RecordedSamplingCategory[], weights: RecordedSamplingWeights, slots: number) {
     const quotas = emptyRecordedSamplingWeights();
@@ -32,6 +55,7 @@ function labelQuotas(categories: RecordedSamplingCategory[], weights: RecordedSa
 export class DrivingPlanTraining {
     private pending: PendingPlan[] = [];
     private pools = new Map<RecordedSamplingCategory, SamplePool>();
+    private archivedCameras = new WeakMap<PolicyCameraImage, ArchivedCamera>();
     private sampling?: { available: PoolEntry[]; quotas: RecordedSamplingWeights };
     private credit = emptyRecordedSamplingWeights();
     private counts = emptyRecordedSamplingWeights();
@@ -48,7 +72,7 @@ export class DrivingPlanTraining {
         const quotas = labelQuotas(categories, weights, slots);
         for (const category of categories) {
             const capacity = Math.ceil(RECORDED_PLAN_WINDOW * quotas[category] / slots);
-            this.pools.set(category, { plans: [], seen: 0, capacity });
+            this.pools.set(category, { plans: [], seen: 0, capacity, clips: new Map() });
         }
     }
 
@@ -56,7 +80,7 @@ export class DrivingPlanTraining {
     get completedBatches() { return this.batches; }
 
     record(policy: DrivingPolicy, features: DrivingPolicyInput | undefined, target: ObservedAction,
-        appliedAt: number, category: RecordedSamplingCategory = UNLABELED_RECORDED_SAMPLING_CATEGORY) {
+        appliedAt: number, category: RecordedSamplingCategory = UNLABELED_RECORDED_SAMPLING_CATEGORY, clipId?: string) {
         for (const plan of this.pending) {
             while (plan.nextStep < policy.planTimes.length) {
                 const due = plan.appliedAt + policy.planTimes[plan.nextStep] * 1000;
@@ -76,7 +100,7 @@ export class DrivingPlanTraining {
             // Recorded plans already own the consecutive history images used for training.
             if (features.recordedHistory) cameras.fill(null, 0, cameras.length - 1);
             this.pending.push({ features: { ...features, features: features.features.slice(), cameras },
-                appliedAt, nextStep: 1, targets: [{ step: 0, ...target }], pool });
+                appliedAt, nextStep: 1, targets: [{ step: 0, ...target }], pool, clipId });
         }
         this.completePlans(policy.planTimes.length);
     }
@@ -85,28 +109,65 @@ export class DrivingPlanTraining {
 
     private completePlans(slots: number) {
         while (this.pending.length) {
-            const { features, targets, nextStep, pool } = this.pending[0];
+            const { features, targets, nextStep, appliedAt, pool, clipId } = this.pending[0];
             if (nextStep < slots) break;
-            // Reservoir sampling retains a cross-section even when a category is first seen late.
-            const index = pool.seen < pool.capacity ? pool.seen : Math.floor(this.random() * (pool.seen + 1));
-            if (index < pool.capacity) pool.plans[index] = { input: features, targets };
-            pool.seen++;
+            if (clipId !== undefined) {
+                let clip = pool.clips.get(clipId);
+                if (!clip) pool.clips.set(clipId, clip = new Map());
+                if (!clip.has(appliedAt)) clip.set(appliedAt, this.archivePlan(features, targets));
+            } else {
+                // Calls without clip identity still use the bounded frame reservoir.
+                const index = pool.seen < pool.capacity ? pool.seen : Math.floor(this.random() * (pool.seen + 1));
+                if (index < pool.capacity) pool.plans[index] = { input: features, targets };
+                pool.seen++;
+            }
             this.pending.shift();
         }
     }
 
-    private prepareSampling() {
-        const available = Array.from(this.pools).filter(([, pool]) => pool.plans.length > 0);
-        validateRecordedBatchLabelCount(this.batchSize, available.length);
-        for (const [, { plans }] of available) {
-            // A short run should also sample across each category's full recording.
-            for (let i = plans.length - 1; i > 0; i--) {
-                const j = Math.floor(this.random() * (i + 1));
-                [plans[i], plans[j]] = [plans[j], plans[i]];
+    private archivePlan({ features, cameras, recordedHistory, recurrent }: DrivingPolicyInput, targets: PlannedActionTarget[]): RetainedPlan {
+        const archive = (image: PolicyCameraImage) => {
+            let camera = this.archivedCameras.get(image);
+            if (!camera) {
+                // Share consecutive history images and let the browser page stored pixels to disk.
+                camera = { width: image.width, height: image.height, pixels: new Blob([image.rgb]) };
+                this.archivedCameras.set(image, camera);
             }
+            return camera;
+        };
+        const archivedFeatures = new Blob([Float64Array.from(features)]);
+        const archivedCameras = cameras.map(image => image && archive(image));
+        const archivedHistory = recordedHistory?.map(({ camera, ...frame }) => ({ ...frame, camera: archive(camera) }));
+        return async (reads: CameraReads) => {
+            const [featureBytes, cameras, recordedHistory] = await Promise.all([
+                readTrainingBytes(archivedFeatures),
+                Promise.all(archivedCameras.map(camera => camera && restoreCamera(camera, reads))),
+                archivedHistory && Promise.all(archivedHistory.map(async ({ camera, ...frame }) =>
+                    ({ ...frame, camera: await restoreCamera(camera, reads) }))),
+            ]);
+            return { input: { features: Array.from(new Float64Array(featureBytes)), cameras, recurrent,
+                ...(recordedHistory && { recordedHistory }) }, targets };
+        };
+    }
+
+    private shuffle<T>(items: T[]): T[] {
+        for (let i = items.length - 1; i > 0; i--) {
+            const j = Math.floor(this.random() * (i + 1));
+            [items[i], items[j]] = [items[j], items[i]];
         }
-        const quotas = labelQuotas(available.map(([category]) => category), this.weights, this.batchSize);
-        return { available, quotas };
+        return items;
+    }
+
+    private prepareSampling() {
+        const available = Array.from(this.pools).filter(([, pool]) => pool.plans.length > 0 || pool.clips.size > 0);
+        validateRecordedBatchLabelCount(this.batchSize, available.length);
+        const rotations = available.map(([category, { plans, clips }]): PoolEntry => {
+            const rotation = Array.from(clips.values(), origins => this.shuffle(Array.from(origins.values())));
+            if (plans.length) rotation.push(this.shuffle(plans));
+            return [category, this.shuffle(rotation)];
+        });
+        const quotas = labelQuotas(rotations.map(([category]) => category), this.weights, this.batchSize);
+        return { available: rotations, quotas };
     }
 
     async finishAsync(policy: DrivingPolicy, active = () => true, maxBatches = Infinity) {
@@ -117,10 +178,12 @@ export class DrivingPlanTraining {
         const batches = Math.min(this.batchCount - this.batches, maxBatches);
         for (let i = 0; i < batches && active(); i++) {
             const credit = { ...this.credit }, counts = { ...this.counts };
-            const batch: RecordedPlanTarget[] = [];
-            const draw = ([category, { plans }]: PoolEntry) => {
-                batch.push(plans[counts[category] % plans.length]);
-                counts[category]++;
+            const batch: RetainedPlan[] = [];
+            const draw = ([category, clips]: PoolEntry) => {
+                const index = counts[category]++;
+                // Use one turn per clip before revisiting it with its next shuffled plan start.
+                const clip = clips[index % clips.length];
+                batch.push(clip[Math.floor(index / clips.length) % clip.length]);
             };
             for (const entry of available) {
                 const [category] = entry;
@@ -133,7 +196,13 @@ export class DrivingPlanTraining {
                 draw(selected);
                 credit[selected[0]]--;
             }
-            if (!await policy.learnRecordedBatchAsync(batch, active)) break;
+            const reads: CameraReads = new Map();
+            const plans: RecordedPlanTarget[] = [];
+            for (let offset = 0; offset < batch.length && active(); offset += RECORDED_PLAN_READ_CHUNK) {
+                const chunk = batch.slice(offset, offset + RECORDED_PLAN_READ_CHUNK);
+                plans.push(...await Promise.all(chunk.map(plan => typeof plan === 'function' ? plan(reads) : plan)));
+            }
+            if (!active() || !await policy.learnRecordedBatchAsync(plans, active)) break;
             this.credit = credit;
             this.counts = counts;
             this.batches++;

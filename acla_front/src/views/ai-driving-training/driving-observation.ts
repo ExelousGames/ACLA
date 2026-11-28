@@ -10,6 +10,7 @@ import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { detectDrivingOffTrack, OFF_TRACK_PENALTY_PER_SECOND, ON_TRACK_REWARD_PER_SECOND } from './driving-off-track';
 import { drivingCenterlineInput } from './driving-centerline';
 import type { ControllerAction } from './virtual-controller';
+import type { BlockedMotionPenalties } from './driving-blocked-motion';
 import { ControlChanges, DrivingControlChanges } from './driving-control-changes';
 
 export { PEDAL_CHANGE_REFERENCE_MS } from './driving-control-changes';
@@ -18,19 +19,19 @@ export interface DrivingAction {
     /** -1 is full brake, 0 is coast, and +1 is full throttle. */
     pedal: number;
     steering: number;
-    shiftUp?: boolean;
-    shiftDown?: boolean;
+    /** Absolute gear requested by the policy: reverse is -1 and neutral is 0. */
+    gear: number;
 }
 
 export const NEUTRAL: ControllerAction = { throttle: 0, brake: 0, steering: 0 };
 
-export function drivingControllerAction({ pedal, ...controls }: DrivingAction): ControllerAction {
-    return { ...controls, throttle: Math.max(0, pedal), brake: Math.max(0, -pedal) };
+export function drivingControllerAction({ pedal, steering }: Pick<DrivingAction, 'pedal' | 'steering'>): ControllerAction {
+    return { steering, throttle: Math.max(0, pedal), brake: Math.max(0, -pedal) };
 }
 
 /** Encode human controls with brake priority when both pedals are pressed. */
-export function encodeDrivingAction({ throttle, brake, ...controls }: ControllerAction): DrivingAction {
-    return { ...controls, pedal: brake > 0 ? -brake : throttle };
+export function encodeDrivingAction({ throttle, brake, steering }: ControllerAction, gear: number): DrivingAction {
+    return { steering, pedal: brake > 0 ? -brake : throttle, gear };
 }
 export const clamp = (value: number, low = -1, high = 1) => Math.max(low, Math.min(high, value));
 export interface DrivingObservation {
@@ -53,6 +54,8 @@ export interface DrivingObservation {
     yawRate: number;
     /** Forward gears start at 1; neutral is 0 and reverse is -1. */
     gear: number;
+    /** False when the source did not provide a valid gear reading. */
+    gearAvailable?: boolean;
     rpm: number;
     controls: ControllerAction;
     reference: DrivingReference;
@@ -61,7 +64,7 @@ export interface DrivingObservation {
     offTrack: boolean | null;
 }
 export type DrivingTelemetrySample = Pick<DrivingObservation, 'measuredAt' | 'session' | 'context' | 'normalizedPosition'
-    | 'speed' | 'localVelocity' | 'gForce' | 'yawRate' | 'gear' | 'rpm' | 'controls'> & { sampleIndex?: number };
+    | 'speed' | 'localVelocity' | 'gForce' | 'yawRate' | 'gear' | 'gearAvailable' | 'rpm' | 'controls'> & { sampleIndex?: number };
 export interface DrivingCameraFrame {
     capturedAt: number;
     telemetry?: LiveTelemetrySnapshot;
@@ -77,6 +80,7 @@ export type ObservationResult = ({
 };
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 const lapProgress = (value: unknown): number | null => finite(value) && value >= 0 && value <= 1 ? value : null;
+const gearAvailable = (gear: number | undefined): boolean => gear !== undefined && Number.isInteger(gear) && gear >= 0;
 
 // A deterministic encoding preserves categorical inputs across saved policies.
 function category(value: string, bits: number): number[] {
@@ -110,7 +114,8 @@ export function readDrivingTelemetry(live: LiveTelemetrySnapshot, now = Date.now
         session: JSON.stringify([live.sessionGeneration, live.streamGeneration, game, car, map]), context: { game, car, map },
         normalizedPosition: lapProgress(sample.Graphics_normalized_car_position), speed: speed!, localVelocity: localVelocity as [number, number, number],
         gForce: gForce as [number, number, number], yawRate: yawRate!,
-        gear: finite(sample.Physics_gear) ? sample.Physics_gear - 1 : 0, rpm: finite(sample.Physics_rpm) ? sample.Physics_rpm : 0,
+        gear: finite(sample.Physics_gear) ? sample.Physics_gear - 1 : 0, gearAvailable: gearAvailable(sample.Physics_gear),
+        rpm: finite(sample.Physics_rpm) ? sample.Physics_rpm : 0,
         controls: { throttle: throttle!, brake: brake!, steering: steering! } };
 }
 
@@ -189,7 +194,7 @@ function readCameraObservation(live: LiveTelemetrySnapshot, frame: DrivingCamera
         camera,
         centerlineAvailable: centerline !== null,
         normalizedPosition: position,
-        speed: speed!, gear: gear - 1, rpm, controls: action,
+        speed: speed!, gear: gear - 1, gearAvailable: gearAvailable(sample.Physics_gear), rpm, controls: action,
         localVelocity: velocity as [number, number, number], yawRate: yawRate!,
         gForce: gForce as [number, number, number],
         reference, aggression, speedTargets,
@@ -198,7 +203,7 @@ function readCameraObservation(live: LiveTelemetrySnapshot, frame: DrivingCamera
 }
 
 export interface DrivingReward {
-    timing: number; progress: number; impact: number; blockedMotion: number; onTrack: number; offTrack: number;
+    timing: number; progress: number; impact: number; blockedMotion: BlockedMotionPenalties; onTrack: number; offTrack: number;
     steeringChange: number; throttleChange: number; brakeChange: number; total: number;
     offTrackDetected: boolean | null;
     impactEstimate: DrivingImpact;
@@ -243,7 +248,7 @@ function compareReferenceSpeeds(previous: DrivingObservation, current: DrivingOb
 
 export function drivingReward(previous: DrivingObservation, current: DrivingObservation,
     config = DEFAULT_DRIVING_CONFIG, telemetryImpact?: DrivingImpact,
-    controlChanges?: ControlChanges, blockedMotion = 0): DrivingReward {
+    controlChanges?: ControlChanges, blockedMotion: BlockedMotionPenalties = { vertical: 0, horizontal: 0 }): DrivingReward {
     const r = config.reward;
     const dt = (current.capturedAt - previous.capturedAt) / 1000;
     if (dt <= 0 || dt > config.runtime.maxTransitionSeconds || previous.session !== current.session) throw new Error('Training transition crossed a session boundary or data gap.');
@@ -286,6 +291,7 @@ export function drivingReward(previous: DrivingObservation, current: DrivingObse
     return { timing, progress, impact, impactEstimate, blockedMotion, onTrack, offTrack, steeringChange, throttleChange, brakeChange,
         offTrackDetected: current.offTrack,
         speedComparison,
-        total: clamp(timing + progress + impact + blockedMotion + onTrack + offTrack + steeringChange + throttleChange + brakeChange,
+        total: clamp(timing + progress + impact + blockedMotion.vertical + blockedMotion.horizontal
+            + onTrack + offTrack + steeringChange + throttleChange + brakeChange,
             -r.totalLimit, r.totalLimit) };
 }

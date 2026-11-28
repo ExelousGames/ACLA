@@ -1108,6 +1108,31 @@ it('counts and replays every clip from the checked annotation files, including o
     expect(ref.current!.countTrainingClips()).toBe(0);
 });
 
+it('keeps clip IDs stable across measurement and replay and distinguishes same-label ranges', async () => {
+    const annotation = savedAnnotation('drive.json', 'drive.mp4', 'drive.jsonl', 0, [
+        { start: 0, end: 0.1, label: 'Hairpin' },
+        { start: 0.2, end: 0.3, label: 'Hairpin' },
+    ]);
+    mockAnnotationPicker([annotation]);
+    const ref = React.createRef<RecordedFrameViewerHandle>();
+    render(<RecordedFrameViewer ref={ref} configuration={cloneConfig()} policy={null} disabled={false} onFrame={jest.fn()} />);
+    pickAnnotations(annotation.name);
+    await loadAnnotationPreview(2.5);
+
+    const signal = new AbortController().signal;
+    const measured: RecordedReplayFrame[] = [], replayed: RecordedReplayFrame[] = [];
+    await act(async () => ref.current!.measure(async (frame) => { measured.push(frame); }, signal, undefined, 100));
+    await act(async () => ref.current!.replay(async (frame) => { replayed.push(frame); }, signal, undefined, 100));
+
+    expect(measured.map(({ startsRange, clipLabel }) => [startsRange, clipLabel])).toEqual([
+        [true, 'Hairpin'], [false, 'Hairpin'], [true, 'Hairpin'], [false, 'Hairpin'],
+    ]);
+    const clipIds = measured.map(({ clipId }) => clipId);
+    expect(clipIds).toEqual([expect.any(String), clipIds[0], expect.any(String), clipIds[2]]);
+    expect(clipIds[0]).not.toBe(clipIds[2]);
+    expect(replayed.map(({ clipId }) => clipId)).toEqual(clipIds);
+});
+
 it('ignores an in-flight inspection after the selected model changes', async () => {
     let finish!: (value: ReturnType<typeof result>) => void;
     const first = { steps: 20, inspectCameraAsync: jest.fn(() => new Promise((resolve) => { finish = resolve; })) } as unknown as DrivingPolicy;

@@ -209,36 +209,47 @@ practice session with manual gears configured and both shift buttons bound,
 position the car on track, and choose **New model** to select a save
 location (or **Open model** to resume a file). Then select **Start training**. The policy
 outputs one continuous throttle/brake value from −1 (full brake), through 0 (both
-pedals released), to 1 (full throttle), plus steering and the choice to hold gear,
-shift up or shift down. Positive pedal values apply throttle; negative values apply
+pedals released), to 1 (full throttle), plus steering and a target gear number.
+Reverse is −1, neutral is 0, and forward gears are 1 through 10.
+Positive pedal values apply throttle and negative values apply
 brake, so AI output never presses both pedals together. Recorded demonstrations
-encode an applied brake as negative brake input and use throttle when brake is released.
-Create and train a new model for this output layout; older separate-pedal checkpoints
-are not converted.
+encode an applied brake as negative brake input, use throttle when brake is released,
+and label each plan step with the gear reported by aligned telemetry.
+Create and train a new model for this output layout.
 Repositioning and restarting laps are not automated.
 **Run trained model** uses deterministic inference without updating weights.
 
-The AI executes its action plan on the control timer: by default, 31 samples span
-0 through 3 seconds at 100 ms spacing after the first control acknowledgement.
+The AI executes its action plan on the control timer. By default, 51 samples span
+0 through 5 seconds at 100 ms spacing after the first control acknowledgement.
 Between samples, steering and signed throttle/brake are linearly interpolated
 every 20 ms (or faster if the configured control interval is shorter). Pedal
-transitions pass through zero, so throttle and brake never overlap. Gear choices
-remain discrete and execute only when their sample becomes due.
-New models use 155 action outputs (five per step) plus one reserved scalar output. Create
-and train a new model for this denser plan; existing weights are not migrated.
-The current plan continues during learning and inference. A new output replaces
-the entire plan immediately and starts its own clock. A late control tick skips
-expired steps; after the final step, the AI holds its pedals and steering until
-the next output or input interruption. Each planned shift is pulsed only once.
-During training, each plan step samples pedal and steering around its learned
-preferred controls and draws a gear choice from its learned probabilities.
+transitions pass through zero. The controller uses the target gear from the current
+plan step. Each step has two continuous controls and twelve gear logits.
+The current plan continues during learning and inference. **Run trained model**
+replaces the plan when the remaining target gears or continuous controls differ
+enough, or when the current plan has run for four seconds. A late control tick skips
+expired steps. After the final step, the AI keeps its pedals, steering and target gear
+until the next plan or input interruption.
+
+In live training, **New plan interval (s)** sets the minimum time from a plan's
+first acknowledged command to its replacement (default: 2 seconds). The first
+plan starts as soon as inputs are ready. Later plans use a fresh observation when
+due, and an active directed trial can finish before a replacement is made.
+**Random exploration** and **Directed exploration** can each be turned off in
+**Training exploration** before a run. Random exploration varies pedal and steering
+smoothly around learned controls and samples gear from learned probabilities. Each
+control has its own exploration duration in seconds. Directed exploration scores
+allowed gears against combinations of steering and signed pedal sampled evenly
+between their configured minimum and maximum. The throttle exploration speed
+limit applies to both modes. With both modes off, live training still learns
+from the model's preferred controls within the training limits.
 For each contributing future step, the two SAC critics score that step's choices
 at the observed state where it took effect. The lower estimate of reward after
 penalties guides the step's preferred controls, exploration spread and gear
 probabilities. Observed reward is shared among
 the steps that actually controlled the car, weighted by their acknowledged execution time
-and contribution to each interpolated command. Gear credit follows only the due
-step's executed choice and mask, independently of the analog blend.
+and contribution to each interpolated command. Gear credit follows the active
+step's target gear and allowed gear range independently of the analog blend.
 This includes the outgoing plan's actions while a replacement was computing;
 steps that neither execute nor contribute to a blend receive no actor gradient.
 
@@ -246,7 +257,7 @@ By default, the SAC critics use up to **5 seconds** of observed rewards after ea
 acknowledged action. To change this window for an existing model, set
 `configuration.learning.sequenceSeconds` in its JSON file. The five-second
 observation history supplies past context independently of this training window.
-Collection retains observation inputs, acknowledged actions and shift masks,
+Collection retains observation inputs, acknowledged actions and allowed gear ranges,
 rewards, and capture/execution timestamps. Rewards are
 calculated backward: `G[t] = r[t] + discount^(dt / discountIntervalSeconds) * G[t+1]`.
 The final value bootstraps from the batch's last valid observation under the weights
@@ -269,12 +280,12 @@ Taking over flushes the outgoing AI's partial window before human control begins
 Sequence gradients are summed, then globally clipped once per update.
 
 Gear choices learn from the same driving reward as the continuous controls.
-Human and AI shifts have no cooldown. Each shift presses one paddle for 100 ms
-(released on the next control tick); a new shift immediately releases the previous
-press before pressing again. Downshifts are allowed in every gear, including neutral
-and reverse. Both shift directions remain available for every AI decision and plan step.
-Older models' saved `shiftCooldownMs` settings are discarded when loaded.
-Button releases continue even while waiting for a new camera frame.
+The AI controller compares the active target with the observed gear and pulses
+one paddle toward the target. It uses fresh telemetry to decide whether to shift
+again. Shifting stops when the target matches. If the simulator misses a shift,
+the controller waits before retrying. During live training, **Maximum gear to
+explore** limits the forward target gears. Neutral and reverse remain available.
+Each pulse releases automatically, including between camera frames.
 
 The observation includes car-local velocity XYZ (m/s), speed (km/h), game/car/map
 category encodings, cyclic normalized lap position,
@@ -314,7 +325,7 @@ across all camera timesteps before updating the shared encoder.
 CNN and GRU inference, learning-gradient calculations, backpropagation and weight
 updates run on a hardware WebGPU device. The CPU sends recorded plan targets or
 reward, elapsed time and the sampled actions with per-slot execution weights. The GPU calculates target transforms,
-masked shift probabilities, the TD advantage and clipped gradients without intermediate
+masked gear probabilities, the TD advantage and clipped gradients without intermediate
 readbacks. Weights, activations and training predictions stay on the GPU. Control
 decisions read the small action/value output.
 Repeated images share convolution activations within a decision;
@@ -350,8 +361,8 @@ The loader rejects earlier LSTM configurations and checkpoints.
 Heading, pitch and roll angles are not required for training or used as policy features.
 Telemetry is paired with the image before inference;
 stale or mismatched sessions are rejected. New policies have a 128-unit GRU,
-a three-dimensional Gaussian actor, a three-way categorical shifting head
-and a TD(0) value head. **Driving aggression** shapes the reference lap's speed goals:
+a two-dimensional Gaussian actor and a categorical head for reverse, neutral and ten forward gears.
+**Driving aggression** shapes the reference lap's speed goals:
 AI training owns its speed-profile calculation independently of Live Phrases.
 0–50 matches the braking-speed calculation and tagged corner boundaries used by Live Phrases,
 with `liveBrakingAdjustment = 100 - 2 × trainingAggression`. Training 0 corresponds to

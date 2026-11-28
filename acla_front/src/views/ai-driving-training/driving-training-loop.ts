@@ -8,11 +8,17 @@ import { DrivingMemory, DrivingPolicyInput, drivingMemorySlotInputs } from './dr
 import { DrivingConsequenceBatch, DrivingConsequenceBuffer } from './driving-consequence-buffer';
 import { DrivingModelTimer } from './driving-model-timing';
 import { DRIVING_PLAN_REFRESH_SECONDS, drivingPlanControlsDiffer } from './driving-plan-agreement';
+import { DRIVING_DIRECTED_INTERVAL_MS, DRIVING_DIRECTED_TRIAL_SECONDS } from './driving-directed-exploration';
 import type { ControllerAction } from './virtual-controller';
 import type { DrivingImpact } from './driving-impact';
 import { DrivingBlockedMotionMonitor } from './driving-blocked-motion';
 
-import { DEFAULT_DRIVING_CONFIG, drivingMemorySlots } from './driving-model-config';
+import { DEFAULT_DRIVING_CONFIG, DRIVING_MAX_GEAR, drivingMemorySlots, isDrivingGear } from './driving-model-config';
+
+const PLAN_CONTROL_INTERVAL_MS = 20;
+const DIRECTED_GEAR_ACQUISITION_MIN_MS = 500;
+const DIRECTED_GEAR_ACQUISITION_MAX_MS = 4000;
+const DIRECTED_TRIAL_MS = DRIVING_DIRECTED_TRIAL_SECONDS * 1000;
 
 export interface TrainingState {
     mode: 'idle' | 'manual' | 'training' | 'evaluation' | 'finishing';
@@ -35,12 +41,20 @@ interface TrainingSample {
     input: DrivingPolicyInput;
 }
 
+interface DirectedTrial {
+    action: DrivingAction;
+    acquisitionMs: number;
+    appliedAt?: number;
+    finished?: boolean;
+}
+
 interface ExecutedPlan {
     decision: PolicyDecision;
     startedAt: number;
     endedAt?: number;
+    directedTrial?: DirectedTrial;
     executions: (Omit<PlanStepCredit, 'weight'> & { appliedAt: number; action: DrivingAction; nextWeight: number;
-        shiftWeight: number; controlChanges: ControlChanges })[];
+        gearWeight: number; controlChanges: ControlChanges })[];
 }
 
 export class DrivingTrainingLoop {
@@ -48,6 +62,7 @@ export class DrivingTrainingLoop {
     private get config() { return this.policy?.configuration ?? DEFAULT_DRIVING_CONFIG; }
     private previous?: TrainingSample;
     private activePlan?: ExecutedPlan;
+    private nextDirectedCheckAt = 0;
     private plans: ExecutedPlan[] = [];
     private consequences = new DrivingConsequenceBuffer(DEFAULT_DRIVING_CONFIG.learning.sequenceSeconds);
     private learningDecisions = new Set<PolicyDecision>();
@@ -74,7 +89,9 @@ export class DrivingTrainingLoop {
     private memory = new DrivingMemory();
     private modelTiming?: DrivingModelTimer;
     private measuredSpeedKmh = 0;
-    private measuredGear = 0;
+    private measuredGear?: Pick<DrivingTelemetrySample, 'gear' | 'gearAvailable' | 'measuredAt'>;
+    private lastShift?: { gear: number; appliedAt: number };
+    private gearShiftReadyAt = 0;
     private blockedMotion = new DrivingBlockedMotionMonitor();
     private controlChanges = new DrivingControlChanges();
 
@@ -160,7 +177,7 @@ export class DrivingTrainingLoop {
         this.publish(this.state);
         const interval = this.readManual ? this.config.runtime.manualControlIntervalMs : this.config.runtime.controlIntervalMs;
         // Sample the plan between its 100 ms knots, including while GPU work is pending.
-        this.timer = setInterval(() => { void this.tick(policy); }, policy ? Math.min(interval, 20) : interval);
+        this.timer = setInterval(() => { void this.tick(policy); }, policy ? Math.min(interval, PLAN_CONTROL_INTERVAL_MS) : interval);
         void this.tick(policy);
     }
 
@@ -224,11 +241,15 @@ export class DrivingTrainingLoop {
         this.blockedMotion.reset();
         this.previous = undefined;
         this.lastInferenceFrame = -Infinity;
+        this.measuredGear = undefined;
+        this.lastShift = undefined;
+        this.gearShiftReadyAt = 0;
     }
 
     private discardPlans() {
         this.controlChanges = new DrivingControlChanges();
         this.consequences.reset();
+        this.nextDirectedCheckAt = 0;
         for (const plan of this.plans) {
             if (!this.learningDecisions.has(plan.decision)) this.policy?.releaseDecision(plan.decision);
         }
@@ -339,6 +360,8 @@ export class DrivingTrainingLoop {
     private async releasePaddles(lease: ControlLease) {
         const action = { ...this.state.action, shiftUp: false, shiftDown: false };
         if (!await lease.apply(action) || lease !== this.lease) return false;
+        // Give the simulator time to see the released buttons before another press.
+        if (this.state.source === 'ai') this.gearShiftReadyAt = this.now() + PLAN_CONTROL_INTERVAL_MS;
         this.state = { ...this.state, action };
         this.publish(this.state);
         return true;
@@ -402,7 +425,10 @@ export class DrivingTrainingLoop {
             const observation = { ...input.observation };
             const telemetry = input.telemetry && input.telemetry.measuredAt > this.controlChangedAt ? input.telemetry : undefined;
             this.measuredSpeedKmh = telemetry?.speed ?? observation.speed;
-            this.measuredGear = telemetry?.gear ?? observation.gear;
+            const gearReading = telemetry && telemetry.measuredAt >= observation.measuredAt ? telemetry : observation;
+            if (gearReading.measuredAt > this.controlChangedAt && (!this.measuredGear || gearReading.measuredAt >= this.measuredGear.measuredAt)) {
+                this.measuredGear = gearReading;
+            }
             const previous = this.previous;
             const fresh = observation.capturedAt > this.lastFrame && observation.capturedAt > this.controlChangedAt
                 && observation.measuredAt > this.controlChangedAt
@@ -421,18 +447,26 @@ export class DrivingTrainingLoop {
                 if (this.modelLease !== lease) await lease.apply(this.state.action);
                 return;
             }
-            // Ready batches remain consumable even without another camera frame.
-            if (!this.previous || (this.previous.observation.capturedAt <= this.lastInferenceFrame
-                && !(this.state.mode === 'training' && this.consequences.hasReady))) {
+            const training = this.state.mode === 'training';
+            const infer = Boolean(this.previous && this.previous.observation.capturedAt > this.lastInferenceFrame
+                && (!training || this.livePlanRefreshDue()));
+            // Learning stays on its own schedule even when no new plan is due.
+            if (!this.previous || (!infer && !(training && this.consequences.hasReady))) {
                 if (!this.activePlan && !await lease.apply(this.state.action)) return;
                 if (generation === this.generation) this.publish(this.state);
                 return;
             }
             if (!policy) return;
-            this.modelWork = this.updateModel(policy, this.previous, lease);
+            this.modelWork = this.updateModel(policy, this.previous, lease, infer);
         } catch (error) {
             if (generation === this.generation && lease === this.lease) await this.stop(error instanceof Error ? error.message : 'Controller failed.');
         } finally { this.controlBusy = false; this.planWrite = undefined; }
+    }
+
+    private livePlanRefreshDue() {
+        const plan = this.activePlan;
+        return !plan || ((!plan.directedTrial || plan.directedTrial.finished)
+            && this.now() - plan.startedAt >= this.config.learning.explorationPlanIntervalSeconds * 1000);
     }
 
     private scoreReward(previous: DrivingObservation, current: DrivingObservation,
@@ -441,17 +475,87 @@ export class DrivingTrainingLoop {
             this.blockedMotion.penaltyBetween(previous.measuredAt, current.measuredAt));
     }
 
-    private shiftsAtGear(gear: number) {
+    private availableGears() {
         const limit = this.config.learning.maxExplorationGear;
-        return { up: this.state.mode !== 'training' || limit === 0 || gear < limit, down: true };
+        return { max: this.state.mode === 'training' && limit > 0 ? limit : DRIVING_MAX_GEAR };
+    }
+
+    private freshMeasuredGear(now: number) {
+        const reading = this.measuredGear;
+        if (reading && reading.gearAvailable !== false && isDrivingGear(reading.gear)
+            && now - reading.measuredAt <= this.config.runtime.telemetryMaxAgeMs) return reading;
+    }
+
+    private gearForNextPulse(target: number) {
+        const now = this.now();
+        const reading = this.freshMeasuredGear(now);
+        if (!reading || reading.gear === target
+            || this.state.action.shiftUp || this.state.action.shiftDown || now < this.gearShiftReadyAt) return;
+        const last = this.lastShift;
+        // Do not count a button press as a shift. Wait for telemetry, and retry
+        // a rejected or missed shift only after the simulator has had time to react.
+        if (last && (reading.measuredAt <= last.appliedAt || (reading.gear === last.gear
+            && now - last.appliedAt < Math.max(250, 2 * this.config.actions.shiftPulseMs)))) return;
+        return reading.gear;
     }
 
     private throttleExplorationLimited() {
         return this.state.mode === 'training' && this.measuredSpeedKmh >= this.config.learning.throttleExplorationSpeedLimitKmh;
     }
 
+    private directedOptions(policy: DrivingPolicy) {
+        if (this.state.mode !== 'training' || !policy.canExploreDirectly) return;
+        const trial = this.activePlan?.directedTrial;
+        if (trial && !trial.finished) return;
+        const now = this.now();
+        if (now < this.nextDirectedCheckAt || !this.freshMeasuredGear(now)) return;
+        this.nextDirectedCheckAt = now + DRIVING_DIRECTED_INTERVAL_MS;
+        return { throttleLimited: this.throttleExplorationLimited() };
+    }
+
+    private createDirectedTrial(action: DrivingAction, now: number): DirectedTrial {
+        const current = this.freshMeasuredGear(now);
+        const shifts = current ? Math.abs(current.gear - action.gear) : 0;
+        const shiftBudget = Math.max(250, 2 * this.config.actions.shiftPulseMs) + PLAN_CONTROL_INTERVAL_MS;
+        return { action, acquisitionMs: Math.min(DIRECTED_GEAR_ACQUISITION_MAX_MS,
+            Math.max(DIRECTED_GEAR_ACQUISITION_MIN_MS, shifts * shiftBudget)) };
+    }
+
+    private directedPhase(plan: ExecutedPlan, now: number) {
+        const trial = plan.directedTrial;
+        if (!trial || trial.finished) return;
+        const reading = this.freshMeasuredGear(now);
+        const confirmed = reading?.gear === trial.action.gear
+            && (!this.lastShift || reading.measuredAt > this.lastShift.appliedAt)
+            && !this.state.action.shiftUp && !this.state.action.shiftDown;
+        if (trial.appliedAt !== undefined) {
+            return confirmed && now - trial.appliedAt < DIRECTED_TRIAL_MS ? 'testing' : undefined;
+        }
+        if (now - plan.startedAt >= trial.acquisitionMs) return;
+        return confirmed ? 'testing' : 'shifting';
+    }
+
+    private planPreview(plan: ExecutedPlan): PlannedAction[] {
+        const trial = plan.directedTrial;
+        return plan.decision.plan.map(({ timeSeconds, action }) => {
+            const preview = { ...action };
+            if (trial && !trial.finished) {
+                if (trial.appliedAt === undefined && timeSeconds * 1000 < trial.acquisitionMs) {
+                    preview.gear = trial.action.gear;
+                } else if (trial.appliedAt !== undefined) {
+                    const trialStart = (trial.appliedAt - plan.startedAt) / 1000;
+                    if (timeSeconds >= trialStart && timeSeconds < trialStart + DRIVING_DIRECTED_TRIAL_SECONDS) {
+                        return { timeSeconds, action: { ...trial.action } };
+                    }
+                }
+            }
+            return { timeSeconds, action: preview };
+        });
+    }
+
     private async applyPlan(plan: ExecutedPlan, lease: ControlLease) {
-        const elapsed = Math.max(0, (this.now() - plan.startedAt) / 1000);
+        const now = this.now();
+        const elapsed = Math.max(0, (now - plan.startedAt) / 1000);
         let step = 0;
         while (step + 1 < plan.decision.plan.length && plan.decision.plan[step + 1].timeSeconds <= elapsed) step++;
         const previous = plan.executions[plan.executions.length - 1];
@@ -459,29 +563,25 @@ export class DrivingTrainingLoop {
         const selected = plan.decision.plan[step];
         const next = plan.decision.plan[step + 1];
         const nextWeight = next ? (elapsed - selected.timeSeconds) / (next.timeSeconds - selected.timeSeconds) : 0;
-        let pedal = next ? selected.action.pedal + (next.action.pedal - selected.action.pedal) * nextWeight : selected.action.pedal;
+        const trial = plan.directedTrial;
+        const phase = this.directedPhase(plan, now);
+        const directed = phase === 'testing' ? trial?.action : undefined;
+        let pedal = directed?.pedal ?? (next ? selected.action.pedal + (next.action.pedal - selected.action.pedal) * nextWeight : selected.action.pedal);
         if (pedal > 0 && this.throttleExplorationLimited()) {
             const preferred = Math.tanh(selected.means[0]);
             const nextPreferred = next ? Math.tanh(next.means[0]) : preferred;
             pedal = Math.min(pedal, Math.max(0, preferred + (nextPreferred - preferred) * nextWeight));
         }
-        const steering = next ? selected.action.steering + (next.action.steering - selected.action.steering) * nextWeight : selected.action.steering;
-        // Recheck planned upshifts against live gear and keep the executed mask for credit.
-        const shifts = sameStep ? previous.shifts : {
-            up: selected.shifts.up && this.shiftsAtGear(this.measuredGear).up,
-            down: selected.shifts.down,
-        };
-        const shift = sameStep ? 0 : selected.shift === 1 && shifts.up ? 1 : selected.shift === 2 && shifts.down ? 2 : 0;
-        if (shift && (this.state.action.shiftUp || this.state.action.shiftDown)) {
-            if (!await this.releasePaddles(lease) || plan !== this.activePlan) return false;
-        }
-        const action = { pedal, steering, shiftUp: shift === 1, shiftDown: shift === 2 };
+        const steering = directed?.steering ?? (next ? selected.action.steering + (next.action.steering - selected.action.steering) * nextWeight : selected.action.steering);
+        const gear = (phase && trial?.action.gear) ?? selected.action.gear;
+        const action = { pedal, steering, gear };
+        const fromGear = this.gearForNextPulse(gear);
         const outgoing = this.plans[this.plans.length - 1];
         const previousCommand = previous ?? outgoing?.executions[outgoing.executions.length - 1];
-        // Keep the vJoy pulse alive while recording only the new press for learning.
+        // The action for learning is the target; the vJoy press is only how it is reached.
         const controls = { ...drivingControllerAction(action),
-            shiftUp: Boolean(this.state.action.shiftUp || action.shiftUp),
-            shiftDown: Boolean(this.state.action.shiftDown || action.shiftDown) };
+            shiftUp: Boolean(this.state.action.shiftUp || (fromGear !== undefined && gear > fromGear)),
+            shiftDown: Boolean(this.state.action.shiftDown || (fromGear !== undefined && gear < fromGear)) };
         if (!await lease.apply(controls) || plan !== this.activePlan) return false;
         const appliedAt = this.now();
         const controlChanges = previousCommand ? this.controlChanges.record(drivingControllerAction(previousCommand.action),
@@ -491,10 +591,28 @@ export class DrivingTrainingLoop {
             controlChanges.steering += previousCommand.controlChanges.steering;
             controlChanges.throttle += previousCommand.controlChanges.throttle;
         }
-        if (!plan.executions.length) plan.startedAt = appliedAt;
-        plan.executions.push({ step, appliedAt, shift, shifts, action, nextWeight, controlChanges, shiftWeight: sameStep ? 0 : 1 });
-        if (shift) this.shiftReleaseAt = appliedAt + this.config.actions.shiftPulseMs;
-        this.state = { ...this.state, action: controls };
+        const startingPlan = !plan.executions.length;
+        if (startingPlan) plan.startedAt = appliedAt;
+        const gearWeight = sameStep && previous?.gear === gear ? 0 : 1;
+        plan.executions.push({ step, appliedAt, gear, gears: selected.gears, action, nextWeight, controlChanges, gearWeight });
+        if (fromGear !== undefined) {
+            this.lastShift = { gear: fromGear, appliedAt };
+            this.shiftReleaseAt = appliedAt + this.config.actions.shiftPulseMs;
+        }
+        let refreshPreview = false;
+        if (trial && !trial.finished) {
+            if (phase === 'testing' && trial.appliedAt === undefined) {
+                trial.appliedAt = appliedAt;
+                refreshPreview = true;
+            } else if (!phase) {
+                trial.finished = true;
+                this.nextDirectedCheckAt = Math.max(this.nextDirectedCheckAt,
+                    appliedAt + DRIVING_DIRECTED_INTERVAL_MS - DIRECTED_TRIAL_MS);
+                refreshPreview = true;
+            }
+        }
+        this.state = { ...this.state, action: controls,
+            plan: refreshPreview && !startingPlan ? this.planPreview(plan) : this.state.plan };
         this.publish(this.state);
         return true;
     }
@@ -510,23 +628,57 @@ export class DrivingTrainingLoop {
                 return { execution, startedAt, duration };
             }).filter(({ duration }) => duration > 0);
             return intervals.map(({ execution, startedAt, duration }) => {
-                const { step, shifts, appliedAt, nextWeight, shiftWeight } = execution;
+                const { step, gear, gears, action, appliedAt, nextWeight, gearWeight } = execution;
                 const changed = appliedAt >= from;
-                // A command can span several telemetry intervals. Credit its gear choice only at acknowledgement.
-                const shift = changed ? execution.shift : 0;
-                const action = shift === execution.shift ? execution.action : { ...execution.action, shiftUp: false, shiftDown: false };
                 // Each acknowledged command has its own consequence clock.
-                const credits: PlanStepCredit[] = [{ step, shift, shifts, action, appliedAt, weight: 1 - nextWeight,
-                    shiftWeight: changed ? shiftWeight : 0 },
-                    ...(nextWeight > 0 ? [{ step: step + 1, shift: 0 as const, shifts: { up: false, down: false },
-                        action, appliedAt, weight: nextWeight, shiftWeight: 0 }] : [])];
+                const credits: PlanStepCredit[] = [{ step, gear, gears, action, appliedAt, weight: 1 - nextWeight,
+                    gearWeight: changed ? gearWeight : 0 },
+                    ...(nextWeight > 0 ? [{ step: step + 1, gear, gears,
+                        action, appliedAt, weight: nextWeight, gearWeight: 0 }] : [])];
                 return { plan, startedAt, duration, credits, controlChanges: changed ? execution.controlChanges : NEUTRAL };
             });
         });
     }
 
+    private async refreshPlan(policy: DrivingPolicy, sample: TrainingSample, lease: ControlLease,
+        timing: DrivingModelTimer, active: () => boolean) {
+        this.lastInferenceFrame = sample.observation.capturedAt;
+        const training = this.state.mode === 'training';
+        timing.start('inference');
+        const directed = this.directedOptions(policy);
+        const decision = directed ? await policy.decideAsync(sample.input, true, this.availableGears(), directed)
+            : await policy.decideAsync(sample.input, training, this.availableGears());
+        if (!active()) { policy.releaseDecision(decision); return false; }
+        this.installingPlan = true;
+        timing.start('control');
+        try {
+            // Finish an acknowledged plan step before checking its remaining tail.
+            await this.planWrite;
+            if (!active()) { policy.releaseDecision(decision); return false; }
+            const outgoing = this.activePlan;
+            if (!training && outgoing) {
+                const elapsed = Math.max(0, (this.now() - outgoing.startedAt) / 1000);
+                if (elapsed < DRIVING_PLAN_REFRESH_SECONDS && !drivingPlanControlsDiffer(outgoing.decision.plan, elapsed,
+                    decision.plan, outgoing.executions[outgoing.executions.length - 1]?.step)) {
+                    policy.releaseDecision(decision);
+                    return true;
+                }
+            }
+            const startedAt = this.now();
+            const directedTrial = decision.directedAction ? this.createDirectedTrial(decision.directedAction, startedAt) : undefined;
+            const plan: ExecutedPlan = { decision, startedAt, executions: [], directedTrial };
+            this.activePlan = plan;
+            if (!await this.applyPlan(plan, lease) || !active()) { policy.releaseDecision(decision); return false; }
+            if (outgoing) outgoing.endedAt = plan.startedAt;
+            this.plans.push(plan);
+            this.state = { ...this.state, plan: this.planPreview(plan) };
+            return true;
+        } catch (error) { policy.releaseDecision(decision); throw error; }
+        finally { this.installingPlan = false; }
+    }
+
     /** Only one model operation runs at a time; controller polling never awaits it. */
-    private async updateModel(policy: DrivingPolicy, sample: TrainingSample, lease: ControlLease) {
+    private async updateModel(policy: DrivingPolicy, sample: TrainingSample, lease: ControlLease, infer: boolean) {
         this.modelLease = lease;
         const generation = this.generation, revision = this.modelRevision;
         const active = () => generation === this.generation && lease === this.lease && revision === this.modelRevision;
@@ -541,44 +693,12 @@ export class DrivingTrainingLoop {
             }
             if (!active()) return;
             // Refresh control before learning from earlier executed actions.
-            sample = this.previous ?? sample;
-            this.lastInferenceFrame = sample.observation.capturedAt;
-            timing.start('inference');
-            const decision = await policy.decideAsync(sample.input, this.state.mode === 'training', this.shiftsAtGear(this.measuredGear));
-            if (!active()) { policy.releaseDecision(decision); return; }
-            this.installingPlan = true;
-            timing.start('control');
-            try {
-                // Finish an acknowledged plan step before checking its remaining tail.
-                await this.planWrite;
-                if (!active()) { policy.releaseDecision(decision); return; }
-                const outgoing = this.activePlan;
-                // Plan zero is its acknowledged execution start. The candidate
-                // would start now; the outgoing plan keeps its original clock.
-                const elapsed = outgoing ? Math.max(0, (this.now() - outgoing.startedAt) / 1000) : 0;
-                // The old per-step tolerance is kept in checkpoints for compatibility,
-                // but refresh thresholds are a runtime rule shared by all models.
-                const keep = outgoing && elapsed < DRIVING_PLAN_REFRESH_SECONDS
-                    && !drivingPlanControlsDiffer(outgoing.decision.plan, elapsed, decision.plan,
-                        outgoing.executions[outgoing.executions.length - 1]?.step);
-                if (keep) {
-                    // A confirming inference did not execute: keep credit and
-                    // sampled exploration attached to the original decision.
-                    policy.releaseDecision(decision);
-                } else {
-                    const plan: ExecutedPlan = { decision, startedAt: this.now(), executions: [] };
-                    this.activePlan = plan;
-                    if (!await this.applyPlan(plan, lease) || !active()) { policy.releaseDecision(decision); return; }
-                    if (outgoing) outgoing.endedAt = plan.startedAt;
-                    this.plans.push(plan);
-                    this.state = { ...this.state, plan: decision.plan.map(({ timeSeconds, action }) =>
-                        ({ timeSeconds, action: { ...action } })) };
-                }
-            } catch (error) { policy.releaseDecision(decision); throw error; }
-            finally { this.installingPlan = false; }
-            timing.end();
-            this.state = { ...this.state, status: this.driverStatus() };
-            this.publish(this.state);
+            if (infer) {
+                if (!await this.refreshPlan(policy, sample, lease, timing, active) || !active()) return;
+                timing.end();
+                this.state = { ...this.state, status: this.driverStatus() };
+                this.publish(this.state);
+            }
             // The controller continues advancing the selected plan while this
             // bounded update consumes a previous action's rolling consequences.
             const batch = this.state.mode === 'training' ? this.consequences.take() : undefined;
@@ -638,7 +758,7 @@ export class DrivingTrainingLoop {
         const reward = this.scoreReward(previous.observation, observation, controlChanges);
         if (samples.length) this.consequences.add({
             startedAt: previous.observation.measuredAt, endedAt: observation.measuredAt, reward: reward.total,
-            input: previous.input, next: input, nextShifts: this.shiftsAtGear(observation.gear), terminal: false,
+            input: previous.input, next: input, nextGears: this.availableGears(), terminal: false,
             samples: samples.map(({ plan, startedAt, credits, duration: held }) =>
                 ({ decision: plan.decision, startedAt, credits, rewardShare: held / duration })),
         }, input);

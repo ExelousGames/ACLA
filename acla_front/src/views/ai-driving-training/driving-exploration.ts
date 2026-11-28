@@ -28,6 +28,7 @@ function explorationFeatures(input: DrivingPolicyInput, config: DrivingModelConf
 export class DrivingExploration {
     private startedAt?: number;
     private updatedAt = -Infinity;
+    private episode?: object;
     private samples = Array.from({ length: DRIVING_ANALOG_AXES + 1 }, () => new Map<number, number[]>());
 
     constructor(private config: DrivingModelConfig, private random: () => number) {}
@@ -35,13 +36,19 @@ export class DrivingExploration {
     reset() {
         this.startedAt = undefined;
         this.updatedAt = -Infinity;
+        this.episode = undefined;
         this.samples.forEach((samples) => samples.clear());
     }
 
     plan(input: DrivingPolicyInput, now: number) {
-        if (now < this.updatedAt || now - this.updatedAt > this.config.runtime.maxTransitionSeconds * 1000) this.reset();
+        const episode = input.recurrent?.episode;
+        // A long plan interval can span many uninterrupted observations.
+        // With an episode, use the observation stream's continuity instead of the plan cadence.
+        if (now < this.updatedAt || episode !== this.episode
+            || (!episode && now - this.updatedAt > this.config.runtime.maxTransitionSeconds * 1000)) this.reset();
         if (this.startedAt === undefined) this.startedAt = now;
         this.updatedAt = now;
+        this.episode = episode;
         const elapsed = now - this.startedAt;
         const intervals = drivingExplorationFrequencies(this.config).map((frequency) => 1000 / frequency);
         const features = explorationFeatures(input, this.config);
@@ -65,8 +72,8 @@ export class DrivingExploration {
                 return features.reduce((sum, feature, i) => sum
                     + feature * (a * left[i] + b * right[i]), 0);
             });
-            const shift = this.sample(DRIVING_ANALOG_AXES, Math.floor(times[DRIVING_ANALOG_AXES] + 1e-9), 1)[0];
-            return { axes, variances: [...variances], shift };
+            const gear = this.sample(DRIVING_ANALOG_AXES, Math.floor(times[DRIVING_ANALOG_AXES] + 1e-9), 1)[0];
+            return { axes, variances: [...variances], gear };
         });
     }
 

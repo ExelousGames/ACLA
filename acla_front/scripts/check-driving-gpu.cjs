@@ -1,5 +1,6 @@
 // Run: npx electron scripts/check-driving-gpu.cjs
 // Add --soak for 1,000 training cycles each on default and saturated long-history models.
+// Add --target-gears for the gear distributions, SAC, and recorded gear target checks.
 // Real hardware WGSL gradients, training, checkpoint and latency checks. No simulator controls.
 const { app, BrowserWindow } = require('electron');
 const fs = require('fs');
@@ -31,12 +32,16 @@ const bundle = `const modules = {${Array.from(modules, ([id, code]) => `${JSON.s
 function require(id) { if (!cache[id]) { const module = cache[id] = { exports: {} }; modules[id](require, module, module.exports); } return cache[id].exports; }`;
 const server = http.createServer((_req, res) => res.end('<!doctype html><title>Driving GPU checks</title>'));
 
-async function checks(soakIterations) {
+async function checks(soakIterations, targetGearsOnly) {
     const { DrivingPolicy } = require('views/ai-driving-training/driving-policy');
-    const { cloneConfig, DEFAULT_DRIVING_CONFIG, DRIVING_ANALOG_AXES, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingMemorySlots, drivingObservationInputs, drivingPolicyInputs } = require('views/ai-driving-training/driving-model-config');
+    const { cloneConfig, DEFAULT_DRIVING_CONFIG, DRIVING_ANALOG_AXES, DRIVING_GEAR_COUNT, DRIVING_MAX_GEAR, DRIVING_MIN_GEAR, MAX_DIRECTED_CONTROL_SAMPLES,
+        drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingGearIndex: gearIndex, drivingGearFromIndex,
+        drivingMemorySlots, drivingObservationInputs, drivingPolicyInputs } = require('views/ai-driving-training/driving-model-config');
     const { drivingMemoryInputs, drivingMemorySlotInputs } = require('views/ai-driving-training/driving-memory');
+    const { drivingGruStateWidth } = require('views/ai-driving-training/driving-gru-shaders');
     const { sacPolicySampleFloats } = require('views/ai-driving-training/driving-sac-shaders');
     const actionOutputs = DEFAULT_DRIVING_CONFIG.actions.outputs.length;
+    const gearRow = gear => DRIVING_ANALOG_AXES + gearIndex(gear);
     // Exercise the optional unnormalized encoder as well as the default encoder.
     const unnormalizedConfig = (source) => {
         const config = cloneConfig(source);
@@ -87,8 +92,8 @@ async function checks(soakIterations) {
             checkpoint.model.sac.targetCriticWeights, ...Object.values(checkpoint.model.sac.targetEncoder)]
             .flat(3).every(Number.isFinite), 'Finite SAC parameters and targets');
     };
-    const predict = async (policy, input, shifts) => {
-        const decision = await policy.decideAsync(input, false, shifts);
+    const predict = async (policy, input, gears) => {
+        const decision = await policy.decideAsync(input, false, gears);
         policy.releaseDecision(decision);
         return decision;
     };
@@ -125,9 +130,10 @@ async function checks(soakIterations) {
         for (let i = 0; i < bins; i++) { features[i * slots] = history ? 1 : 0; features[i * slots + 1] = (i + 1) / bins; }
         return { features, cameras };
     };
-    const shifts = { up: true, down: false }, action = { pedal: 0.7, steering: -0.3, shiftUp: true };
+    const reverseOnly = { max: -1 }, reverseAndNeutral = { max: 0 }, throughSecond = { max: 2 }, allGears = { max: DRIVING_MAX_GEAR };
+    const action = { pedal: 0.7, steering: -0.3, gear: 2 };
     const credits = (decision, steps = decision.plan.map((_, step) => step)) => steps.map(step =>
-        ({ step, weight: 1 / steps.length, action: decision.plan[step].action, shift: decision.plan[step].shift, shifts: decision.plan[step].shifts }));
+        ({ step, weight: 1 / steps.length, action: decision.plan[step].action, gear: decision.plan[step].action.gear, gears: decision.plan[step].gears }));
 
     const explorationConfig = unnormalizedConfig();
     explorationConfig.network.hiddenUnits = 1;
@@ -135,11 +141,13 @@ async function checks(soakIterations) {
     explorationConfig.network.cameraProjectionUnits = 1;
     const explorationSeed = new DrivingPolicy({ game: 'acc', car: 'GT3', map: 'monza' },
         drivingObservationInputs(explorationConfig), () => 0.5, explorationConfig).checkpoint();
+    explorationSeed.model.gruWeights[2][drivingPolicyInputs(explorationConfig) + 1] = 0.5;
     const freshExploration = await create(explorationConfig, explorationSeed);
     explorationSeed.model.sac.criticWeights = [
-        [0, -1, 0.5, 0, -1, 1, 0, 2, 0.1],
-        [0, -2, 0.25, 0, -0.5, 0.5, 0, 1, -0.2],
-    ];
+        [0.75, -1, 0.5, 0, -1, 1, 0, 2, 0.1],
+        [-0.5, -2, 0.25, 0, -0.5, 0.5, 0, 1, -0.2],
+    ].map(row => [...row.slice(0, 3), ...Array(gearIndex(1)).fill(0), ...row.slice(3, 6),
+        ...Array(DRIVING_GEAR_COUNT - gearIndex(3) - 1).fill(0), ...row.slice(6)]);
     const restoredExploration = await create(explorationConfig, explorationSeed);
     freshExploration.random = restoredExploration.random = () => 0.98;
     const explorationInput = makeInput(explorationConfig, 0, false), beforeExploration = readbacks;
@@ -147,6 +155,27 @@ async function checks(soakIterations) {
     const restoredPlan = await restoredExploration.decideAsync(explorationInput, true);
     assert(JSON.stringify(freshPlan.plan) === JSON.stringify(restoredPlan.plan), 'Restored critic weights do not change the sampled plan');
     assert(readbacks === beforeExploration + 2, 'Each exploration plan uses one actor readback');
+    const scoreGpu = restoredExploration.gpu;
+    const hidden = (await scoreGpu.download([restoredPlan.gpu.states]))[restoredPlan.gpu.steps * drivingGruStateWidth];
+    close([hidden], [Math.tanh(0.5) / (1 + Math.exp(1))], 'Scoring fixture current recurrent state');
+    const controls = Array.from({ length: MAX_DIRECTED_CONTROL_SAMPLES }, (_, index) =>
+        -1 + 2 * index / (MAX_DIRECTED_CONTROL_SAMPLES - 1));
+    const candidates = [{ pedal: -0.45, steering: 0.2, gear: 2 }];
+    for (let gear = DRIVING_MIN_GEAR; gear <= DRIVING_MAX_GEAR; gear++) {
+        for (const pedal of controls) {
+            for (const steering of controls) candidates.push({ pedal, steering, gear });
+        }
+    }
+    const candidateReadbacks = readbacks;
+    const candidateScores = await scoreGpu.scoreActions(restoredPlan.gpu, candidates);
+    assert(readbacks === candidateReadbacks + 1, 'Joint action scoring reads both critics in one batch');
+    const candidateColumns = 1 + actionOutputs + 1;
+    const expectedScores = candidates.map(({ pedal, steering, gear }) => {
+        const criticInput = [hidden, pedal, steering, ...Array.from({ length: DRIVING_GEAR_COUNT }, (_, index) => Number(index === gearIndex(gear))), 1];
+        return explorationSeed.model.sac.criticWeights.map(weights => Math.tanh(
+            criticInput.reduce((sum, value, index) => sum + value * weights[index], 0)) * weights[candidateColumns] + weights[candidateColumns + 1]);
+    });
+    close(candidateScores.flat(), expectedScores.flat(), 'Twin-critic joint action scores against CPU oracle');
     freshExploration.releaseDecision(freshPlan); restoredExploration.releaseDecision(restoredPlan);
     freshExploration.dispose(); restoredExploration.dispose();
 
@@ -234,18 +263,20 @@ async function checks(soakIterations) {
             assert(!(retired in gpu), `Retired CPU implementation must be absent: ${retired}`);
         }
         for (const sample of [makeInput(config, 3, false), input]) {
-            const a = await predict(gpu, sample, shifts), b = await predict(gpu, sample, shifts);
+            const a = await predict(gpu, sample, throughSecond), b = await predict(gpu, sample, throughSecond);
             close([a.value, ...a.plan.flatMap(step => step.means)], [b.value, ...b.plan.flatMap(step => step.means)], 'deterministic prediction');
-            assert(a.plan[0].shiftProbabilities[2] === 0, 'Unavailable shifts stay masked');
+            const probabilities = a.plan[0].gearProbabilities;
+            assert(probabilities.slice(gearIndex(3)).every(p => p === 0), 'Targets above the gear limit stay masked');
+            assert(probabilities[gearIndex(-1)] > 0 && probabilities[gearIndex(0)] > 0, 'Reverse and neutral stay available with a forward cap');
         }
-        await withoutReadbacks('demonstration', () => gpu.learnDemonstrationAsync(input, action, shifts));
+        await withoutReadbacks('demonstration', () => gpu.learnDemonstrationAsync(input, action));
         const demonstration = await gpu.checkpointAsync();
         assertTrained(initial, demonstration, 'demonstration');
         close(initial.model.outputWeights.slice(actionOutputs).flat(), demonstration.model.outputWeights.slice(actionOutputs).flat(), 'Only the demonstrated slot learns');
-        await withoutReadbacks('distinct historical images', () => gpu.learnDemonstrationAsync(makeInput(config, 5, true, true), action, shifts));
+        await withoutReadbacks('distinct historical images', () => gpu.learnDemonstrationAsync(makeInput(config, 5, true, true), action));
         gpu.random = () => 0.99;
-        for (const [reward, terminal, available] of [[0.8, false, shifts], [-20, false, { up: false, down: true }],
-            [20, true, { up: false, down: false }], [-0.6, true, { up: true, down: true }]]) {
+        for (const [reward, terminal, available] of [[0.8, false, throughSecond], [-20, false, { max: 4 }],
+            [20, true, reverseOnly], [-0.6, true, allGears]]) {
             const before = await gpu.checkpointAsync(), decision = await gpu.decideAsync(input, true, available);
             const following = terminal ? { features: [], cameras: [] } : next;
             const executed = [0, decision.plan.length - 1];
@@ -262,29 +293,30 @@ async function checks(soakIterations) {
                 if (executed.includes(step)) assert(changed(from, to), `Executed plan slot ${step} receives reward`);
                 else close(from.flat(), to.flat(), `Unexecuted slot ${step} receives no reward`);
             }
-            if (!available.up && !available.down) close(before.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), after.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), 'Forced hold receives no shift gradient');
+            if (available.max === reverseOnly.max) close(before.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), after.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), 'A single available gear receives no categorical gradient');
         }
-        for (const [pedal, steering, available] of [[-1, -1, { up: false, down: false }], [1, 1, { up: false, down: true }]]) {
+        for (const [pedal, steering, gear] of [[-1, -1, DRIVING_MIN_GEAR], [1, 1, DRIVING_MAX_GEAR]]) {
             await withoutReadbacks('boundary demonstration', () => gpu.learnDemonstrationAsync(input,
-                { pedal, steering, shiftDown: available.down }, available));
+                { pedal, steering, gear }));
             finite(await gpu.checkpointAsync());
         }
-        const targets = [{ step: 1, action, shifts }], finalSlot = config.actions.planTimesSeconds.length - 1;
+        const targets = [{ step: 1, action }], finalSlot = config.actions.planTimesSeconds.length - 1;
         const beforePlan = await gpu.checkpointAsync();
-        await withoutReadbacks('delayed targets', () => gpu.learnPlannedActionsAsync(input, [{ step: finalSlot, action, shifts }]));
+        await withoutReadbacks('delayed targets', () => gpu.learnPlannedActionsAsync(input, [{ step: finalSlot, action }]));
         const afterPlan = await gpu.checkpointAsync();
         assertTrained(beforePlan, afterPlan, 'delayed target');
         assert(afterPlan.model.steps === beforePlan.model.steps, 'Delayed targets do not count transitions');
         close(beforePlan.model.outputWeights.slice(0, finalSlot * actionOutputs).flat(), afterPlan.model.outputWeights.slice(0, finalSlot * actionOutputs).flat(), 'Earlier slots receive no delayed gradient');
         close(beforePlan.model.outputWeights.slice(-1).flat(), afterPlan.model.outputWeights.slice(-1).flat(), 'No critic gradient from demonstrations');
-        const twin = await create(config, afterPlan), finalTarget = { step: finalSlot, action: { pedal: -0.9, steering: 0.4 }, shifts: { up: false, down: false } };
-        await gpu.learnPlannedActionsAsync(input, [{ step: finalSlot, action, shifts }, finalTarget]);
+        const twin = await create(config, afterPlan), finalTarget = { step: finalSlot, action: { pedal: -0.9, steering: 0.4, gear: 1 } };
+        await gpu.learnPlannedActionsAsync(input, [{ step: finalSlot, action }, finalTarget]);
         await twin.learnPlannedActionsAsync(input, [finalTarget]);
         compare(await gpu.checkpointAsync(), await twin.checkpointAsync(), 'Duplicate target slots use the last target'); twin.dispose();
         const unchanged = await gpu.checkpointAsync(), bufferCount = gpu.gpu.buffers.size;
         await withoutReadbacks('empty targets', () => gpu.learnPlannedActionsAsync(input, []));
-        for (const invalid of [[{ step: -1, action, shifts }], [{ step: 0, action: { ...action, pedal: NaN }, shifts }],
-            [{ step: 0, action: { ...action, shiftDown: true }, shifts }]]) {
+        for (const invalid of [[{ step: -1, action }], [{ step: 0, action: { ...action, pedal: NaN } }],
+            [{ step: 0, action: { ...action, gear: DRIVING_MIN_GEAR - 1 } }],
+            [{ step: 0, action: { ...action, gear: DRIVING_MAX_GEAR + 1 } }]]) {
             let rejected = false;
             try { await gpu.learnPlannedActionsAsync(input, invalid); } catch { rejected = true; }
             assert(rejected, 'Invalid targets must be rejected');
@@ -294,7 +326,7 @@ async function checks(soakIterations) {
         let pendingCheckpoint;
         await gpu.trainBatchAsync(async () => {
             const beforeReadbacks = readbacks;
-            await gpu.learnDemonstrationAsync(input, action, shifts);
+            await gpu.learnDemonstrationAsync(input, action);
             pendingCheckpoint = gpu.checkpointAsync();
             await gpu.learnPlannedActionsAsync(input, targets);
             await gpu.learnPlannedActionsAsync(next, targets);
@@ -312,7 +344,7 @@ async function checks(soakIterations) {
             for (let iteration = 0; iteration < 2; iteration++) {
                 const start = performance.now(), beforeReadbacks = readbacks;
                 await withoutReadbacks('Full training tick', () => gpu.trainBatchAsync(async () => {
-                    await gpu.learnDemonstrationAsync(samples[0], action, shifts);
+                    await gpu.learnDemonstrationAsync(samples[0], action);
                     for (const sample of samples.slice(1)) await gpu.learnPlannedActionsAsync(sample, targets);
                 }));
                 await predict(gpu, next);
@@ -328,7 +360,7 @@ async function checks(soakIterations) {
         }
         const validation = await gpu.gpu.device.popErrorScope(); assert(!validation, validation?.message);
         gpu.gpu.device.destroy(); await gpu.gpu.device.lost;
-        for (const operation of [() => gpu.decideAsync(input, false), () => gpu.learnDemonstrationAsync(input, action, shifts)]) {
+        for (const operation of [() => gpu.decideAsync(input, false), () => gpu.learnDemonstrationAsync(input, action)]) {
             let lost = false; try { await operation(); } catch (error) { lost = /GPU lost/.test(error.message); }
             assert(lost, 'Device loss must fail without a CPU path');
         }
@@ -355,12 +387,12 @@ async function checks(soakIterations) {
     sacSeed.model.sac.criticWeights.forEach(row => row.fill(0));
     sacSeed.model.sac.targetCriticWeights.forEach((row, i) => { row.fill(0); row[row.length - 1] = 2 + i * 2; });
     const sacInput = makeInput(sacConfig), sacNext = makeInput(sacConfig, 1);
-    const sacAction = { pedal: 0.4, steering: -0.2 };
-    const sacCredit = { step: 0, weight: 1, shift: 0, shifts: { up: false, down: false }, action: sacAction };
+    const sacAction = { pedal: 0.4, steering: -0.2, gear: -1 };
+    const sacCredit = { step: 0, weight: 1, gear: -1, gears: reverseOnly, action: sacAction };
     const directSac = async (policy, next, terminal, actions = [sacCredit], reward = 0.25) => {
         const pass = policy.gpu.replay(sacInput);
         try { policy.gpu.learnTransition(pass, next, { reward, elapsedSeconds: 0.4, terminal, actions,
-            nextShifts: { up: false, down: false } }); }
+            nextGears: reverseOnly }); }
         finally { policy.gpu.release(pass); }
         await policy.gpu.finishTraining();
     };
@@ -398,8 +430,8 @@ async function checks(soakIterations) {
     assert(changed(lowAfter.model.sac.criticWeights, highAfter.model.sac.criticWeights), 'Critics consume actual replay controls');
     lowAction.dispose(); highAction.dispose();
 
-    // Shift all Q scores with their output biases. The two allowed gear choices
-    // select different critics, and both critics prefer less brake.
+    // Shift all Q scores with their output biases. Reverse and neutral select
+    // different critics, and both critics prefer less brake.
     const pedalGradients = [];
     for (const offset of [0, -4]) {
         const seed = JSON.parse(JSON.stringify(sacSeed)), h = sacConfig.network.hiddenUnits;
@@ -407,13 +439,13 @@ async function checks(soakIterations) {
         seed.model.outputWeights[0][h] = -0.4;
         seed.model.sac.criticWeights.forEach((row, q) => {
             row[h] = q === 0 ? 0.5 : 1;
-            row[h + DRIVING_ANALOG_AXES + 1] = q === 0 ? 1 : -0.25;
+            row[h + gearRow(0)] = q === 0 ? 1 : -0.25;
             row[h * (h + actionOutputs + 1)] = 1;
             row[row.length - 1] = offset + q * 0.25;
         });
         seed.model.sac.targetCriticWeights = seed.model.sac.criticWeights.map(row => row.slice());
         const policy = await create(sacConfig, seed), gpu = policy.gpu;
-        await directSac(policy, sacNext, true, [{ ...sacCredit, shifts }]);
+        await directSac(policy, sacNext, true, [{ ...sacCredit, gears: reverseAndNeutral }]);
         pedalGradients.push(Array.from(await gpu.download([gpu.training.get('outputGradient'), gpu.training.get('logStdGradient')])));
         policy.dispose();
     }
@@ -422,9 +454,9 @@ async function checks(soakIterations) {
     const noise = Math.sqrt(-2 * Math.log(0.61)) * Math.cos(2 * Math.PI * 0.61);
     const pedalObjective = (mean, logStd) => {
         const brake = -Math.tanh(mean + Math.exp(logStd) * noise);
-        const hold = Math.min(Math.tanh(-0.5 * brake), Math.tanh(-brake) + 0.25);
-        const up = Math.min(Math.tanh(1 - 0.5 * brake), Math.tanh(-0.25 - brake) + 0.25);
-        return (hold + up) / 2;
+        const first = Math.min(Math.tanh(-0.5 * brake), Math.tanh(-brake) + 0.25);
+        const second = Math.min(Math.tanh(1 - 0.5 * brake), Math.tanh(-0.25 - brake) + 0.25);
+        return (first + second) / 2;
     };
     const pedalLogStd = Math.log(sacConfig.learning.pedalExplorationSigma), delta = 1e-4;
     const expectedPedalGradients = [pedalObjective(-0.4 + delta, pedalLogStd) - pedalObjective(-0.4 - delta, pedalLogStd),
@@ -432,8 +464,9 @@ async function checks(soakIterations) {
         .map(value => value / (2 * delta) * sacConfig.learning.actorRate / sacConfig.learning.demonstrationRate);
     close([pedalGradients[0][0], pedalGradients[0][sacSeed.model.outputWeights.length]],
         expectedPedalGradients, 'Signed pedal mean and log deviation follow finite differences of the twin-Q objective', 1e-7);
-    assert(pedalGradients[0][2] > 0 && pedalGradients[0][3] < 0 && pedalGradients[0][4] === 0,
-        'Gear gradient favors hold over up and masks down');
+    assert(pedalGradients[0][gearRow(-1)] > 0 && pedalGradients[0][gearRow(0)] < 0
+        && pedalGradients[0].slice(gearRow(1), actionOutputs).every(value => value === 0),
+        'Gear gradient favors reverse over neutral and masks forward gears');
 
     const entropySeed = JSON.parse(JSON.stringify(sacSeed));
     entropySeed.configuration.learning.entropyTemperature = 0.02;
@@ -452,7 +485,7 @@ async function checks(soakIterations) {
     outputValues.splice(0, DRIVING_ANALOG_AXES, 0, 0.1);
     const distributionOutputs = distributionGpu.upload(outputValues);
     const distributionStds = distributionGpu.upload(new Array(distributionConfig.actions.planTimesSeconds.length * DRIVING_ANALOG_AXES).fill(Math.log(0.05)));
-    const distributionTransition = distributionGpu.upload([0, 0.2, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, -1, -0.5, -1, -0.5]);
+    const distributionTransition = distributionGpu.upload([0, 0.2, 1, 0, 1, 1, 1, 1, 1, 0, 0, 0, -1, -0.5, -1, -0.5]);
     const distributionSamples = distributionGpu.buffer(2 * sacPolicySampleFloats * 4), sampleCommands = distributionGpu.device.createCommandEncoder();
     distributionGpu.dispatch(sampleCommands, 'sacSample', [distributionOutputs, distributionOutputs, distributionStds, distributionTransition, distributionSamples], 2);
     distributionGpu.device.queue.submit([sampleCommands.finish()]);
@@ -462,7 +495,7 @@ async function checks(soakIterations) {
     const expectedLogp = -0.5 - 0.125 - Math.log(0.1 * 0.05 * 2 * Math.PI * pedalJacobian * steeringJacobian);
     const expectedSample = [signedPedal, steering, expectedLogp, pedalJacobian, steeringJacobian,
         pedalJacobian * -0.1, steeringJacobian * -0.025, 2 * signedPedal, 2 * steering,
-        2 * signedPedal * -0.1 - 1, 2 * steering * -0.025 - 1, 1, 0, 0];
+        2 * signedPedal * -0.1 - 1, 2 * steering * -0.025 - 1, 1, ...Array(DRIVING_GEAR_COUNT - 1).fill(0)];
     close(Array.from(measuredSamples.slice(0, sacPolicySampleFloats)), expectedSample, 'Signed pedal density, action Jacobian and entropy gradient');
     close(Array.from(measuredSamples.slice(sacPolicySampleFloats)), expectedSample, 'Next actor distribution matches current sampler');
     distribution.dispose();
@@ -477,25 +510,26 @@ async function checks(soakIterations) {
         const [lower, optimistic] = seed.model.sac.criticWeights;
         lower[h] = 0.8;
         lower[h + 1] = -0.5;
-        lower[h + DRIVING_ANALOG_AXES + 1] = 0.6;
+        lower[h + gearRow(0)] = 0.6;
         optimistic[h] = -1;
         optimistic[h * (h + actionOutputs + 1)] = 1;
         optimistic[optimistic.length - 1] = 3;
         const policy = await create(seed.configuration, seed);
-        const up = { ...sacCredit, shift: 1, shifts, action: { ...sacAction, shiftUp: true } };
-        await directSac(policy, sacNext, true, [up], reward);
+        const neutral = { ...sacCredit, gear: 0, gears: reverseAndNeutral, action: { ...sacAction, gear: 0 } };
+        await directSac(policy, sacNext, true, [neutral], reward);
         const replay = policy.gpu.replay(sacNext);
         const steps = sacConfig.actions.planTimesSeconds;
         policy.gpu.learnTransition(replay, sacNext, { reward, elapsedSeconds: 0.4, terminal: true,
-            actions: steps.map((_, step) => ({ ...up, step, weight: 1 / steps.length })), nextShifts: shifts, originInput: sacInput });
+            actions: steps.map((_, step) => ({ ...neutral, step, weight: 1 / steps.length })), nextGears: reverseAndNeutral, originInput: sacInput });
         policy.gpu.release(replay);
         const learned = await policy.checkpointAsync();
         policy.random = () => 0.98;
-        const decision = await policy.decideAsync(sacInput, true, shifts);
+        const decision = await policy.decideAsync(sacInput, true, reverseAndNeutral);
         decision.plan.forEach(({ means, latent }, step) => {
             assert(reward * means[0] > 0 && reward * means[1] < 0, `Outcome steers preferred controls at step ${step}`);
             const rows = learned.model.outputWeights.slice(step * actionOutputs + DRIVING_ANALOG_AXES, (step + 1) * actionOutputs);
-            assert(reward * rows[1][h] > 0 && reward * rows[0][h] < 0 && rows[2][h] === 0, `Outcome steers allowed gears at step ${step}`);
+            assert(reward * rows[gearIndex(0)][h] > 0 && reward * rows[gearIndex(-1)][h] < 0
+                && rows.slice(gearIndex(1)).every(row => row[h] === 0), `Outcome steers allowed gears at step ${step}`);
             assert(reward * (learned.model.sac.logStds[step * DRIVING_ANALOG_AXES] - Math.fround(Math.log(0.05))) < 0,
                 `Outcome changes exploration spread at step ${step}`);
             assert(latent.every((value, axis) => value !== means[axis]), `Learned step ${step} still explores`);
@@ -504,8 +538,8 @@ async function checks(soakIterations) {
     }
 
     const blended = await create(config), blendedInput = makeInput(config);
-    const blendedDecision = await blended.decideAsync(blendedInput, true, shifts);
-    const analog = { step: 1, weight: 0.25, shiftWeight: 0, shift: 0, shifts: { up: false, down: false }, action: sacAction };
+    const blendedDecision = await blended.decideAsync(blendedInput, true, throughSecond);
+    const analog = { step: 1, weight: 0.25, gearWeight: 0, gear: -1, gears: reverseOnly, action: sacAction };
     const beforeAnalogOnly = await blended.checkpointAsync();
     await blended.learnAsync(blendedDecision, 1, blendedInput, 0.2, [analog], true);
     const afterAnalogOnly = await blended.checkpointAsync();
@@ -522,10 +556,10 @@ async function checks(soakIterations) {
     const sequenceTimes = [1000, 1500, 3000, 4500], sequenceRewards = [0.2, 0.4, -2];
     const sequence = [];
     for (let i = 0; i < 3; i++) {
-        const decision = await sequencePolicy.decideAsync(sequenceInputs[i], true, shifts);
+        const decision = await sequencePolicy.decideAsync(sequenceInputs[i], true, throughSecond);
         sequencePolicy.releaseDecision(decision);
         sequence.push({ startedAt: sequenceTimes[i], endedAt: sequenceTimes[i + 1], reward: sequenceRewards[i],
-            input: sequenceInputs[i], next: sequenceInputs[i + 1], nextShifts: shifts,
+            input: sequenceInputs[i], next: sequenceInputs[i + 1], nextGears: throughSecond,
             samples: [{ decision, credits: credits(decision, [0, 2, 6]), rewardShare: 1 }] });
     }
     compare(await sequencePolicy.checkpointAsync(), sequenceSeed, 'Collection keeps every layer fixed');
@@ -546,10 +580,8 @@ async function checks(soakIterations) {
     const pedals = await create(config, pedalSeed), pedalInput = makeInput(config);
     for (const pedal of [-1, -0.7, 0, 0.7, 1]) {
         pedals.gpu.device.queue.writeBuffer(pedals.gpu.outputWeights, 0, new Float32Array(pedalSeed.model.outputWeights.flat()));
-        const targetAction = { pedal, steering: -0.3 };
-        const available = { up: false, down: false };
-        await pedals.learnDemonstrationAsync(pedalInput, targetAction, available);
-        await pedals.learnPlannedActionsAsync(pedalInput, [{ step: 1, action: targetAction, shifts: available }]);
+        const targetAction = { pedal, steering: -0.3, gear: 1 };
+        await pedals.learnPlannedActionsAsync(pedalInput, [0, 1].map(step => ({ step, action: targetAction, gearWeight: 0 })));
         const saved = await pedals.checkpointAsync();
         const limit = 1 - config.learning.actionEpsilon;
         const expected = config.learning.demonstrationRate * Math.atanh(Math.max(-limit, Math.min(limit, pedal)));
@@ -557,7 +589,7 @@ async function checks(soakIterations) {
             'Signed immediate and delayed pedal targets');
         close([saved.model.outputWeights[1][2], saved.model.outputWeights[actionOutputs + 1][2]],
             [config.learning.demonstrationRate * Math.atanh(-0.3), config.learning.demonstrationRate * Math.atanh(-0.3)], 'Steering learns independently');
-        close(saved.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), pedalSeed.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), 'Forced hold uses the shifted logit indices');
+        close(saved.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), pedalSeed.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), 'Missing gear labels leave logits unchanged');
     }
     pedals.dispose();
 
@@ -568,18 +600,18 @@ async function checks(soakIterations) {
     const biasColumn = config.network.hiddenUnits;
     const finalRecordedSlot = config.actions.planTimesSeconds.length - 1;
     const recordedCases = [
-        { step: 0, action: { pedal: -1, steering: 0, shiftUp: true }, shifts: { up: true, down: true },
+        { step: 0, action: { pedal: -1, steering: 0, gear: -1 },
             means: [25, 0.4] },
-        { step: 1, action: { pedal: 0.7, steering: 0.3 }, shifts: { up: false, down: false },
+        { step: 1, action: { pedal: 0.7, steering: 0.3, gear: 1 }, gearWeight: 0,
             means: [-25, -25] },
-        { step: finalRecordedSlot, action: { pedal: -0.35, steering: -0.2 }, shifts: { up: true, down: true },
+        { step: finalRecordedSlot, action: { pedal: -0.35, steering: -0.2, gear: DRIVING_MAX_GEAR },
             means: [0.7, 0.2] },
     ];
     for (const { step, means } of recordedCases) {
         means.forEach((value, axis) => { recordedSeed.model.outputWeights[step * actionOutputs + axis][biasColumn] = value; });
     }
     const recorded = await create(recordedSeed.configuration, recordedSeed);
-    const standardTarget = { step: 2, action: { pedal: 0.7, steering: -0.3 }, shifts: { up: false, down: false } };
+    const standardTarget = { step: 2, action: { pedal: 0.7, steering: -0.3, gear: 1 }, gearWeight: 0 };
     await withoutReadbacks('Recorded analog update', () => recorded.trainBatchAsync(async () => {
         recorded.gpu.learnTargets(pedalInput, [recordedCases[0]], true, 'recorded');
         recorded.gpu.learnTargets(pedalInput, [standardTarget]);
@@ -600,23 +632,24 @@ async function checks(soakIterations) {
     for (const target of recordedCases) {
         close(analogBias(recordedAfter.model, target.step), expectedRecordedBias(target), `Recorded analog finite differences at slot ${target.step}`);
     }
+    const expectedGearGradient = (target, scale = 1) => Array.from({ length: DRIVING_GEAR_COUNT }, (_, i) =>
+        scale * (Number(i === gearIndex(target)) - 1 / DRIVING_GEAR_COUNT) * config.learning.demonstrationRate / config.learning.shiftTemperature);
     close(recordedAfter.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).map((row) => row[biasColumn]),
-        [-1 / 3, 2 / 3, -1 / 3].map((score) => score * config.learning.demonstrationRate / config.learning.shiftTemperature),
-        'Recorded upshift uses the categorical cross-entropy derivative');
+        expectedGearGradient(-1),
+        'Recorded reverse uses the categorical cross-entropy derivative');
     close(recordedAfter.model.outputWeights.slice(finalRecordedSlot * actionOutputs + DRIVING_ANALOG_AXES, (finalRecordedSlot + 1) * actionOutputs)
-        .map((row) => row[biasColumn]), [2 / 3, -1 / 3, -1 / 3]
-        .map((score) => score * config.learning.demonstrationRate / config.learning.shiftTemperature),
-        'Recorded gear hold uses the same categorical cross-entropy derivative');
+        .map((row) => row[biasColumn]), expectedGearGradient(DRIVING_MAX_GEAR),
+        'The highest gear uses the same categorical cross-entropy derivative');
     close(analogBias(recordedAfter.model, standardTarget.step), [standardTarget.action.pedal, standardTarget.action.steering]
         .map((value) => config.learning.demonstrationRate * Math.atanh(value)), 'The standard objective remains distinct on the same GPU');
     close(analogBias(recordedAfter.model, 3), [0, 0], 'Recorded objective skips absent plan targets');
     recorded.dispose();
 
     const linkedRecorded = await create(recordedSeed.configuration, recordedSeed);
-    const delayedShift = { ...recordedCases[1], action: { ...recordedCases[1].action, shiftDown: true }, shifts: { up: true, down: true } };
-    const linkedTargets = [recordedCases[0], delayedShift, recordedCases[2]];
+    const delayedGear = { ...recordedCases[1], action: { ...recordedCases[1].action, gear: 0 }, gearWeight: 1 };
+    const linkedTargets = [recordedCases[0], delayedGear, recordedCases[2]];
     await linkedRecorded.trainBatchAsync(async () => linkedRecorded.gpu.learnTargets(pedalInput,
-        [...linkedTargets, delayedShift], false, 'recorded'));
+        [...linkedTargets, delayedGear], false, 'recorded'));
     const linkedWeights = (await linkedRecorded.checkpointAsync()).model;
     for (const target of linkedTargets) {
         const scale = target.step === 0 ? 1 : 0.25;
@@ -624,9 +657,15 @@ async function checks(soakIterations) {
             `Grouped recorded analog weight at slot ${target.step}`);
     }
     close(linkedWeights.outputWeights.slice(actionOutputs + DRIVING_ANALOG_AXES, 2 * actionOutputs).map((row) => row[biasColumn]),
-        [-1 / 3, -1 / 3, 2 / 3].map((score) => 0.25 * score * config.learning.demonstrationRate / config.learning.shiftTemperature),
-        'A grouped recorded shift uses the same delayed target weight');
+        expectedGearGradient(0, 0.25),
+        'Grouped recorded neutral uses the delayed target weight');
     linkedRecorded.dispose();
+
+    if (targetGearsOnly) {
+        assert(errors.length === 0, errors.join('\n'));
+        return { adapter: { vendor: adapter.info.vendor, architecture: adapter.info.architecture },
+            checks: 'Target gear distributions and limits, twin-Q SAC gradients, recorded categorical targets, and delayed gear labels passed', results };
+    }
 
     const clippedRecordedSeed = JSON.parse(JSON.stringify(recordedSeed));
     clippedRecordedSeed.configuration.learning.gradientNormLimit = 0.05;
@@ -660,14 +699,14 @@ async function checks(soakIterations) {
     assert(firstAdamStats.finite && firstAdamStats.samples === 2 && firstAdamStats.clipScale < 0.5 && firstAdamStats.updateNorm > 0,
         'Recorded Adam averages and clips its training gradient');
     close([firstAdamStats.learningRate], [clippedRecordedSeed.configuration.learning.demonstrationRate], 'Recorded Adam reports its configured rate');
-    await runAdam(adamRecorded, delayedShift, false);
+    await runAdam(adamRecorded, delayedGear, false);
     compare(await adamRecorded.checkpointAsync(), firstAdam, 'Cancelled recorded batch commits no weights');
-    await runAdam(adamRecorded, delayedShift, true, true);
+    await runAdam(adamRecorded, delayedGear, true, true);
     compare(await adamRecorded.checkpointAsync(), firstAdam, 'Nonfinite recorded batch commits no weights');
     const invalidAdam = await adamRecorded.trainingDiagnosticsAsync();
     assert(!invalidAdam.finite && invalidAdam.updateNorm === 0, 'Nonfinite recorded batch reports no update');
-    await runAdam(adamRecorded, delayedShift);
-    await runAdam(adamReference, delayedShift);
+    await runAdam(adamRecorded, delayedGear);
+    await runAdam(adamReference, delayedGear);
     compare(await adamRecorded.checkpointAsync(), await adamReference.checkpointAsync(),
         'Cancelled and nonfinite batches leave both Adam moments and bias correction unchanged');
     adamRecorded.dispose(); adamReference.dispose();
@@ -688,16 +727,16 @@ async function checks(soakIterations) {
     const nativeHidden = nativeConfig.network.hiddenUnits;
     nativeSeed.model.gruWeights.forEach(row => row.fill(0));
     nativeSeed.model.outputWeights.forEach(row => row.fill(0));
-    nativeSeed.model.outputWeights[DRIVING_ANALOG_AXES][nativeHidden] = 0.05;
+    nativeSeed.model.outputWeights[gearRow(1)][nativeHidden] = 0.05;
     for (let j = 0; j < nativeHidden; j++) {
         nativeSeed.model.gruWeights[j][drivingPolicyInputs(nativeConfig) + nativeHidden] = -2;
         nativeSeed.model.gruWeights[2 * nativeHidden + j][2 + drivingCameraInputs(nativeConfig) + j] = 2;
     }
-    const nativePolicy = await create(nativeConfig, nativeSeed), allShifts = { up: true, down: true };
+    const nativePolicy = await create(nativeConfig, nativeSeed);
     const nativeBatch = [
-        { pedal: 0.7, steering: -0.65, shiftUp: true },
-        { pedal: -0.7, steering: 0.65, shiftDown: true },
-        { pedal: 0, steering: 0 },
+        { pedal: 0.7, steering: -0.65, gear: -1 },
+        { pedal: -0.7, steering: 0.65, gear: 0 },
+        { pedal: 0, steering: 0, gear: 1 },
     ].map((action, cue) => {
         const input = makeInput(nativeConfig, 0, false);
         input.features.fill(0);
@@ -705,12 +744,12 @@ async function checks(soakIterations) {
         input.features.splice(offset, 3, ...Array.from({ length: 3 }, (_, j) => j === cue ? 1 : -1));
         input.recurrent = { episode: {}, capturedAt: 1100, historyTimes: [null] };
         input.recordedHistory = [{ capturedAt: 1000, features: input.features.slice(offset), camera: input.cameras.at(-1) }];
-        return { input, targets: [{ step: 0, action, shifts: allShifts }] };
+        return { input, targets: [{ step: 0, action }] };
     });
     const nativePredictions = () => Promise.all(nativeBatch.map(async ({ input }) => {
         const recurrent = { ...input.recurrent, episode: {} };
-        await predict(nativePolicy, { ...input, recurrent: { ...recurrent, capturedAt: 1000 } }, allShifts);
-        return (await predict(nativePolicy, { ...input, recurrent }, allShifts)).plan[0];
+        await predict(nativePolicy, { ...input, recurrent: { ...recurrent, capturedAt: 1000 } });
+        return (await predict(nativePolicy, { ...input, recurrent })).plan[0];
     }));
     const nativeBefore = await nativePredictions();
     const nativeBatches = 32;
@@ -735,8 +774,9 @@ async function checks(soakIterations) {
     assert(nativeAfter[0].action.pedal > 0.2 && nativeAfter[0].action.steering < -0.2
         && nativeAfter[1].action.pedal < -0.2 && nativeAfter[1].action.steering > 0.2,
         'Native actions distinguish throttle, braking, and both steering directions');
-    assert(nativeBefore.every(({ shift }) => shift === 0) && nativeAfter.map(({ shift }) => shift).join() === '1,2,0',
-        'Native shift logits learn Up, Down, and Hold on distinct inputs');
+    assert(nativeBefore.every(({ action }) => action.gear === 1)
+        && nativeAfter.every(({ action }, i) => action.gear === nativeBatch[i].targets[0].action.gear),
+        'Native gear logits learn distinct target gears on distinct inputs');
     nativePolicy.dispose();
 
     // Compare reused storage with a newly restored GPU for every update. Vary
@@ -747,8 +787,8 @@ async function checks(soakIterations) {
         const fresh = await create(config, await reused.checkpointAsync());
         const held = await reused.decideAsync(sample, false), expected = await fresh.decideAsync(sample, false);
         const replay = makeInput(config, iteration + 1, true, true);
-        await reused.learnDemonstrationAsync(replay, action, shifts);
-        await fresh.learnDemonstrationAsync(replay, action, shifts);
+        await reused.learnDemonstrationAsync(replay, action);
+        await fresh.learnDemonstrationAsync(replay, action);
         await reused.learnAsync(held, 0.4, replay, 0.2, credits(held), iteration % 2 === 0);
         await fresh.learnAsync(expected, 0.4, replay, 0.2, credits(expected), iteration % 2 === 0);
         reused.releaseDecision(held); fresh.releaseDecision(expected);
@@ -761,12 +801,12 @@ async function checks(soakIterations) {
     seed.model.cameraWeights.forEach((rows, l) => rows.forEach(row => { row.fill([0.005, 0.03, 0.05, 0.05][l]); row[row.length - 1] = 0.05; }));
     seed.model.outputWeights.forEach(row => { row[0] = 0.1; row[1] = -0.05; });
     const gpu = await create(config, seed), input = makeInput(config, 1, true, true);
-    const target = { pedal: Math.tanh(0.4), steering: Math.tanh(0.15), shiftUp: true };
+    const target = { pedal: Math.tanh(0.4), steering: Math.tanh(0.15), gear: 2 };
     const objective = async () => {
         const decision = await predict(gpu, input);
         const means = decision.plan[0].means;
         return -0.5 * means.reduce((sum, mean, i) => sum + (mean - [0.4, 0.15][i]) ** 2, 0)
-            + Math.log(decision.plan[0].shiftProbabilities[1]);
+            + Math.log(decision.plan[0].gearProbabilities[gearIndex(target.gear)]);
     };
     const before = await gpu.checkpointAsync(), coordinates = [];
     config.network.cameraLayers.forEach((_, l) => {
@@ -796,7 +836,7 @@ async function checks(soakIterations) {
         gpu.gpu.device.queue.writeBuffer(coordinate.buffer, coordinate.index * 4, new Float32Array([coordinate.value]));
         coordinate.derivative = (plus - minus) / (2 * epsilon);
     }
-    await withoutReadbacks('Finite-difference update', () => gpu.learnDemonstrationAsync(input, target, { up: true, down: true }));
+    await withoutReadbacks('Finite-difference update', () => gpu.learnDemonstrationAsync(input, target));
     const after = await gpu.checkpointAsync();
     let maxDerivativeError = 0;
     for (const coordinate of coordinates) {
@@ -950,7 +990,7 @@ async function checks(soakIterations) {
         const policy = await create(c), sample = makeInput(c);
         sample.cameras[sample.cameras.length - 1] = { width: 384, height: 216, rgb: new Uint8Array(384 * 216 * 3) };
         const start = await policy.checkpointAsync();
-        await policy.learnDemonstrationAsync(sample, action, shifts);
+        await policy.learnDemonstrationAsync(sample, action);
         const finish = await policy.checkpointAsync();
         assert(changed(start.model.cameraWeights[0].map(row => row.slice(0, -1)),
             finish.model.cameraWeights[0].map(row => row.slice(0, -1))) === cameraHistory, 'CNN gradients reach historical pixels only when present');
@@ -961,21 +1001,24 @@ async function checks(soakIterations) {
         if (variant === 'zero-rates') { c.learning.actorRate = c.learning.criticRate = c.learning.demonstrationRate = 0; }
         else c.learning.weightLimit = 2000;
         const document = new DrivingPolicy(seed.model.context, drivingObservationInputs(c), () => 0.6, c).checkpoint();
-        if (variant === 'large-logits') { document.model.outputWeights[DRIVING_ANALOG_AXES + 1].fill(0); document.model.outputWeights[DRIVING_ANALOG_AXES + 1][c.network.hiddenUnits] = 1000; }
+        const gear = 2;
+        if (variant === 'large-logits') {
+            document.model.outputWeights[gearRow(gear)].fill(0);
+            document.model.outputWeights[gearRow(gear)][c.network.hiddenUnits] = 1000;
+        }
         const policy = await create(c, document), sample = makeInput(c), start = await policy.checkpointAsync();
-        const available = { up: false, down: false };
-        if (variant === 'large-logits') assert((await predict(policy, sample)).plan[0].shiftProbabilities[1] === 1, 'Large logits remain stable');
-        await policy.learnDemonstrationAsync(sample, { pedal: -1, steering: -1 }, available);
+        if (variant === 'large-logits') assert((await predict(policy, sample)).plan[0].gearProbabilities[gearIndex(gear)] === 1, 'Large logits remain stable');
+        await policy.learnDemonstrationAsync(sample, { pedal: -1, steering: -1, gear });
         if (variant === 'zero-rates') {
             const decision = await policy.decideAsync(sample, true);
             await policy.learnAsync(decision, 2, sample, 0.2, credits(decision)); policy.releaseDecision(decision);
-            await policy.learnPlannedActionsAsync(sample, [{ step: 1, action, shifts }]);
+            await policy.learnPlannedActionsAsync(sample, [{ step: 1, action }]);
         }
         const finish = await policy.checkpointAsync(); finite(finish);
         if (variant === 'zero-rates') {
             for (const key of ['cameraWeights', 'cameraProjectionWeights', 'gruWeights', 'outputWeights']) close(start.model[key].flat(2), finish.model[key].flat(2), 'Zero learning rates', 1e-12);
             assert(finish.model.steps === 2, 'Count completed transitions with zero rates');
-        } else close(start.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), finish.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), 'Masked large logits');
+        } else close(start.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), finish.model.outputWeights.slice(DRIVING_ANALOG_AXES, actionOutputs).flat(), 'Stable large logits');
         policy.dispose();
     }
     // Independent CPU forward oracle and numerical derivatives exercise both
@@ -1040,10 +1083,10 @@ async function checks(soakIterations) {
     const expectedOutputs = normalizedSeed.model.outputWeights.map(row => dot(row, [...oracleHidden, 1]));
     close(normalizedPass.outputs, expectedOutputs, 'Normalized GRU output CPU oracle');
     normalizedPolicy.gpu.release(normalizedPass.pass);
-    const normalizedTarget = { pedal: Math.tanh(0.4), steering: Math.tanh(-0.2) };
-    const noShifts = { up: false, down: false };
+    const normalizedTarget = { pedal: Math.tanh(0.4), steering: Math.tanh(-0.2), gear: 1 };
+    const normalizedGearlessTarget = { step: 0, action: normalizedTarget, gearWeight: 0 };
     const normalizedObjective = async () => {
-        const decision = await predict(normalizedPolicy, normalizedInput, noShifts);
+        const decision = await predict(normalizedPolicy, normalizedInput, reverseOnly);
         return -0.5 * decision.plan[0].means.reduce((sum, value, i) => sum + (value - [0.4, -0.2][i]) ** 2, 0);
     };
     const normBefore = await normalizedPolicy.checkpointAsync(), normCoordinates = [];
@@ -1069,7 +1112,7 @@ async function checks(soakIterations) {
         normalizedPolicy.gpu.device.queue.writeBuffer(coordinate.buffer, coordinate.index * 4, new Float32Array([coordinate.value]));
         coordinate.derivative = (plus - minus) / (2 * epsilon);
     }
-    await withoutReadbacks('Normalized finite-difference update', () => normalizedPolicy.learnDemonstrationAsync(normalizedInput, normalizedTarget, noShifts));
+    await withoutReadbacks('Normalized finite-difference update', () => normalizedPolicy.learnPlannedActionsAsync(normalizedInput, [normalizedGearlessTarget]));
     const normAfter = await normalizedPolicy.checkpointAsync();
     let normalizedDerivativeError = 0;
     for (const coordinate of normCoordinates) {
@@ -1106,7 +1149,7 @@ async function checks(soakIterations) {
     const clippingSeed = JSON.parse(JSON.stringify(normBefore));
     clippingSeed.configuration.learning.gradientNormLimit = 0.05;
     const clipped = await create(clippingSeed.configuration, clippingSeed);
-    await withoutReadbacks('Global clipped update', () => clipped.learnDemonstrationAsync(normalizedInput, normalizedTarget, noShifts));
+    await withoutReadbacks('Global clipped update', () => clipped.learnPlannedActionsAsync(normalizedInput, [normalizedGearlessTarget]));
     const clippedAfter = await clipped.checkpointAsync(), clippedDiagnostics = await clipped.gpu.trainingDiagnostics();
     const unclippedDelta = deltaFrom(normBefore, normAfter), clippedDelta = deltaFrom(clippingSeed, clippedAfter);
     const clipScale = Math.min(1, clippingSeed.configuration.learning.gradientNormLimit * normalizedConfig.learning.demonstrationRate / normOf(unclippedDelta));
@@ -1121,10 +1164,10 @@ async function checks(soakIterations) {
     // SAC replay batches average their contributions before one global clip.
     const sequenceClipped = await create(clippingSeed.configuration, clippingSeed), clipSequence = [];
     for (let i = 0; i < 4; i++) {
-        const decision = await sequenceClipped.decideAsync(normalizedInput, true, noShifts);
+        const decision = await sequenceClipped.decideAsync(normalizedInput, true, reverseOnly);
         sequenceClipped.releaseDecision(decision);
         clipSequence.push({ startedAt: i * 100, endedAt: (i + 1) * 100, reward: 3,
-            input: normalizedInput, next: normalizedInput, nextShifts: noShifts,
+            input: normalizedInput, next: normalizedInput, nextGears: reverseOnly,
             samples: [{ decision, credits: credits(decision), rewardShare: 1 }] });
     }
     await withoutReadbacks('Clipped sequence commit', () => sequenceClipped.trainBatchAsync(() => sequenceClipped.learnSequenceAsync(clipSequence, normalizedInput)));
@@ -1150,7 +1193,7 @@ async function checks(soakIterations) {
         for (let row = 0; row < actionOutputs; row++) planSumSeed.model.outputWeights[step * actionOutputs + row] = planSumSeed.model.outputWeights[row].slice();
     }
     const oneHead = await create(normalizedConfig, planSumSeed), allHeads = await create(normalizedConfig, planSumSeed);
-    const equalTargets = normalizedConfig.actions.planTimesSeconds.map((_time, step) => ({ step, action: normalizedTarget, shifts }));
+    const equalTargets = normalizedConfig.actions.planTimesSeconds.map((_time, step) => ({ ...normalizedGearlessTarget, step }));
     await oneHead.learnPlannedActionsAsync(normalizedInput, equalTargets.slice(0, 1));
     await allHeads.learnPlannedActionsAsync(normalizedInput, equalTargets);
     const oneHeadAfter = await oneHead.checkpointAsync(), allHeadsAfter = await allHeads.checkpointAsync();
@@ -1197,14 +1240,14 @@ async function checks(soakIterations) {
         t * normInputs + 2 + normalizedConfig.network.cameraProjectionUnits)), new Array(16).fill(0), 'Zero-variance camera normalization');
     close(constantPass.outputs, constantSeed.model.outputWeights.map(row => row[normH]), 'Large constant gate sums normalize before nonlinearities');
     constantPolicy.gpu.release(constantPass.pass);
-    await withoutReadbacks('Zero-variance normalization backward', () => constantPolicy.learnDemonstrationAsync(normalizedInput, normalizedTarget, noShifts));
+    await withoutReadbacks('Zero-variance normalization backward', () => constantPolicy.learnPlannedActionsAsync(normalizedInput, [normalizedGearlessTarget]));
     const constantAfter = await constantPolicy.checkpointAsync(); finite(constantAfter);
     assert(changed(constantSeed.model.gruNormWeights, constantAfter.model.gruNormWeights), 'Zero-variance gates retain trainable bias gradients');
     constantPolicy.dispose();
 
     const productionConfig = cloneConfig(), productionPolicy = await create(productionConfig);
     const productionSample = makeInput(productionConfig), productionBefore = await productionPolicy.checkpointAsync();
-    await withoutReadbacks('Default 256-feature normalized training', () => productionPolicy.learnDemonstrationAsync(productionSample, action, shifts));
+    await withoutReadbacks('Default 256-feature normalized training', () => productionPolicy.learnDemonstrationAsync(productionSample, action));
     const productionAfter = await productionPolicy.checkpointAsync();
     assertTrained(productionBefore, productionAfter, 'Default normalized model');
     for (const key of ['cameraNormWeights', 'gruNormWeights']) assert(changed(productionBefore.model[key], productionAfter.model[key]), `Default normalized model trains ${key}`);
@@ -1239,7 +1282,7 @@ async function checks(soakIterations) {
         let checkpointReloads = 0, checkedDecisions = 0, maxCameraFeature = 0, maxHidden = 0;
         const checkDecision = async (sample) => {
             const decision = await policy.decideAsync(sample, true);
-            assert([decision.value, ...decision.plan.flatMap(step => [...step.means, ...step.latent, ...step.shiftProbabilities,
+            assert([decision.value, ...decision.plan.flatMap(step => [...step.means, ...step.latent, ...step.gearProbabilities,
                 step.action.pedal, step.action.steering])].every(Number.isFinite), `${variant}: finite decision`);
             checkedDecisions++;
             return decision;
@@ -1260,13 +1303,12 @@ async function checks(soakIterations) {
                     'Stress fixture reaches large camera features and bounded saturated GRU hidden states');
             }
             const target = { pedal: iteration % 3 ? 1 : -1,
-                steering: Math.sin(iteration * 0.1), shiftUp: iteration % 3 === 0, shiftDown: iteration % 3 === 1 };
-            const available = { up: true, down: true };
+                steering: Math.sin(iteration * 0.1), gear: drivingGearFromIndex(iteration % DRIVING_GEAR_COUNT) };
             try {
                 await withoutReadbacks('Soak training', () => policy.trainBatchAsync(async () => {
                     await policy.learnAsync(decision, (iteration % 21) - 10, next, 0.2, credits(decision), iteration % 17 === 0);
-                    await policy.learnDemonstrationAsync(sample, target, available);
-                    await policy.learnPlannedActionsAsync(sample, [{ step: c.actions.planTimesSeconds.length - 1, action: target, shifts: available }]);
+                    await policy.learnDemonstrationAsync(sample, target);
+                    await policy.learnPlannedActionsAsync(sample, [{ step: c.actions.planTimesSeconds.length - 1, action: target }]);
                 }));
             } finally { policy.releaseDecision(decision); }
             if ((iteration + 1) % 100 === 0) {
@@ -1294,7 +1336,7 @@ async function checks(soakIterations) {
         checks: 'GPU-only prediction and learning, zero intermediate readbacks, CNN/projection/GRU/output finite differences, padded borders, spatial ordering and adaptive pooling gradients, all layers and gates train, historical camera gradients, masks, terminal/clipped transitions, delayed plans, checkpoint reload/synchronization, custom layouts/rates, allocation-free warmed ticks, reused versus fresh workspaces, bounded buffers and device loss passed',
         activationCases, sequenceChecks: 'Episode-scoped GRU state carry, duplicate and out-of-order observations, seeded training replay, adjacent-state replay, clipped double-Q Bellman targets, elapsed discount, terminal masks, Polyak targets, current-policy actor samples, learned entropy, and interrupted-batch rollback passed',
         nativeRecorded: { batches: nativeBatches, analogErrorBefore, analogErrorAfter,
-            shifts: nativeAfter.map(({ shift }) => shift) },
+            gears: nativeAfter.map(({ action }) => action.gear) },
         normalization, soak, finiteDifferences: { weightsChecked: coordinates.length, maxDerivativeError }, results };
 }
 
@@ -1305,9 +1347,13 @@ app.whenReady().then(async () => {
         window = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false } });
         window.webContents.on('console-message', (_event, _level, message) => process.stderr.write(message + '\n'));
         await window.loadURL(`http://127.0.0.1:${server.address().port}/`);
-        const result = await window.webContents.executeJavaScript(`(async () => { ${bundle}\nreturn await (${checks.toString()})(${process.argv.includes('--soak') ? 1000 : 0}); })()`);
-        process.stdout.write(JSON.stringify(result, null, 2) + '\n');
-        app.exit(0);
+        const run = await window.webContents.executeJavaScript(`(async () => { ${bundle}
+            try { return { result: await (${checks.toString()})(${process.argv.includes('--soak') ? 1000 : 0}, ${process.argv.includes('--target-gears')}) }; }
+            catch (error) { return { error: error.stack || String(error) }; }
+        })()`);
+        if (run.error) process.stderr.write(run.error + '\n');
+        else process.stdout.write(JSON.stringify(run.result, null, 2) + '\n');
+        app.exit(run.error ? 1 : 0);
     } catch (error) { process.stderr.write(String(error.stack || error) + '\n'); app.exit(1); }
     finally { server.close(); window?.destroy(); }
 });

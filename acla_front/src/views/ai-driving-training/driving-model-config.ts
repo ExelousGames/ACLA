@@ -82,7 +82,17 @@ function migrateRecordedSamplingWeights(value: unknown): RecordedSamplingWeights
 export const DRIVING_ANALOG_AXES = 2;
 export const DRIVING_GRU_GATES = 3;
 export const DRIVING_DEMONSTRATION_BACKLOG = 512;
-export const MAX_EXPLORATION_GEAR = 10;
+export const DRIVING_MIN_GEAR = -1;
+export const DRIVING_MAX_GEAR = 10;
+export const DRIVING_GEAR_COUNT = DRIVING_MAX_GEAR - DRIVING_MIN_GEAR + 1;
+export const MAX_EXPLORATION_GEAR = DRIVING_MAX_GEAR;
+export const MIN_EXPLORATION_PLAN_INTERVAL_SECONDS = 0.1;
+export const MAX_EXPLORATION_PLAN_INTERVAL_SECONDS = 10;
+export const MIN_DIRECTED_CONTROL_SAMPLES = 2;
+export const MAX_DIRECTED_CONTROL_SAMPLES = 15;
+export const isDrivingGear = (gear: number): boolean => Number.isInteger(gear) && gear >= DRIVING_MIN_GEAR && gear <= DRIVING_MAX_GEAR;
+export const drivingGearIndex = (gear: number): number => gear - DRIVING_MIN_GEAR;
+export const drivingGearFromIndex = (index: number): number => index + DRIVING_MIN_GEAR;
 
 /** Match the signed pedal and steering output order. */
 export const drivingExplorationSigmas = (config: DrivingModelConfig): [number, number] =>
@@ -92,10 +102,22 @@ export const drivingExplorationSigmas = (config: DrivingModelConfig): [number, n
 export const drivingExplorationFrequencies = (config: DrivingModelConfig): [number, number, number] =>
     [config.learning.pedalExplorationUpdateHz, config.learning.steeringExplorationUpdateHz, config.learning.gearExplorationUpdateHz];
 
+const directedRangeKeys = ['directedSteeringMin', 'directedSteeringMax', 'directedPedalMin', 'directedPedalMax'] as const;
+const directedRangePaths = new Set(directedRangeKeys.map((key) => `learning.${key}`));
+const compatibleLearningKeys = ['throttleExplorationSpeedLimitKmh', 'maxExplorationGear', ...directedRangeKeys,
+    'directedSteeringSamples', 'directedPedalSamples', 'randomExplorationEnabled', 'directedExplorationEnabled',
+    'explorationPlanIntervalSeconds'] as const;
+
 export function readDrivingConfig(value: unknown): DrivingModelConfig {
     const outputs = (value as Partial<DrivingModelConfig> | null)?.actions?.outputs;
     if (Array.isArray(outputs) && outputs.includes('throttle-tanh')) {
         throw new Error('This checkpoint uses separate throttle and brake outputs. Create a new model file to train the signed pedal policy.');
+    }
+    if (Array.isArray(outputs) && outputs.includes('hold-logit')) {
+        throw new Error('This checkpoint uses relative shift outputs. Create a new model file to train the target gear policy.');
+    }
+    if (Array.isArray(outputs) && outputs.length === defaults.actions.outputs.length - 2 && outputs.includes('gear-1-logit')) {
+        throw new Error('This checkpoint uses only forward gear outputs. Create a new model file to train with neutral and reverse.');
     }
     if (value && typeof value === 'object' && !Array.isArray(value)) {
         const weights = 'recordedSamplingWeights' in value ? migrateRecordedSamplingWeights(value.recordedSamplingWeights)
@@ -109,10 +131,12 @@ export function readDrivingConfig(value: unknown): DrivingModelConfig {
     }
     const learning = (value as { learning?: Record<string, unknown> } | null)?.learning;
     if (learning && typeof learning === 'object' && !Array.isArray(learning)
-        && (!('throttleExplorationSpeedLimitKmh' in learning) || !('maxExplorationGear' in learning))) {
-        value = { ...value as object, learning: {
-            throttleExplorationSpeedLimitKmh: defaults.learning.throttleExplorationSpeedLimitKmh,
-            maxExplorationGear: defaults.learning.maxExplorationGear, ...learning } };
+        && compatibleLearningKeys.some((key) => !(key in learning))) {
+        const settings = { ...learning };
+        for (const key of compatibleLearningKeys) {
+            if (!(key in learning)) settings[key] = defaults.learning[key];
+        }
+        value = { ...value as object, learning: settings };
     }
     // Speed and pedal rewards changed without changing the SAC model's input or weight layout.
     const reward = (value as { reward?: Record<string, unknown> } | null)?.reward;
@@ -210,7 +234,9 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
                 || Object.keys(actual).length !== Object.keys(expected).length) return invalid();
             Object.keys(expected).forEach((key) => shape(actual[key], expected[key], path ? `${path}.${key}` : key));
         } else if (typeof expected === 'number') {
-            if (typeof actual !== 'number' || !Number.isFinite(actual) || actual < 0 || actual > 1e6) invalid();
+            const directedEndpoint = directedRangePaths.has(path);
+            if (typeof actual !== 'number' || !Number.isFinite(actual)
+                || actual < (directedEndpoint ? -1 : 0) || actual > (directedEndpoint ? 1 : 1e6)) invalid();
         } else if (typeof expected === 'boolean') {
             if (typeof actual !== 'boolean') invalid();
         } else if (actual !== expected) invalid();
@@ -242,8 +268,13 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
         || l.actionEpsilon < 1e-9 || l.actionEpsilon >= 0.5
         || l.shiftTemperature < 0.001 || l.shiftTemperature > 1
         || !integer(l.maxExplorationGear, 0, MAX_EXPLORATION_GEAR)
+        || l.directedSteeringMin > l.directedSteeringMax || l.directedPedalMin > l.directedPedalMax
+        || !integer(l.directedSteeringSamples, MIN_DIRECTED_CONTROL_SAMPLES, MAX_DIRECTED_CONTROL_SAMPLES)
+        || !integer(l.directedPedalSamples, MIN_DIRECTED_CONTROL_SAMPLES, MAX_DIRECTED_CONTROL_SAMPLES)
         || !integer(l.throttleExplorationSpeedLimitKmh, 0, defaults.learning.throttleExplorationSpeedLimitKmh)
         || drivingExplorationFrequencies(c).some((frequency) => frequency < 0.1 || frequency > 10)
+        || l.explorationPlanIntervalSeconds < MIN_EXPLORATION_PLAN_INTERVAL_SECONDS
+        || l.explorationPlanIntervalSeconds > MAX_EXPLORATION_PLAN_INTERVAL_SECONDS
         || [c.reward.steeringChangeWeight, c.reward.throttleChangeWeight, c.reward.brakeChangeWeight].some((weight) => weight > 1)
         || l.sequenceSeconds <= 0 || l.sequenceSeconds > 30
         || !integer(c.memory.intervalMs, 1, 30000) || !integer(c.memory.windowMs, 1, 30000)

@@ -44,10 +44,17 @@
 .driving-exploration legend { padding: 0 6px; font-size: 14px; }
 .driving-exploration .driving-aggression { margin-top: 12px; }
 .driving-exploration input:disabled { opacity: .4; }
-.driving-sampling-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 130px), 1fr)); gap: 12px; }
-.driving-sampling-fields label, .driving-recorded-batch label { display: grid; grid-template-rows: 1fr auto; gap: 6px; font-size: 12px; }
-.driving-sampling-fields input, .driving-recorded-batch input { box-sizing: border-box; min-width: 0; width: 100%; padding: 8px; border: 1px solid #3a414d; border-radius: 6px; background: #232934; color: #edf3f2; color-scheme: dark; }
-.driving-sampling-fields input:focus-visible, .driving-recorded-batch input:focus-visible { outline: 2px solid #00e676; outline-offset: 3px; }
+.driving-exploration-mode { border: 1px solid #3a414d; border-radius: 8px; margin: 0 0 16px; min-width: 0; padding: 12px; }
+.driving-exploration-mode button { gap: 5px; }
+.driving-exploration-mode button[aria-pressed="true"] span { color: #61e8a3; }
+.driving-exploration-mode > p:last-child { margin-bottom: 0; }
+.driving-exploration-mode .driving-exploration-fields { margin-top: 10px; }
+.driving-exploration > .driving-exploration-fields { max-width: 210px; }
+.driving-sampling-fields, .driving-exploration-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 130px), 1fr)); gap: 12px; }
+.driving-sampling-fields label, .driving-recorded-batch label, .driving-exploration-fields label { display: grid; grid-template-rows: 1fr auto; gap: 6px; font-size: 12px; }
+.driving-sampling-fields input, .driving-recorded-batch input, .driving-exploration-fields input, .driving-exploration-fields select { box-sizing: border-box; min-width: 0; width: 100%; padding: 8px; border: 1px solid #3a414d; border-radius: 6px; background: #232934; color: #edf3f2; color-scheme: dark; }
+.driving-sampling-fields input:focus-visible, .driving-recorded-batch input:focus-visible, .driving-exploration-fields input:focus-visible, .driving-exploration-fields select:focus-visible { outline: 2px solid #00e676; outline-offset: 3px; }
+.driving-exploration-fields select:disabled { opacity: .4; }
 .driving-sampling-weights .driving-buttons { align-items: center; }
 .driving-recorded-batch-settings { display: flex; flex-wrap: wrap; gap: 12px 24px; }
 .driving-sampling-weights .driving-recorded-batch { align-items: end; margin-top: 0; }

@@ -1,13 +1,13 @@
 import type { PolicyCameraImage } from 'views/live-session/live-session-recording/policy-camera';
 import { RECORDED_BPTT_STEPS, type DrivingPolicyInput } from './driving-memory';
-import { DRIVING_ANALOG_AXES, DRIVING_DEMONSTRATION_BACKLOG, DRIVING_GRU_GATES, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingMemorySlots, drivingPolicyInputs } from './driving-model-config';
+import { DRIVING_ANALOG_AXES, DRIVING_DEMONSTRATION_BACKLOG, DRIVING_GEAR_COUNT, DRIVING_GRU_GATES, MAX_DIRECTED_CONTROL_SAMPLES, DrivingModelConfig, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs, drivingGearIndex, drivingMemorySlots, drivingPolicyInputs, isDrivingGear } from './driving-model-config';
 import { drivingGruDeltaWidth, drivingGruShaders, drivingGruStateWidth } from './driving-gru-shaders';
 import { drivingCameraShaders } from './driving-camera-shaders';
 import { drivingDemonstrationTargetStride, drivingLearningShaders } from './driving-learning-shaders';
-import { drivingSacShaders, sacPolicySampleFloats } from './driving-sac-shaders';
+import { drivingSacShaders, sacCurrentGearLimitOffset, sacPolicySampleFloats } from './driving-sac-shaders';
 import { drivingNormalizationShaders } from './driving-normalization-shaders';
 import { drivingUpdateShaders } from './driving-update-shaders';
-import type { DrivingImitationObjective, PlannedActionTarget, PolicyModelState, PolicyWeights, ShiftAvailability } from './driving-policy';
+import type { DrivingImitationObjective, GearAvailability, PlannedActionTarget, PlanStepCredit, PolicyModelState, PolicyWeights } from './driving-policy';
 import { assembleDrivingInput } from './driving-policy-input';
 import type { DrivingCameraInspection } from './driving-camera-inspection';
 import type { DrivingAction } from './driving-observation';
@@ -25,6 +25,7 @@ export interface GpuPolicyPass {
 
 type GpuWorkspace = Map<string, GPUBuffer>;
 type RecurrentPoint = Pick<NonNullable<DrivingPolicyInput['recurrent']>, 'episode' | 'capturedAt'>;
+export const MAX_DRIVING_SCORE_ACTIONS = DRIVING_GEAR_COUNT * MAX_DIRECTED_CONTROL_SAMPLES ** 2 + 1;
 
 /** GPU-resident CNN/GRU inference and backpropagation through each replayed sequence. */
 export class DrivingGpuModel {
@@ -130,7 +131,12 @@ export class DrivingGpuModel {
     }
     private scratch(workspace: GpuWorkspace, name: string, size: number) {
         let buffer = workspace.get(name);
-        if (!buffer) { buffer = this.buffer(size); workspace.set(name, buffer); }
+        if (!buffer || buffer.size < size) {
+            const next = this.buffer(size);
+            if (buffer) this.destroy(buffer);
+            workspace.set(name, next);
+            buffer = next;
+        }
         return buffer;
     }
     private recycle(workspace: GpuWorkspace) {
@@ -249,6 +255,30 @@ export class DrivingGpuModel {
             this.rememberRecurrentState(input, pass);
             return { pass, outputs: Array.from(values.subarray(0, this.outputs)), logStds: Array.from(values.subarray(this.outputs)) };
         } catch (error) { this.release(pass); throw error; }
+    }
+
+    /** Score joint actions at the current observation with both online SAC critics. */
+    async scoreActions(pass: GpuPolicyPass, actions: readonly DrivingAction[]): Promise<[number, number][]> {
+        this.assertReady();
+        const workspace = this.passWorkspaces.get(pass);
+        if (!workspace || pass.released) throw new Error('Action scoring requires an active prediction from the training GPU.');
+        if (!actions.length) return [];
+        if (actions.length > MAX_DRIVING_SCORE_ACTIONS || actions.some(({ pedal, steering, gear }) =>
+            !Number.isFinite(pedal) || Math.abs(pedal) > 1 || !Number.isFinite(steering) || Math.abs(steering) > 1 || !isDrivingGear(gear))) {
+            throw new Error('Invalid driving action candidates.');
+        }
+        const capacity = 2 ** Math.ceil(Math.log2(actions.length));
+        const candidates = this.scratch(workspace, 'scoreCandidates', capacity * (DRIVING_ANALOG_AXES + 1) * 4);
+        const scores = this.scratch(workspace, 'actionScores', capacity * 2 * 4);
+        const stateSums = this.scratch(workspace, 'scoreStateSums', this.hidden * 2 * 4);
+        this.device.queue.writeBuffer(candidates, 0, new Float32Array(actions.flatMap(({ pedal, steering, gear }) =>
+            [pedal, steering, drivingGearIndex(gear)])));
+        const commands = this.device.createCommandEncoder();
+        // The expensive recurrent-state projection is shared by every candidate.
+        this.dispatch(commands, 'sacScoreState', [this.criticWeights, pass.states, pass.count, stateSums], Math.ceil(this.hidden / 64), 2);
+        this.dispatch(commands, 'sacScoreActions', [this.criticWeights, stateSums, candidates, scores], actions.length * 2);
+        const values = await this.download([scores], commands, actions.length * 2 * 4);
+        return actions.map((_, index) => [values[2 * index], values[2 * index + 1]]);
     }
 
     private recurrentStateBefore(point: RecurrentPoint, before: number, includeCutoff = false) {
@@ -460,12 +490,11 @@ export class DrivingGpuModel {
         const hasImmediateTarget = recorded && targets.some(({ step }) => step === 0);
         const delayedSlots = hasImmediateTarget ? new Set(targets.map(({ step }) => step)).size - 1 : 0;
         const values = new Float32Array(this.config.actions.planTimesSeconds.length * stride);
-        for (const { step, action, shifts } of targets) {
+        for (const { step, action, gearWeight = 1 } of targets) {
             const offset = step * stride;
             // A full recorded plan reserves the stronger signal for the action used now.
             const weight = step > 0 && delayedSlots > 0 ? 0.5 / delayedSlots : 1;
-            values.set([weight, action.pedal, action.steering, action.shiftUp ? 1 : action.shiftDown ? 2 : 0,
-                Number(shifts.up), Number(shifts.down)], offset);
+            values.set([weight, action.pedal, action.steering, drivingGearIndex(action.gear), gearWeight], offset);
         }
         const pass = this.forwardPass(input, false, recorded ? 'recorded' : 'replay');
         try {
@@ -478,14 +507,14 @@ export class DrivingGpuModel {
 
     learnTransition(pass: GpuPolicyPass, next: DrivingPolicyInput, target: {
         reward: number; elapsedSeconds: number; terminal: boolean;
-        actions: { step: number; weight: number; shiftWeight?: number; action: DrivingAction; shift: number; shifts: ShiftAvailability }[];
-        nextShifts: ShiftAvailability;
+        actions: (PlanStepCredit & { action: DrivingAction })[];
+        nextGears: GearAvailability;
         originInput?: DrivingPolicyInput;
     }) {
         this.assertReady();
         if (this.sequence?.recorded) throw new Error('Recorded training batches require recorded action targets.');
         if (pass.released) throw new Error('The GPU training sample was already released.');
-        const actions = target.actions.filter(({ weight, shiftWeight = weight }) => weight > 0 || shiftWeight > 0);
+        const actions = target.actions.filter(({ weight, gearWeight = weight }) => weight > 0 || gearWeight > 0);
         if (!actions.length) return;
         const localSequence = !this.sequence;
         if (localSequence) this.beginSequence();
@@ -497,20 +526,20 @@ export class DrivingGpuModel {
                 nextTarget = this.forwardPass(next, true);
             }
             const analogWeight = actions.reduce((sum, { weight }) => sum + weight, 0);
-            const weightSum = analogWeight || actions.reduce((sum, { weight, shiftWeight = weight }) => sum + shiftWeight, 0);
-            const commandShifts = actions.find(({ weight, shiftWeight = weight }) => shiftWeight > 0)?.shifts;
+            const weightSum = analogWeight || actions.reduce((sum, { weight, gearWeight = weight }) => sum + gearWeight, 0);
+            const commandGears = actions.find(({ weight, gearWeight = weight }) => gearWeight > 0)?.gears;
             const normal = () => Math.sqrt(-2 * Math.log(Math.max(1e-12, this.random()))) * Math.cos(2 * Math.PI * this.random());
-            const transitions = actions.map(({ step, weight, shiftWeight = weight, action, shifts }, index) => {
+            const transitions = actions.map(({ step, weight, gearWeight = weight, action, gears }, index) => {
                 // The immediate actor learns at the observed execution state.
-                const samplingShifts = commandShifts ?? shifts;
+                const samplingGears = commandGears ?? gears;
                 const data = new Float32Array([target.reward, target.elapsedSeconds, Number(target.terminal), 0,
-                    weight, shiftWeight, (analogWeight ? weight : shiftWeight) / weightSum,
-                    Number(samplingShifts.up), Number(samplingShifts.down), Number(target.nextShifts.up), Number(target.nextShifts.down),
-                    action.pedal, action.steering, action.shiftUp ? 1 : action.shiftDown ? 2 : 0,
+                    weight, gearWeight, (analogWeight ? weight : gearWeight) / weightSum,
+                    drivingGearIndex(samplingGears.max) + 1, drivingGearIndex(target.nextGears.max) + 1,
+                    action.pedal, action.steering, drivingGearIndex(action.gear),
                     ...Array.from({ length: 2 * DRIVING_ANALOG_AXES }, normal)]);
                 const values = this.scratch(this.training, `sacTransition${index}`, data.byteLength);
                 this.device.queue.writeBuffer(values, 0, data);
-                return { values, step, shifts };
+                return { values, step, gears };
             });
             const features = this.scratch(this.training, 'sacFeatures', this.hidden * 2 * 4);
             this.update(pass, undefined, [], (commands, outputGradient, criticHidden) => {
@@ -530,9 +559,9 @@ export class DrivingGpuModel {
                 // with the critics at the state reached when that step controlled the car.
                 const origin = target.originInput ? this.forwardPass(target.originInput) : pass;
                 try {
-                    for (const { values, step, shifts } of future) {
+                    for (const { values, step, gears } of future) {
                         this.device.queue.writeBuffer(values, 3 * 4, new Float32Array([step]));
-                        this.device.queue.writeBuffer(values, 7 * 4, new Float32Array([Number(shifts.up), Number(shifts.down)]));
+                        this.device.queue.writeBuffer(values, sacCurrentGearLimitOffset * 4, new Float32Array([drivingGearIndex(gears.max) + 1]));
                     }
                     this.update(origin, undefined, [], (commands, outputGradient) => {
                         for (const { values } of future) this.sacGradients(commands, origin, features, values, outputGradient);
@@ -550,10 +579,14 @@ export class DrivingGpuModel {
     private sacGradients(commands: GPUCommandEncoder, actor: GpuPolicyPass, features: GPUBuffer, transition: GPUBuffer,
         outputGradient: GPUBuffer, criticHidden?: GPUBuffer, nextPolicy?: GpuPolicyPass) {
         const buffer = (name: string, size: number) => this.scratch(this.training, name, size);
-        const samples = buffer('sacSamples', 2 * sacPolicySampleFloats * 4), activations = buffer('sacActivations', 14 * this.hidden * 4);
-        const values = buffer('sacValues', 14 * 4), errors = buffer('sacErrors', 2 * 4);
+        const currentEvaluations = 2 * (1 + DRIVING_GEAR_COUNT);
+        const allEvaluations = currentEvaluations + 2 * DRIVING_GEAR_COUNT;
+        const samples = buffer('sacSamples', 2 * sacPolicySampleFloats * 4);
+        const activations = buffer('sacActivations', allEvaluations * this.hidden * 4);
+        const values = buffer('sacValues', allEvaluations * 4), errors = buffer('sacErrors', 2 * 4);
         this.dispatch(commands, 'sacSample', [actor.outputs, nextPolicy?.outputs ?? actor.outputs, this.logStds, transition, samples], criticHidden ? 2 : 1);
-        this.dispatch(commands, 'sacCriticForward', [this.criticWeights, this.targetCriticWeights, features, transition, samples, activations, values], criticHidden ? 14 : 8);
+        this.dispatch(commands, 'sacCriticForward', [this.criticWeights, this.targetCriticWeights, features, transition, samples, activations, values],
+            criticHidden ? allEvaluations : currentEvaluations);
         this.dispatch(commands, 'sacLoss', [transition, samples, values, errors, outputGradient,
             buffer('logStdGradient', this.logStds.size), this.criticWeights, activations], 1);
         if (criticHidden) {
@@ -649,26 +682,32 @@ export class DrivingGpuModel {
         this.assertReady();
     }
 
-    private async download(buffers: GPUBuffer[]) {
+    private async download(buffers: GPUBuffer[], pendingCommands?: GPUCommandEncoder, readBytes?: number) {
         this.assertReady();
-        const size = buffers.reduce((total, buffer) => total + buffer.size, 0);
-        const staging = this.readbacks.get(size) ?? this.buffer(size, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);
-        this.readbacks.delete(size);
+        const capacity = buffers.reduce((total, buffer) => total + buffer.size, 0);
+        const size = readBytes ?? capacity;
+        const staging = this.readbacks.get(capacity) ?? this.buffer(capacity, GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ);
+        this.readbacks.delete(capacity);
         let reusable = false;
         try {
-            const commands = this.device.createCommandEncoder(); let offset = 0;
-            for (const buffer of buffers) { commands.copyBufferToBuffer(buffer, 0, staging, offset, buffer.size); offset += buffer.size; }
+            const commands = pendingCommands ?? this.device.createCommandEncoder(); let offset = 0;
+            for (const buffer of buffers) {
+                const bytes = Math.min(buffer.size, size - offset);
+                if (!bytes) break;
+                commands.copyBufferToBuffer(buffer, 0, staging, offset, bytes);
+                offset += bytes;
+            }
             this.device.queue.submit([commands.finish()]);
-            await staging.mapAsync(GPUMapMode.READ);
+            await staging.mapAsync(GPUMapMode.READ, 0, size);
             this.assertReady();
-            const values = new Float32Array(staging.getMappedRange()).slice();
+            const values = new Float32Array(staging.getMappedRange(0, size), 0, size / 4).slice();
             staging.unmap();
             reusable = true;
             return values;
         } finally {
             // Pending/mapped readbacks are exclusive until copied and unmapped.
             // Keep one idle buffer per size; retire failed or excess readbacks.
-            if (reusable && !this.disposed && !this.failure && !this.readbacks.has(size)) this.readbacks.set(size, staging);
+            if (reusable && !this.disposed && !this.failure && !this.readbacks.has(capacity)) this.readbacks.set(capacity, staging);
             else this.destroy(staging);
         }
     }

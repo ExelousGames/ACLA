@@ -1,7 +1,8 @@
 import trainingLabels from 'data/recorded-training-labels.json';
 import { mockDrivingGpu } from './driving-gpu-test-model';
-import { cloneConfig, DEFAULT_DRIVING_CONFIG, drivingCameraInputs, drivingCameraLayers, drivingCameraPooledInputs,
-    drivingObservationInputs, drivingPolicyInputs, emptyRecordedSamplingWeights, RECORDED_SAMPLING_CATEGORIES, validateDrivingConfig } from './driving-model-config';
+import { cloneConfig, DEFAULT_DRIVING_CONFIG, DRIVING_ANALOG_AXES, DRIVING_GEAR_COUNT, DRIVING_MAX_GEAR, drivingCameraInputs, drivingCameraLayers,
+    drivingCameraPooledInputs, drivingGearIndex, drivingObservationInputs, drivingPolicyInputs, emptyRecordedSamplingWeights,
+    RECORDED_SAMPLING_CATEGORIES, validateDrivingConfig } from './driving-model-config';
 import { DrivingMemory, drivingMemoryInputs } from './driving-memory';
 import { DrivingPolicy, emptyTrainingDocument, readTrainingDocument } from './driving-policy';
 import { drivingReward, readDrivingObservation, NEUTRAL } from './driving-observation';
@@ -299,7 +300,7 @@ it('rebuilds the whole observation, memory, network and plan from a non-default 
     const restored = DrivingPolicy.restore(JSON.parse(json));
     expect(restored.matches(observation)).toBe(true);
     expect(restored.checkpoint().model.gruWeights).toHaveLength(3 * 7);
-    expect(restored.checkpoint().model.outputWeights).toHaveLength(16);
+    expect(restored.checkpoint().model.outputWeights).toHaveLength(3 * (DRIVING_ANALOG_AXES + DRIVING_GEAR_COUNT) + 1);
     expect(restored.planTimes).toEqual([0, 0.3, 1.2]);
     expect(restored.checkpoint()).toEqual(JSON.parse(json));
     expect(restored.checkpoint()).not.toHaveProperty('version');
@@ -332,7 +333,7 @@ it('uses the JSON plan times and target tolerance for delayed training', async (
     });
     const training = new DrivingPlanTraining(undefined, 1, 1);
     const features = new DrivingMemory(config).encode(observation);
-    const target = { action: { pedal: 0, steering: 0 }, shifts: { up: true, down: true } };
+    const target = { action: { pedal: 0, steering: 0, gear: 4 } };
     training.record(policy, features, target, 1000);
     training.record(policy, undefined, target, 1310);
     expect(learn).not.toHaveBeenCalled();
@@ -606,11 +607,76 @@ it.each([-1, 2.5, 11, '3', null])('rejects an invalid maximum exploration gear %
     expect(() => readTrainingDocument({ ...document, configuration: { ...document.configuration, learning } })).toThrow(/configuration/);
 });
 
-it('starts new models with one neutral signed pedal output', () => {
+it.each([false, true])('fills missing directed range settings and keeps saved values and weights (trained=%s)', (trained) => {
+    const { observation } = trainingFixture(), config = cloneConfig();
+    config.network.hiddenUnits = config.network.cameraProjectionUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    config.learning.directedSteeringMin = -0.65;
+    const checkpoint = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
+        : emptyTrainingDocument(config);
+    const { directedSteeringMax, directedPedalMin, directedPedalMax, directedSteeringSamples, directedPedalSamples, ...learning }
+        = checkpoint.configuration.learning;
+    const legacy = { ...checkpoint, configuration: { ...checkpoint.configuration, learning } };
+    expect(readTrainingDocument(JSON.parse(JSON.stringify(legacy)))).toEqual(checkpoint);
+});
+
+it.each([{ directedSteeringMin: -1.1 }, { directedSteeringMax: 1.1 }, { directedPedalMin: 0.6, directedPedalMax: 0.4 },
+    { directedSteeringSamples: 1 }, { directedPedalSamples: 16 }, { directedPedalSamples: 5.5 }])(
+    'rejects invalid directed exploration settings %j', (settings) => {
+        const config = cloneConfig();
+        Object.assign(config.learning, settings);
+        expect(() => validateDrivingConfig(config)).toThrow(/configuration/);
+    });
+
+it.each([false, true])('loads exploration defaults into older model files without changing weights (trained=%s)', (trained) => {
+    const { observation } = trainingFixture(), config = cloneConfig();
+    config.network.hiddenUnits = config.network.cameraProjectionUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    const checkpoint = trained ? new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint()
+        : emptyTrainingDocument(config);
+    const learning: Partial<typeof config.learning> = { ...checkpoint.configuration.learning };
+    delete learning.randomExplorationEnabled;
+    delete learning.directedExplorationEnabled;
+    delete learning.explorationPlanIntervalSeconds;
+    expect(readTrainingDocument({ ...checkpoint, configuration: { ...checkpoint.configuration, learning } })).toEqual(checkpoint);
+});
+
+it.each([
+    { randomExplorationEnabled: false, directedExplorationEnabled: true, explorationPlanIntervalSeconds: 0.1 },
+    { randomExplorationEnabled: true, directedExplorationEnabled: false, explorationPlanIntervalSeconds: 10 },
+])('round-trips independent live exploration settings %j', (settings) => {
     const document = emptyTrainingDocument();
-    expect(document.configuration.actions.outputs).toEqual(['pedal-tanh', 'steering-tanh', 'hold-logit', 'up-logit', 'down-logit']);
-    expect(document.configuration.network.initialActionBias).toEqual([0, 0, 1, 0, 0]);
+    Object.assign(document.configuration.learning, settings);
+    expect(readTrainingDocument(JSON.parse(JSON.stringify(document)))).toEqual(document);
+});
+
+it.each([{ randomExplorationEnabled: 0 }, { directedExplorationEnabled: 'false' },
+    { explorationPlanIntervalSeconds: 0.09 }, { explorationPlanIntervalSeconds: 10.01 },
+    { explorationPlanIntervalSeconds: '2' }, { explorationPlanIntervalSeconds: Infinity }])(
+    'rejects invalid live exploration settings %j', (settings) => {
+        const document = emptyTrainingDocument();
+        Object.assign(document.configuration.learning, settings);
+        expect(() => readTrainingDocument(document)).toThrow(/configuration/);
+    });
+
+it('starts new models with a signed pedal output and one logit per target gear', () => {
+    const document = emptyTrainingDocument();
+    expect(document.configuration.actions.outputs).toEqual(['pedal-tanh', 'steering-tanh', 'gear-reverse-logit', 'gear-neutral-logit',
+        ...Array.from({ length: DRIVING_MAX_GEAR }, (_, index) => `gear-${index + 1}-logit`)]);
+    expect(document.configuration.network.initialActionBias).toEqual([0, 0, 0, 0, 1, ...Array(DRIVING_MAX_GEAR - 1).fill(0)]);
     expect(readTrainingDocument(document)).toEqual(document);
+});
+
+it('requires retraining a model that used relative shift outputs', () => {
+    const document = emptyTrainingDocument();
+    document.configuration.actions.outputs = ['pedal-tanh', 'steering-tanh', 'hold-logit', 'up-logit', 'down-logit'];
+    expect(() => readTrainingDocument(document)).toThrow(/Create a new model file to train the target gear policy/);
+});
+
+it('requires a new file when loading a model that only predicted forward gears', () => {
+    const document = emptyTrainingDocument();
+    document.configuration.actions.outputs.splice(DRIVING_ANALOG_AXES, 2);
+    expect(() => readTrainingDocument(document)).toThrow(/Create a new model file to train with neutral and reverse/);
 });
 
 it.each([false, true])('rejects separate-pedal model layouts without migration (trained=%s)', (trained) => {
@@ -752,7 +818,12 @@ it('runs the control loop with saved memory dimensions and pulse duration', asyn
     let now = 1000;
     let observation = trainingFixture(now).observation;
     const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
-    checkpoint.model.outputWeights.slice(2, 5).forEach((row, i) => { row.fill(0); row[config.network.hiddenUnits] = i === 1 ? 4 : 0; });
+    const targetGear = observation.gear + 2;
+    config.actions.planTimesSeconds.forEach((_, step) => {
+        const row = checkpoint.model.outputWeights[step * config.actions.outputs.length + DRIVING_ANALOG_AXES + drivingGearIndex(targetGear)];
+        row.fill(0);
+        row[config.network.hiddenUnits] = 4;
+    });
     const policy = DrivingPolicy.restore(checkpoint);
     expect(policy.configuration.actions).not.toHaveProperty('shiftCooldownMs');
     expect(policy.checkpoint().configuration.actions).not.toHaveProperty('shiftCooldownMs');
@@ -769,13 +840,14 @@ it('runs the control loop with saved memory dimensions and pulse duration', asyn
         jest.advanceTimersByTime(50); await flush();
         expect(loop.state.action.shiftUp).toBe(false);
         now = 1200;
-        observation = { ...observation, capturedAt: now, measuredAt: now };
+        observation = { ...observation, gear: observation.gear + 1, capturedAt: now, measuredAt: now };
         jest.advanceTimersByTime(150); await flush();
         expect(loop.state.action.shiftUp).toBe(true);
         now = 1400;
-        observation = { ...observation, capturedAt: now, measuredAt: now };
+        observation = { ...observation, gear: targetGear, capturedAt: now, measuredAt: now };
         jest.advanceTimersByTime(200); await flush();
-        expect(loop.state.action.shiftUp).toBe(true);
+        expect(loop.state.action.shiftUp).toBe(false);
+        expect(loop.state.action.shiftDown).toBe(false);
     } finally {
         await loop.stop();
         initialize.mockRestore();

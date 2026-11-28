@@ -17,8 +17,6 @@ export interface RecordedDrivingRow {
     timeSeconds: number;
     /** Changes when the car, circuit or simulator session changes. */
     segment: number;
-    /** Destination gear and largest telemetry gap in a shift through neutral. */
-    neutralShift?: { gear: number; maxGapSeconds: number };
 }
 export interface RecordedDrivingSession {
     id: string;
@@ -33,7 +31,7 @@ export interface RecordedGearShift {
     before: number;
     after: number;
 }
-export type RecordedObservationResult = ObservationResult & { shiftGear?: number };
+export type RecordedObservationResult = ObservationResult;
 
 let nextSessionId = 0;
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
@@ -103,7 +101,6 @@ function createRecordedDrivingParser(fallbackGame: DesktopGame, projectSample?: 
     };
     const finish = (): RecordedDrivingSession => {
         if (!rows.length || !game || !timestampField) throw new Error('The telemetry JSONL file contains no samples.');
-        labelNeutralTransitions(rows);
         return { id: `recorded-${++nextSessionId}`, game, rows, startTimeSeconds,
             durationSeconds: rows[rows.length - 1].timeSeconds, timestampField };
     };
@@ -149,29 +146,6 @@ export async function parseRecordedDrivingSessionStream(stream: ReadableStream<U
         signal?.removeEventListener('abort', cancel);
         if (!exhausted && !signal?.aborted) cancel();
         reader.releaseLock();
-    }
-}
-
-function labelNeutralTransitions(rows: RecordedDrivingRow[]) {
-    let engaged: { index: number; segment: number; gear: number } | undefined;
-    let maxGapSeconds = 0;
-    for (const { sample, index, segment, timeSeconds } of rows) {
-        if (!finite(sample.Physics_gear) || sample.Graphics_status !== ACC_STATUS.ACC_LIVE) {
-            engaged = undefined;
-            continue;
-        }
-        const gear = sample.Physics_gear - 1;
-        if (engaged?.segment === segment) maxGapSeconds = Math.max(maxGapSeconds, timeSeconds - rows[index - 1].timeSeconds);
-        if (gear === 0) continue;
-
-        // Preserve neutral as a separate step between reverse and first in either direction.
-        if (engaged?.segment === segment && index > engaged.index + 1 && !(Math.abs(gear) === 1 && engaged.gear === -gear)) {
-            // Use the destination gear when neutral starts so the shift is learned at its onset.
-            const shift = { gear, maxGapSeconds };
-            for (let i = engaged.index + 1; i < index; i++) rows[i].neutralShift = shift;
-        }
-        engaged = { index, segment, gear };
-        maxGapSeconds = 0;
     }
 }
 
@@ -241,9 +215,7 @@ export function readRecordedDrivingObservation(session: RecordedDrivingSession, 
     const result = readDrivingObservation(snapshot, { capturedAt, camera, telemetry: snapshot },
         referenceLap, aggression, capturedAt, config, circuitMap);
     if (!result.observation) return { error: result.error.replace(/Live Map/g, 'Reference map').replace(/in Live Session/g, 'for this recording') };
-    const shift = row.neutralShift;
-    const shiftGear = shift && shift.maxGapSeconds <= config.runtime.maxTransitionSeconds ? shift.gear : undefined;
-    return { ...result, shiftGear,
+    return { ...result,
         observation: { ...result.observation,
         session: JSON.stringify([session.id, row.segment, session.game, sample.Static_car_model, sample.Static_track]) } };
 }

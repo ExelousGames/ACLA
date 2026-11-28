@@ -23,6 +23,8 @@ export interface RecordedReplayFrame {
     recordingName?: string;
     startsRange?: boolean;
     clipLabel?: string;
+    /** Identifies the original video interval, including across replay gaps. */
+    clipId?: string;
 }
 export interface RecordedDrivingFrame extends RecordedReplayFrame {
     camera: PolicyCameraImage;
@@ -447,21 +449,23 @@ const RecordedFrameViewer = forwardRef<RecordedFrameViewerHandle, Props>(functio
                                 throw new Error(`Range ${index + 1} needs at least ${step} s of aligned video and telemetry.`);
                             }
                             const frameCount = Math.floor((end - start + 1e-7) / step) + 1;
-                            return { start, end, frameCount, clipLabel: range.label };
+                            const clipId = JSON.stringify([videoUrl, telemetryUrl, telemetryStart,
+                                ranges === null ? null : [range.start, range.end]]);
+                            return { start, end, frameCount, clipLabel: range.label, clipId };
                         });
                         const totalFrames = clips.reduce((total, clip) => total + clip.frameCount, 0);
                         let processedFrames = 0;
                         const reportProgress = () => onProgress?.({ recordingNumber: recordingIndex + 1,
                             recordingCount: queued.length, processedFrames, totalFrames });
                         reportProgress();
-                        for (const { start, end, frameCount, clipLabel } of clips) {
+                        for (const { start, end, frameCount, clipLabel, clipId } of clips) {
                             for (let index = 0; index < frameCount; index++) {
                                 checkAbort(active);
                                 await seekVideo(player, Math.min(start + index * step, end), active, frames); checkAbort(active);
                                 if (preview) setTime(player.currentTime);
                                 const videoSeconds = frames?.read() ?? player.currentTime;
                                 await consume({ session: recording, videoSeconds, telemetrySeconds: telemetryStart + videoSeconds,
-                                    recordingId: item.id, recordingName: name, startsRange: index === 0,
+                                    recordingId: item.id, recordingName: name, startsRange: index === 0, clipId,
                                     ...(clipLabel ? { clipLabel } : {}) }, player);
                                 checkAbort(active);
                                 processedFrames++;

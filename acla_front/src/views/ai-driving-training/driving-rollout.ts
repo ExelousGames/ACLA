@@ -1,6 +1,6 @@
 import type { DrivingModelConfig } from './driving-model-config';
 import type { DrivingPolicyInput } from './driving-memory';
-import type { PlanStepCredit, PolicyDecision, ShiftAvailability } from './driving-policy';
+import type { PlanStepCredit, PolicyDecision, GearAvailability } from './driving-policy';
 
 export interface DrivingRolloutInterval {
     startedAt: number;
@@ -9,7 +9,7 @@ export interface DrivingRolloutInterval {
     /** Adjacent observed states, retained independently of the action's policy version. */
     input?: DrivingPolicyInput;
     next?: DrivingPolicyInput;
-    nextShifts?: ShiftAvailability;
+    nextGears?: GearAvailability;
     terminal?: boolean;
     samples: { decision: PolicyDecision; credits: PlanStepCredit[]; rewardShare: number; startedAt?: number }[];
 }
@@ -36,7 +36,7 @@ export function drivingSequenceTargets(sequence: DrivingRolloutInterval[], learn
         // it would make the learned value depend on controller polling frequency.
         return interval.samples.map(({ decision, credits }) => ({
             decision, credits, input: interval.input ?? decision.input, next,
-            nextShifts: end.nextShifts, terminal: end.terminal ?? false,
+            nextGears: end.nextGears, terminal: end.terminal ?? false,
             reward, elapsedSeconds: (end.endedAt - interval.startedAt) / 1000,
         }));
     });

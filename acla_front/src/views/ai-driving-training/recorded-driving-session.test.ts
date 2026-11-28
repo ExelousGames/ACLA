@@ -45,7 +45,6 @@ it('imports split UTF-8, BOM, CRLF, blank lines and an unterminated final line f
     expect(session.rows.map(({ sample: entry }) => [entry.Static_car_model, entry.Physics_gear])).toEqual([
         [car, 2], [car, 1], [car, 3],
     ]);
-    expect(session.rows[1].neutralShift).toMatchObject({ gear: 2 });
     expect(stream.locked).toBe(false);
 });
 
