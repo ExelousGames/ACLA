@@ -4,7 +4,6 @@ type Plan = PolicyDecision['plan'];
 const EPSILON = 1e-9;
 const CONTROL_AXES = ['pedal', 'steering'] as const;
 
-export const DRIVING_PLAN_REFRESH_DIFFERENCE = 0.4;
 export const DRIVING_PLAN_REFRESH_SECONDS = 4;
 
 function gearChanges(plan: Plan, previous: number | undefined): Plan {
@@ -16,7 +15,8 @@ function gearChanges(plan: Plan, previous: number | undefined): Plan {
 }
 
 /** Compare the sampled controls over the plans' shared future, keeping the outgoing clock. */
-export function drivingPlanControlsDiffer(current: Plan, elapsedSeconds: number, next: Plan, lastAppliedStep?: number): boolean {
+export function drivingPlanControlsDiffer(current: Plan, elapsedSeconds: number, next: Plan,
+    tolerance: number, lastAppliedStep?: number): boolean {
     if (!current.length || !next.length || !Number.isFinite(elapsedSeconds) || elapsedSeconds < 0) return false;
     const remaining = current[current.length - 1].timeSeconds - elapsedSeconds;
     if (remaining > next[next.length - 1].timeSeconds + EPSILON) return false;
@@ -47,5 +47,5 @@ export function drivingPlanControlsDiffer(current: Plan, elapsedSeconds: number,
         });
         count++;
     }
-    return count > 0 && differences.some((total) => total / count >= DRIVING_PLAN_REFRESH_DIFFERENCE - EPSILON);
+    return count > 0 && differences.some((total) => total / count >= tolerance * (1 - EPSILON));
 }

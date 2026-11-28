@@ -225,11 +225,15 @@ Between samples, steering and signed throttle/brake are linearly interpolated
 every 20 ms (or faster if the configured control interval is shorter). Pedal
 transitions pass through zero. The controller uses the target gear from the current
 plan step. Each step has two continuous controls and twelve gear logits.
-The current plan continues during learning and inference. **Run trained model**
-replaces the plan when the remaining target gears or continuous controls differ
-enough, or when the current plan has run for four seconds. A late control tick skips
-expired steps. After the final step, the AI keeps its pedals, steering and target gear
-until the next plan or input interruption.
+The current plan continues while learning or inference runs. In **Run trained model**,
+**Plan difference tolerance** is saved with the model. It defaults to `0`, so each
+valid new plan replaces the current plan. With a positive tolerance, the current
+plan can continue for up to four seconds if the pending gear changes agree in order
+and the average absolute differences for steering and signed pedal are each below
+the tolerance. The control comparison aligns the plans by elapsed time. Set the
+tolerance to `0.4` to restore the previous threshold. A late control tick skips
+expired steps. After the final step, the AI keeps its pedals, steering and target
+gear until the next plan or input interruption.
 
 In live training, **New plan interval (s)** sets the minimum time from a plan's
 first acknowledged command to its replacement (default: 2 seconds). The first

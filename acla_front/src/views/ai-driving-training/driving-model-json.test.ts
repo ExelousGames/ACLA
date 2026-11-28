@@ -18,6 +18,26 @@ afterEach(() => { jest.restoreAllMocks(); });
 const frequencyKeys = ['pedalExplorationUpdateHz', 'steeringExplorationUpdateHz', 'gearExplorationUpdateHz'];
 const defaultSamplingWeights = DEFAULT_DRIVING_CONFIG.recordedSamplingWeights;
 
+it('defaults older model files to zero plan difference tolerance and preserves a saved tolerance', () => {
+    const document = emptyTrainingDocument();
+    const legacy = JSON.parse(JSON.stringify(document));
+    delete legacy.configuration.runtime.inferencePlanTolerance;
+
+    const restored = readTrainingDocument(legacy);
+    expect(restored.configuration.runtime.inferencePlanTolerance).toBe(0);
+    expect(restored).toEqual(document);
+    expect(legacy.configuration.runtime).not.toHaveProperty('inferencePlanTolerance');
+
+    restored.configuration.runtime.inferencePlanTolerance = 0.25;
+    expect(readTrainingDocument(JSON.parse(JSON.stringify(restored)))).toEqual(restored);
+});
+
+it.each([-0.01, 2.01, '0.4', NaN])('rejects an invalid plan difference tolerance %s', (inferencePlanTolerance) => {
+    const document = emptyTrainingDocument();
+    const runtime = { ...document.configuration.runtime, inferencePlanTolerance };
+    expect(() => readTrainingDocument({ ...document, configuration: { ...document.configuration, runtime } })).toThrow(/configuration/);
+});
+
 it.each([false, true])('rejects old actor-critic documents instead of migrating weights (trained=%s)', (trained) => {
     const config = cloneConfig();
     config.network.hiddenUnits = config.network.cameraProjectionUnits = 2;

@@ -9,7 +9,7 @@ import { NEUTRAL, ObservationResult, readDrivingObservation, readDrivingTelemetr
 import { DRIVING_CENTERLINE_LOOKAHEAD_SECONDS } from './driving-centerline';
 import { DrivingPolicy, DrivingTrainingDocument, emptyTrainingDocument } from './driving-policy';
 import { cloneConfig, DEFAULT_DRIVING_CONFIG, MAX_DIRECTED_CONTROL_SAMPLES, MIN_DIRECTED_CONTROL_SAMPLES, MAX_EXPLORATION_GEAR, MAX_EXPLORATION_PLAN_INTERVAL_SECONDS,
-    MIN_EXPLORATION_PLAN_INTERVAL_SECONDS, MAX_RECORDED_BATCH_COUNT, MAX_RECORDED_BATCH_SIZE, RECORDED_SAMPLING_CATEGORIES,
+    MIN_EXPLORATION_PLAN_INTERVAL_SECONDS, MAX_INFERENCE_PLAN_TOLERANCE, MAX_RECORDED_BATCH_COUNT, MAX_RECORDED_BATCH_SIZE, RECORDED_SAMPLING_CATEGORIES,
     validRecordedBatchCount, validRecordedBatchSize, validRecordedSamplingWeights,
     type DrivingModelConfig, type RecordedSamplingCategory, type RecordedSamplingWeights } from './driving-model-config';
 import { discardBrowserModels, drivingModelFiles, loadDrivingModel, saveDrivingModel, trackDrivingModelSave } from './driving-model-storage';
@@ -60,21 +60,20 @@ function explorationSettings(learning: DrivingModelConfig['learning']) {
         directedSteeringMin, directedSteeringMax, directedSteeringSamples, directedPedalMin, directedPedalMax, directedPedalSamples };
 }
 
-function ExplorationSecondsInput({ label, value, min, max, descriptionId, onChange }: {
+function DrivingNumberInput({ label, value, min, max, descriptionId, onChange }: {
     label: string; value: number; min: number; max: number; descriptionId: string; onChange: (value: number) => void;
 }) {
     const [draft, setDraft] = useState<string>();
-    const displayed = Number(value.toPrecision(6));
     const commit = () => {
         const next = draft?.trim() ? Number(draft) : NaN;
         setDraft(undefined);
         if (!Number.isFinite(next)) return;
         const bounded = Math.min(max, Math.max(min, next));
-        if (bounded !== displayed) onChange(bounded);
+        if (bounded !== value) onChange(bounded);
     };
 
-    return <label>{label} (s)
-        <input type="number" min={min} max={max} step="any" value={draft ?? displayed} aria-describedby={descriptionId}
+    return <label>{label}
+        <input type="number" min={min} max={max} step="any" value={draft ?? value} aria-describedby={descriptionId}
             onChange={(event) => setDraft(event.target.value)} onBlur={commit}
             onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />
     </label>;
@@ -188,6 +187,7 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
     const running = state.mode !== 'idle';
     const finishing = state.mode === 'finishing';
     const aiActive = state.mode === 'training' || state.mode === 'evaluation';
+    const liveSettingsDisabled = !filePath || !documentReady.current || fileBusy || initializingGpu || running || replaying || viewerBusy;
 
     const save = (afterTraining?: Promise<void>): Promise<boolean> => {
         const destination = modelPath.current;
@@ -289,6 +289,11 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
         if (!documentReady.current || !modelPath.current || running || replaying || viewerBusy || initializingGpu || fileBusy) return;
         Object.assign(configuration.current.learning, next);
         setExploration(next);
+        void save();
+    };
+    const changeInferencePlanTolerance = (value: number) => {
+        if (liveSettingsDisabled) return;
+        configuration.current.runtime.inferencePlanTolerance = value;
         void save();
     };
     const saveSamplingWeights = async () => {
@@ -841,11 +846,10 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                 <div className="driving-card-title"><h2>AI driver</h2><span>{inputSource === 'recorded' ? replaying ? 'Recorded replay' : 'Offline'
                     : finishing || (aiActive && !state.source) ? 'Finishing learning' : aiActive ? state.source === 'ai' ? 'Driving' : 'Human has control' : 'Not started'}</span></div>
                 {inputSource === 'recorded' && <p>Recorded training learns signed pedal intent, steering and target gears from aligned telemetry. Evaluation compares the fixed model with recorded controls. Gaps reset observation history.</p>}
-                {inputSource === 'live' && <fieldset className="driving-exploration"
-                    disabled={!filePath || !documentReady.current || fileBusy || initializingGpu || running || replaying || viewerBusy}>
+                {inputSource === 'live' && <fieldset className="driving-exploration" disabled={liveSettingsDisabled}>
                     <legend>Training exploration</legend>
                     <div className="driving-exploration-fields">
-                        <ExplorationSecondsInput label="New plan interval" value={exploration.explorationPlanIntervalSeconds}
+                        <DrivingNumberInput label="New plan interval (s)" value={Number(exploration.explorationPlanIntervalSeconds.toPrecision(6))}
                             min={MIN_EXPLORATION_PLAN_INTERVAL_SECONDS} max={MAX_EXPLORATION_PLAN_INTERVAL_SECONDS}
                             descriptionId="driving-exploration-plan-meaning"
                             onChange={(value) => changeExploration({ ...exploration, explorationPlanIntervalSeconds: value })} />
@@ -875,8 +879,8 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                             <p id="driving-shift-temperature-meaning">Higher values try a wider mix of gear choices. Lower values favor the model’s preferred gear choice. Default: {DEFAULT_DRIVING_CONFIG.learning.shiftTemperature}.</p>
                         </div>
                         <div className="driving-exploration-fields">
-                            {EXPLORATION_DURATIONS.map(({ key, label }) => <ExplorationSecondsInput key={key}
-                                label={`${label} exploration duration`} value={1 / exploration[key]} min={0.1} max={10}
+                            {EXPLORATION_DURATIONS.map(({ key, label }) => <DrivingNumberInput key={key}
+                                label={`${label} exploration duration (s)`} value={Number((1 / exploration[key]).toPrecision(6))} min={0.1} max={10}
                                 descriptionId="driving-random-duration-meaning"
                                 onChange={(value) => changeExploration({ ...exploration, [key]: 1 / value })} />)}
                         </div>
@@ -962,6 +966,15 @@ export default function AiDrivingTraining({ onOpenLiveSession }: { onOpenLiveSes
                     <p>Use matching live inputs, open a matching model file, or create a new model.</p>
                 </div>}
                 {inputSource === 'live' ? <>
+                    <fieldset className="driving-exploration" disabled={liveSettingsDisabled}>
+                        <legend>Trained model settings</legend>
+                        <div className="driving-exploration-fields">
+                            <DrivingNumberInput key={filePath} label="Plan difference tolerance" value={config.runtime.inferencePlanTolerance}
+                                min={0} max={MAX_INFERENCE_PLAN_TOLERANCE} descriptionId="driving-inference-plan-tolerance-meaning"
+                                onChange={changeInferencePlanTolerance} />
+                        </div>
+                        <p id="driving-inference-plan-tolerance-meaning">Default: 0, which uses each new plan. A positive value keeps the current plan for up to four seconds if the average differences for steering and throttle/brake are both below the tolerance in normalized control units and upcoming gear changes agree.</p>
+                    </fieldset>
                     <div className="driving-buttons">
                         <button className="driving-primary" disabled={Boolean(liveStartBlocker)} aria-describedby="driving-start-status" onClick={() => { void start(true); }}>Start training</button>
                         <button disabled={Boolean(liveStartBlocker) || !modelSteps} aria-describedby="driving-start-status" onClick={() => { void start(false); }}>Run trained model</button>

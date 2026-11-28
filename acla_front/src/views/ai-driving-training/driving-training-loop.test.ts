@@ -251,6 +251,7 @@ it('keeps the training sample alive until pending GPU backprop finishes after St
 
 it('publishes five-second evaluation plans, keeps inferring and refreshes after four seconds', async () => {
     const run = setup();
+    run.policy.configuration.runtime.inferencePlanTolerance = 0.4;
     const infer = run.policy.decideAsync.bind(run.policy);
     const decide = jest.spyOn(run.policy, 'decideAsync').mockImplementation(async (...args) => holdGear(await infer(...args)));
     const planned = jest.spyOn(run.policy, 'learnPlannedActionsAsync');
@@ -597,6 +598,7 @@ it.each([true, false])('caps target gear choices only in training (training=%s)'
 
 it('keeps an agreeing evaluation plan clock while inference continues', async () => {
     const run = setup(), first = await plannedDecision(run), confirmation = await plannedDecision(run);
+    run.policy.configuration.runtime.inferencePlanTolerance = 0.4;
     confirmation.plan.forEach((point, step) => {
         point.action = { ...first.plan[Math.min(step + 2, first.plan.length - 1)].action };
     });
@@ -614,12 +616,32 @@ it('keeps an agreeing evaluation plan clock while inference continues', async ()
     await run.loop.stop();
 });
 
-it.each(['pedal', 'steering'] as const)('refreshes early when %s alone reaches the 40%% difference threshold', async (axis) => {
+it.each([0, 0.01])('replaces the active plan with zero tolerance and a steering difference of %s', async (difference) => {
     const run = setup();
+    const first = await plannedDecision(run), replacement = await plannedDecision(run);
+    first.plan.forEach((point) => { point.action = { ...point.action, pedal: 0.2, steering: 0 }; });
+    replacement.plan.forEach((point) => { point.action = { ...point.action, pedal: 0.2, steering: difference }; });
+    jest.spyOn(run.policy, 'decideAsync').mockResolvedValueOnce(first).mockResolvedValueOnce(replacement);
+    await run.loop.start(run.policy, false); await flush();
+    const published = run.loop.state.plan;
+
+    run.input({ observation: { ...run.fixture.observation, capturedAt: 1200 } }, 1200);
+    jest.advanceTimersByTime(20); await flush();
+    expect(run.loop.state.plan).not.toBe(published);
+    expect(run.loop.state.plan?.[0].action).toEqual(replacement.plan[0].action);
+    expect(run.controller.apply).toHaveBeenLastCalledWith(expect.objectContaining(drivingControllerAction(replacement.plan[0].action)));
+    await run.loop.stop();
+});
+
+it.each(['pedal', 'steering'] as const)('refreshes early when %s alone reaches the configured average difference threshold', async (axis) => {
+    const run = setup();
+    run.policy.configuration.runtime.inferencePlanTolerance = 0.25;
     const first = await plannedDecision(run), smallChange = await plannedDecision(run), replacement = await plannedDecision(run);
     first.plan.forEach((point) => { point.action = { ...point.action, pedal: 0, steering: 0 }; });
-    smallChange.plan.forEach((point) => { point.action = { ...point.action, pedal: 0.39, steering: -0.39 }; });
-    replacement.plan.forEach((point) => { point.action = { ...point.action, pedal: 0, steering: 0, [axis]: 0.4 }; });
+    smallChange.plan.forEach((point, step) => {
+        point.action = { ...point.action, pedal: step % 2 ? 0.4 : 0.08, steering: step % 2 ? -0.08 : -0.4 };
+    });
+    replacement.plan.forEach((point) => { point.action = { ...point.action, pedal: 0, steering: 0, [axis]: 0.25 }; });
     jest.spyOn(run.policy, 'decideAsync').mockResolvedValueOnce(first).mockResolvedValueOnce(smallChange).mockResolvedValueOnce(replacement);
     await run.loop.start(run.policy, false); await flush();
     const published = run.loop.state.plan;
@@ -639,6 +661,7 @@ it.each(['pedal', 'steering'] as const)('refreshes early when %s alone reaches t
 
 it('refreshes evaluation when only a later gear decision changes', async () => {
     const run = setup();
+    run.policy.configuration.runtime.inferencePlanTolerance = 0.4;
     run.policy.configuration.learning.explorationPlanIntervalSeconds = 2;
     const first = await plannedDecision(run), replacement = await plannedDecision(run);
     first.plan.forEach((point) => { point.action = { ...point.action, pedal: 0.2, steering: 0.1 }; });
@@ -659,6 +682,7 @@ it('refreshes evaluation when only a later gear decision changes', async () => {
 
 it.each([0, 8])('keeps the active plan when the same target gear changes move to different times (candidate first change at step %s)', async (candidateStep) => {
     const run = setup();
+    run.policy.configuration.runtime.inferencePlanTolerance = 0.4;
     const first = await plannedDecision(run), confirmation = await plannedDecision(run);
     first.plan.slice(4, 10).forEach((point) => { point.action.gear = 2; });
     confirmation.plan.slice(candidateStep, 12).forEach((point) => { point.action.gear = 2; });
@@ -682,6 +706,7 @@ it.each([0, 8])('keeps the active plan when the same target gear changes move to
 
 it('keeps a retimed gear target pending when inference finishes before the next control tick', async () => {
     const run = setup();
+    run.policy.configuration.runtime.inferencePlanTolerance = 0.4;
     const first = await plannedDecision(run), confirmation = await plannedDecision(run);
     first.plan.slice(4).forEach((point) => { point.action.gear = 2; });
     confirmation.plan.slice(8).forEach((point) => { point.action.gear = 2; });
@@ -892,6 +917,7 @@ it('abandons a directed trial after its gear cannot be confirmed', async () => {
 
 it('measures four seconds from the first acknowledgement and waits for pending inference', async () => {
     const run = setup();
+    run.policy.configuration.runtime.inferencePlanTolerance = 0.4;
     run.policy.configuration.runtime.maxTransitionSeconds = 5;
     const first = await plannedDecision(run), confirmation = await plannedDecision(run), replacement = await plannedDecision(run);
     for (const decision of [first, confirmation, replacement]) {
@@ -1431,6 +1457,7 @@ it('does not re-press a released paddle when a new output arrives during its ack
 
 it.each([true, false])('profiles model work on fresh AI cycles and retains it while waiting (training=%s)', async (train) => {
     const run = setup();
+    run.policy.configuration.runtime.inferencePlanTolerance = 0.4;
     let elapsed = 0;
     jest.spyOn(performance, 'now').mockImplementation(() => elapsed);
     const encode = DrivingMemory.prototype.encode;

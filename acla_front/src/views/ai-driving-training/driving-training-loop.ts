@@ -656,10 +656,11 @@ export class DrivingTrainingLoop {
             await this.planWrite;
             if (!active()) { policy.releaseDecision(decision); return false; }
             const outgoing = this.activePlan;
-            if (!training && outgoing) {
+            const tolerance = this.config.runtime.inferencePlanTolerance;
+            if (!training && outgoing && tolerance > 0) {
                 const elapsed = Math.max(0, (this.now() - outgoing.startedAt) / 1000);
                 if (elapsed < DRIVING_PLAN_REFRESH_SECONDS && !drivingPlanControlsDiffer(outgoing.decision.plan, elapsed,
-                    decision.plan, outgoing.executions[outgoing.executions.length - 1]?.step)) {
+                    decision.plan, tolerance, outgoing.executions[outgoing.executions.length - 1]?.step)) {
                     policy.releaseDecision(decision);
                     return true;
                 }

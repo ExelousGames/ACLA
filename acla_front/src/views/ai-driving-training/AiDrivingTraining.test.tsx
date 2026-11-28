@@ -1399,6 +1399,38 @@ it('keeps exploration disabled until a model file is selected', async () => {
     expect(window.drivingModelFiles!.write).not.toHaveBeenCalled();
 });
 
+it('saves the plan difference tolerance and uses it when running the trained model', async () => {
+    const { observation } = trainingFixture(Date.now()), config = cloneConfig();
+    config.network.hiddenUnits = config.network.cameraProjectionUnits = 2;
+    config.network.cameraLayers.forEach((layer) => { layer.channels = 1; });
+    const checkpoint = new DrivingPolicy(observation.context, observation.features.length, Math.random, config).checkpoint();
+    checkpoint.model.steps = 7;
+    files.set(MODEL_PATH, JSON.stringify(checkpoint));
+    mockInput = { observation };
+    const start = jest.spyOn(DrivingTrainingLoop.prototype, 'start');
+    const tolerance = () => screen.getByRole('spinbutton', { name: 'Plan difference tolerance' });
+
+    const view = await renderTraining();
+    expect(tolerance()).toHaveValue(0);
+    fireEvent.change(tolerance(), { target: { value: '0.25' } });
+    fireEvent.blur(tolerance()); await flush();
+    const saved = JSON.parse(files.get(MODEL_PATH)!);
+    expect(saved.configuration.runtime.inferencePlanTolerance).toBe(0.25);
+    expect(saved.model).toEqual(checkpoint.model);
+
+    view.unmount();
+    await renderTraining();
+    expect(tolerance()).toHaveValue(0.25);
+    fireEvent.click(screen.getByRole('button', { name: 'Connect wheel' })); await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Run trained model' })); await flush();
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ configuration: expect.objectContaining({
+        runtime: expect.objectContaining({ inferencePlanTolerance: 0.25 }),
+    }) }), false);
+    expect(tolerance()).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' })); await flush();
+    expect(tolerance()).toBeEnabled();
+});
+
 it('persists the aggression setting, restores it on remount and resets to reference', async () => {
     const view = await renderTraining();
     const slider = screen.getByRole('slider', { name: 'Driving aggression' });

@@ -6,6 +6,7 @@ export const UNLABELED_RECORDED_SAMPLING_CATEGORY = 'Unlabeled';
 export const RECORDED_SAMPLING_CATEGORIES: readonly string[] = [...trainingLabels, UNLABELED_RECORDED_SAMPLING_CATEGORY];
 export const MAX_RECORDED_BATCH_COUNT = 1_000_000;
 export const MAX_RECORDED_BATCH_SIZE = 256;
+export const MAX_INFERENCE_PLAN_TOLERANCE = 2; // Difference between two controls in [-1, 1].
 export type RecordedSamplingCategory = typeof RECORDED_SAMPLING_CATEGORIES[number];
 export type RecordedSamplingWeights = Record<RecordedSamplingCategory, number>;
 export type DrivingModelConfig = Omit<typeof defaults, 'recordedSamplingWeights'> & { recordedSamplingWeights: RecordedSamplingWeights };
@@ -137,6 +138,10 @@ export function readDrivingConfig(value: unknown): DrivingModelConfig {
             if (!(key in learning)) settings[key] = defaults.learning[key];
         }
         value = { ...value as object, learning: settings };
+    }
+    const runtime = (value as { runtime?: Record<string, unknown> } | null)?.runtime;
+    if (runtime && typeof runtime === 'object' && !Array.isArray(runtime) && !('inferencePlanTolerance' in runtime)) {
+        value = { ...value as object, runtime: { ...runtime, inferencePlanTolerance: defaults.runtime.inferencePlanTolerance } };
     }
     // Speed and pedal rewards changed without changing the SAC model's input or weight layout.
     const reward = (value as { reward?: Record<string, unknown> } | null)?.reward;
@@ -284,6 +289,7 @@ export function validateDrivingConfig(value: unknown): asserts value is DrivingM
         || c.network.initialOutputWeightScale > l.weightLimit
         || !integer(c.actions.shiftPulseMs, 1, 1000)
         || c.actions.planAgreementTolerance > 1
+        || c.runtime.inferencePlanTolerance > MAX_INFERENCE_PLAN_TOLERANCE
         || !integer(c.runtime.saveEverySteps, 1, 1000000)
         || ![c.runtime.telemetryMaxAgeMs, c.runtime.visionMaxAgeMs, c.runtime.maxTransitionSeconds,
             c.runtime.controlIntervalMs, c.runtime.manualControlIntervalMs].every((n) => n > 0)

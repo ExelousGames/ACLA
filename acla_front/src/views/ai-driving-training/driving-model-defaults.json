@@ -123,6 +123,7 @@
     "maxPositionJump": 0.1,
     "controlIntervalMs": 100,
     "manualControlIntervalMs": 50,
+    "inferencePlanTolerance": 0,
     "saveEverySteps": 50
   },
   "aggression": 50
